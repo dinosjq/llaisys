@@ -245,8 +245,8 @@ void Tensor::debug() const {
  * @return 如果张量是连续内存布局则返回true，否则返回false。
  */
 bool Tensor::isContiguous() const {
-    std::vector<size_t> shape = this->shape();
-    std::vector<ptrdiff_t> strides = this->strides();
+    const auto &shape = this->shape();
+    const auto &strides = this->strides();
     size_t ndim = this->ndim();
     size_t stride = 1;
     for (size_t i = 1; i <= ndim; ++ i) {
@@ -267,16 +267,28 @@ bool Tensor::isContiguous() const {
  */
 tensor_t Tensor::permute(const std::vector<size_t> &order) const {
     size_t ndim = this->ndim();
+    // 验证大小
+    if(order.size() != ndim){
+        throw new std::runtime_error("Tensor::permute : order size error");
+    }
+    // 验证序列
+    std::vector<char> flag(ndim, 0);
+    for (auto o: order) {
+        if(o >= ndim || flag[o]){
+            throw new std::runtime_error("Tensor::permute : order error");
+        }
+        flag[o] = 1;
+    }
     std::vector<size_t> nshape(ndim);
     std::vector<ptrdiff_t> nstrides(ndim);
-    std::vector<size_t> shape = this->shape();
-    std::vector<ptrdiff_t> strides = this->strides();
+    const auto &shape = this->shape();
+    const auto &strides = this->strides();
     for (size_t i = 0; i < ndim; ++i) {
         nshape[i] = shape[order[i]];     // 新 shape 按 order 排列
         nstrides[i] = strides[order[i]]; // 新 strides 也按 order 排列
     }
     TensorMeta nmeta{this->dtype(), nshape, nstrides};
-    return std::shared_ptr<Tensor>(new Tensor(nmeta, _storage));
+    return std::shared_ptr<Tensor>(new Tensor(nmeta, _storage, _offset));
 }
 
 /**
@@ -289,7 +301,7 @@ tensor_t Tensor::permute(const std::vector<size_t> &order) const {
 tensor_t Tensor::view(const std::vector<size_t> &shape) const {
     // 检查新形状元素总数是否与原张量一致，且原张量必须是连续内存
     if (this->numel() != std::accumulate(shape.begin(), shape.end(), (size_t) 1, std::multiplies<size_t>()) || !this->isContiguous()) {
-        throw std::runtime_error("Tensor view error.");
+        throw std::runtime_error("Tensor::view error.");
     }
     // 在此之前，应该先检查总数是否一致，还有原tensor内存分布是否连续，否则抛出异常
     // 重新计算新视图的 strides
@@ -302,7 +314,7 @@ tensor_t Tensor::view(const std::vector<size_t> &shape) const {
     }
     TensorMeta _new_meta{this->dtype(), shape, strides};
     // 创建新视图对象，底层存储与原张量共享
-    return std::shared_ptr<Tensor>(new Tensor(_new_meta, _storage));
+    return std::shared_ptr<Tensor>(new Tensor(_new_meta, _storage, _offset));
 }
 
 /**
@@ -313,6 +325,11 @@ tensor_t Tensor::view(const std::vector<size_t> &shape) const {
  * @return 新的 Tensor 视图对象
  */
 tensor_t Tensor::slice(size_t dim, size_t start, size_t end) const {
+    // 增加范围校验
+    const auto &shape = this->shape();
+    if(dim >= shape.size() || start > end || end > shape[dim]){
+        throw new std::runtime_error("Tensor::slice error");
+    }
     std::vector<size_t> nshape(this->shape());
     nshape[dim] = end - start;
     // offest 是整体的偏移
