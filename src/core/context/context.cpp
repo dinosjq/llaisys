@@ -49,8 +49,14 @@ Context::~Context() {
     _runtime_map.clear();
 }
 
+/**
+ * @brief 设置当前上下文所使用的设备类型和设备编号。
+ *        如果当前激活的 runtime 不匹配，则切换到指定设备，并激活对应的 runtime。
+ * @param device_type 设备类型（如 CPU、GPU）
+ * @param device_id   设备编号（如第几个 GPU）
+ */
 void Context::setDevice(llaisysDeviceType_t device_type, int device_id) {
-    // If doest not match the current runtime.
+    // 如果当前 runtime 不匹配，则切换设备
     if (_current_runtime == nullptr || _current_runtime->deviceType() != device_type || _current_runtime->deviceId() != device_id) {
         auto runtimes = _runtime_map[device_type];
         CHECK_ARGUMENT((size_t)device_id < runtimes.size() && device_id >= 0, "invalid device id");
