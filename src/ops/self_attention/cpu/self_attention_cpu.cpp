@@ -46,7 +46,7 @@ void self_attention_(T *attn_val, const T *Q, const T *K, const T *V, const floa
             // causalsoftmax
             float sum = 0.0f;
             for (size_t j = 0; j <= limit; ++j) {
-                const float t = __builtin_expf(elems[j] - max_elem);
+                const float t = std::exp(elems[j] - max_elem);
                 elems[j] = t;
                 sum += t;
             }

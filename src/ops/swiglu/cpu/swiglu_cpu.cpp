@@ -10,9 +10,9 @@ void swiglu_(T *out, const T *gate, const T *up, size_t numel) {
         if constexpr (std::is_same_v<T, llaisys::bf16_t> || std::is_same_v<T, llaisys::fp16_t>) {
             const float t = llaisys::utils::cast<float>(up[i]);
             const float s = llaisys::utils::cast<float>(gate[i]);
-            out[i] = llaisys::utils::cast<T>(t * s / (1.0f + __builtin_expf(-s)));
+            out[i] = llaisys::utils::cast<T>(t * s / (1.0f + std::exp(-s)));
         } else {
-            out[i] = up[i] * gate[i] / (1 + __builtin_expf(-gate[i]));
+            out[i] = up[i] * gate[i] / (1 + std::exp(-gate[i]));
         }
     }
 }

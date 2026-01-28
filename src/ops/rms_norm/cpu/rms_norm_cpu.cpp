@@ -20,7 +20,7 @@ void rms_norm_(T *out, const T *in, const T *weight, const float &eps, const siz
         }
         den /= m;
         den += eps;
-        den = __builtin_sqrtf(den);
+        den = std::sqrt(den);
         for (size_t j = 0; j < m; ++ j){
             const size_t k = i * m + j;
             if constexpr (std::is_same_v<T, llaisys::bf16_t> || std::is_same_v<T, llaisys::fp16_t>) {
