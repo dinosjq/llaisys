@@ -18,10 +18,10 @@ void rope_(T *out, const T *in, const int64_t *pos_ids, const float &theta, cons
             T *out_a = out + offset_a;
             T *out_b = out + offset_b;
             for (size_t j = 0; j < d / 2; ++j) {
-                const double den = std::pow(theta, 2.0 * j / d);
-                const double phi = (double) pi / den;
-                const float cos_phi = std::cos(phi);
-                const float sin_phi = std::sin(phi);
+                 const float den = std::pow(theta, 2.0f * static_cast<float>(j) / static_cast<float>(d));
+                 const float phi = static_cast<float>(pi) / den;
+                 const float cos_phi = std::cos(phi);
+                 const float sin_phi = std::sin(phi);
 
                 if constexpr (std::is_same_v<T, llaisys::bf16_t> || std::is_same_v<T, llaisys::fp16_t>) {
                     out_a[j] = llaisys::utils::cast<T>(llaisys::utils::cast<float>(in_a[j]) * cos_phi - llaisys::utils::cast<float>(in_b[j]) * sin_phi);
