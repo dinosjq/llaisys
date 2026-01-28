@@ -1,5 +1,6 @@
 #include "tensor.hpp"
 
+#include "../ops/rearrange/op.hpp"
 #include "../utils.hpp"
 
 #include <cstring>
@@ -50,7 +51,7 @@ tensor_t Tensor::create(const std::vector<size_t> &shape,
     size_t total_elems = stride;
     size_t dtype_size = utils::dsize(dtype);
 
-    // 4. 根据设备类型分配内存 
+    // 4. 根据设备类型分配内存
     if (device_type == LLAISYS_DEVICE_CPU && core::context().runtime().deviceType() != LLAISYS_DEVICE_CPU) {
         // 分配主机内存（CPU）
         auto storage = core::context().runtime().allocateHostStorage(total_elems * dtype_size);
@@ -249,7 +250,7 @@ bool Tensor::isContiguous() const {
     const auto &strides = this->strides();
     size_t ndim = this->ndim();
     size_t stride = 1;
-    for (size_t i = 1; i <= ndim; ++ i) {
+    for (size_t i = 1; i <= ndim; ++i) {
         if (strides[ndim - i] != static_cast<ptrdiff_t>(stride)) {
             return false;
         }
@@ -268,14 +269,14 @@ bool Tensor::isContiguous() const {
 tensor_t Tensor::permute(const std::vector<size_t> &order) const {
     size_t ndim = this->ndim();
     // 验证大小
-    if(order.size() != ndim){
-        throw new std::runtime_error("Tensor::permute : order size error");
+    if (order.size() != ndim) {
+        throw std::runtime_error("Tensor::permute : order size error");
     }
     // 验证序列
     std::vector<char> flag(ndim, 0);
-    for (auto o: order) {
-        if(o >= ndim || flag[o]){
-            throw new std::runtime_error("Tensor::permute : order error");
+    for (auto o : order) {
+        if (o >= ndim || flag[o]) {
+            throw std::runtime_error("Tensor::permute : order error");
         }
         flag[o] = 1;
     }
@@ -300,7 +301,7 @@ tensor_t Tensor::permute(const std::vector<size_t> &order) const {
  */
 tensor_t Tensor::view(const std::vector<size_t> &shape) const {
     // 检查新形状元素总数是否与原张量一致，且原张量必须是连续内存
-    if (this->numel() != std::accumulate(shape.begin(), shape.end(), (size_t) 1, std::multiplies<size_t>()) || !this->isContiguous()) {
+    if (this->numel() != std::accumulate(shape.begin(), shape.end(), (size_t)1, std::multiplies<size_t>()) || !this->isContiguous()) {
         throw std::runtime_error("Tensor::view error.");
     }
     // 在此之前，应该先检查总数是否一致，还有原tensor内存分布是否连续，否则抛出异常
@@ -308,7 +309,7 @@ tensor_t Tensor::view(const std::vector<size_t> &shape) const {
     size_t ndim = shape.size();
     size_t stride = 1;
     std::vector<ptrdiff_t> strides(ndim);
-    for (size_t i = 1; i <= ndim; ++ i) {
+    for (size_t i = 1; i <= ndim; ++i) {
         strides[ndim - i] = stride;
         stride *= shape[ndim - i];
     }
@@ -327,8 +328,8 @@ tensor_t Tensor::view(const std::vector<size_t> &shape) const {
 tensor_t Tensor::slice(size_t dim, size_t start, size_t end) const {
     // 增加范围校验
     const auto &shape = this->shape();
-    if(dim >= shape.size() || start > end || end > shape[dim]){
-        throw new std::runtime_error("Tensor::slice error");
+    if (dim >= shape.size() || start > end || end > shape[dim]) {
+        throw std::runtime_error("Tensor::slice error");
     }
     std::vector<size_t> nshape(this->shape());
     nshape[dim] = end - start;
@@ -361,8 +362,14 @@ void Tensor::load(const void *src_) {
 }
 
 tensor_t Tensor::contiguous() const {
-    // TO_BE_IMPLEMENTED();
-    return std::shared_ptr<Tensor>(new Tensor(_meta, _storage));
+    if (this->isContiguous()) {
+        return std::shared_ptr<Tensor>(new Tensor(_meta, _storage, _offset));
+    }
+
+    tensor_t out = Tensor::create(this->shape(), this->dtype(), this->deviceType(), this->deviceId());
+    tensor_t in_view = std::shared_ptr<Tensor>(new Tensor(_meta, _storage, _offset));
+    llaisys::ops::rearrange(out, in_view);
+    return out;
 }
 
 tensor_t Tensor::reshape(const std::vector<size_t> &shape) const {
