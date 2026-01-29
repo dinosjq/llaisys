@@ -20,97 +20,100 @@
 #include <cstring>
 #include <vector>
 
+struct LlaisysQwen2Model {
+    LlaisysQwen2Meta meta{};
+    LlaisysQwen2Weights weights{};
+    llaisysDeviceType_t device{LLAISYS_DEVICE_CPU};
+    std::vector<int> device_ids;
+    std::vector<llaisys::tensor_t> k_cache;
+    std::vector<llaisys::tensor_t> v_cache;
+    size_t cache_len{0};
+    std::vector<int64_t> cached_tokens;
+};
+
+namespace {
+static int get_device_id(const LlaisysQwen2Model *model) {
+    if (!model || model->device_ids.empty()) {
+        return 0;
+    }
+    return model->device_ids.front();
+}
+
+static llaisys::tensor_t to_tensor(llaisysTensor_t t) {
+    return t ? t->tensor : nullptr;
+}
+
+// 初始化 kv_cache
+static void init_kv_cache(LlaisysQwen2Model *model) {
+    model->k_cache.resize(model->meta.nlayer);
+    model->v_cache.resize(model->meta.nlayer);
+    const int device_id = get_device_id(model);
+    const size_t maxseq = model->meta.maxseq;
+    const size_t nkvh = model->meta.nkvh;
+    const size_t dh = model->meta.dh;
+    for (size_t i = 0; i < model->meta.nlayer; ++i) {
+        model->k_cache[i] = llaisys::Tensor::create({maxseq, nkvh, dh}, model->meta.dtype, model->device, device_id);
+        model->v_cache[i] = llaisys::Tensor::create({maxseq, nkvh, dh}, model->meta.dtype, model->device, device_id);
+    }
+    model->cache_len = 0;
+    model->cached_tokens.clear();
+}
+
+static void reset_kv_cache(LlaisysQwen2Model *model) {
+    model->cache_len = 0;
+    model->cached_tokens.clear();
+}
+
+/**
+ * 初始化权重tensor arrays
+ */
+static void init_weight_arrays(LlaisysQwen2Weights &w, size_t nlayer) {
+    w.attn_norm_w = new llaisysTensor_t[nlayer]();
+    w.attn_q_w = new llaisysTensor_t[nlayer]();
+    w.attn_q_b = new llaisysTensor_t[nlayer]();
+    w.attn_k_w = new llaisysTensor_t[nlayer]();
+    w.attn_k_b = new llaisysTensor_t[nlayer]();
+    w.attn_v_w = new llaisysTensor_t[nlayer]();
+    w.attn_v_b = new llaisysTensor_t[nlayer]();
+    w.attn_o_w = new llaisysTensor_t[nlayer]();
+    w.mlp_norm_w = new llaisysTensor_t[nlayer]();
+    w.mlp_gate_w = new llaisysTensor_t[nlayer]();
+    w.mlp_up_w = new llaisysTensor_t[nlayer]();
+    w.mlp_down_w = new llaisysTensor_t[nlayer]();
+}
+
+/**
+ * 释放内存
+ */
+static void free_weight_arrays(LlaisysQwen2Weights &w) {
+    delete[] w.attn_norm_w;
+    delete[] w.attn_q_w;
+    delete[] w.attn_q_b;
+    delete[] w.attn_k_w;
+    delete[] w.attn_k_b;
+    delete[] w.attn_v_w;
+    delete[] w.attn_v_b;
+    delete[] w.attn_o_w;
+    delete[] w.mlp_norm_w;
+    delete[] w.mlp_gate_w;
+    delete[] w.mlp_up_w;
+    delete[] w.mlp_down_w;
+    w.attn_norm_w = nullptr;
+    w.attn_q_w = nullptr;
+    w.attn_q_b = nullptr;
+    w.attn_k_w = nullptr;
+    w.attn_k_b = nullptr;
+    w.attn_v_w = nullptr;
+    w.attn_v_b = nullptr;
+    w.attn_o_w = nullptr;
+    w.mlp_norm_w = nullptr;
+    w.mlp_gate_w = nullptr;
+    w.mlp_up_w = nullptr;
+    w.mlp_down_w = nullptr;
+}
+} // namespace
+
 __C {
-    struct LlaisysQwen2Model {
-        LlaisysQwen2Meta meta{};
-        LlaisysQwen2Weights weights{};
-        llaisysDeviceType_t device{LLAISYS_DEVICE_CPU};
-        std::vector<int> device_ids;
-        std::vector<llaisys::tensor_t> k_cache;
-        std::vector<llaisys::tensor_t> v_cache;
-        size_t cache_len{0};
-        std::vector<int64_t> cached_tokens;
-    };
-
-    static int get_device_id(const LlaisysQwen2Model *model) {
-        if (!model || model->device_ids.empty()) {
-            return 0;
-        }
-        return model->device_ids.front();
-    }
-
-    static llaisys::tensor_t to_tensor(llaisysTensor_t t) {
-        return t ? t->tensor : nullptr;
-    }
-
-    // 初始化 kv_cache
-    static void init_kv_cache(LlaisysQwen2Model * model) {
-        model->k_cache.resize(model->meta.nlayer);
-        model->v_cache.resize(model->meta.nlayer);
-        const int device_id = get_device_id(model);
-        const size_t maxseq = model->meta.maxseq;
-        const size_t nkvh = model->meta.nkvh;
-        const size_t dh = model->meta.dh;
-        for (size_t i = 0; i < model->meta.nlayer; ++i) {
-            model->k_cache[i] = llaisys::Tensor::create({maxseq, nkvh, dh}, model->meta.dtype, model->device, device_id);
-            model->v_cache[i] = llaisys::Tensor::create({maxseq, nkvh, dh}, model->meta.dtype, model->device, device_id);
-        }
-        model->cache_len = 0;
-        model->cached_tokens.clear();
-    }
-
-    static void reset_kv_cache(LlaisysQwen2Model * model) {
-        model->cache_len = 0;
-        model->cached_tokens.clear();
-    }
-
-    /**
-     * 初始化权重tensor arrays
-     */
-    static void init_weight_arrays(LlaisysQwen2Weights & w, size_t nlayer) {
-        w.attn_norm_w = new llaisysTensor_t[nlayer]();
-        w.attn_q_w = new llaisysTensor_t[nlayer]();
-        w.attn_q_b = new llaisysTensor_t[nlayer]();
-        w.attn_k_w = new llaisysTensor_t[nlayer]();
-        w.attn_k_b = new llaisysTensor_t[nlayer]();
-        w.attn_v_w = new llaisysTensor_t[nlayer]();
-        w.attn_v_b = new llaisysTensor_t[nlayer]();
-        w.attn_o_w = new llaisysTensor_t[nlayer]();
-        w.mlp_norm_w = new llaisysTensor_t[nlayer]();
-        w.mlp_gate_w = new llaisysTensor_t[nlayer]();
-        w.mlp_up_w = new llaisysTensor_t[nlayer]();
-        w.mlp_down_w = new llaisysTensor_t[nlayer]();
-    }
-
-    /**
-     * 释放内存
-     */
-    static void free_weight_arrays(LlaisysQwen2Weights & w) {
-        delete[] w.attn_norm_w;
-        delete[] w.attn_q_w;
-        delete[] w.attn_q_b;
-        delete[] w.attn_k_w;
-        delete[] w.attn_k_b;
-        delete[] w.attn_v_w;
-        delete[] w.attn_v_b;
-        delete[] w.attn_o_w;
-        delete[] w.mlp_norm_w;
-        delete[] w.mlp_gate_w;
-        delete[] w.mlp_up_w;
-        delete[] w.mlp_down_w;
-        w.attn_norm_w = nullptr;
-        w.attn_q_w = nullptr;
-        w.attn_q_b = nullptr;
-        w.attn_k_w = nullptr;
-        w.attn_k_b = nullptr;
-        w.attn_v_w = nullptr;
-        w.attn_v_b = nullptr;
-        w.attn_o_w = nullptr;
-        w.mlp_norm_w = nullptr;
-        w.mlp_gate_w = nullptr;
-        w.mlp_up_w = nullptr;
-        w.mlp_down_w = nullptr;
-    }
     /**
      * 根据特征meta信息和设备device信息, 创建初始化模型
      */
