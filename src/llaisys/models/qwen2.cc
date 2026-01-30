@@ -18,7 +18,7 @@
 
 #include <cmath>
 #include <cstring>
-#include <map>
+#include <unordered_map>
 #include <vector>
 
 struct LlaisysQwen2Model {
@@ -30,7 +30,7 @@ struct LlaisysQwen2Model {
     std::vector<llaisys::tensor_t> v_cache;
     size_t cache_len{0};
     std::vector<int64_t> cached_tokens;
-    std::map<std::string, llaisys::tensor_t> mapper;
+    std::unordered_map<std::string, llaisys::tensor_t> mapper;
     size_t mapper_cap{0};
 };
 
@@ -81,7 +81,7 @@ static size_t next_mapper_cap(size_t current_cap, size_t required) {
     }
     size_t cap = current_cap;
     while (cap < required) {
-        cap *= 1.2;
+        cap = cap + 10;
     }
     return cap;
 }
@@ -104,7 +104,7 @@ static void init_mapper(LlaisysQwen2Model *model, size_t seqlen) {
     }
     const size_t cap = std::min(next_mapper_cap(model->mapper_cap, seqlen), meta.maxseq);
     model->mapper_cap = cap;
-    std::map<std::string, llaisys::tensor_t> &mapper = model->mapper;
+    std::unordered_map<std::string, llaisys::tensor_t> &mapper = model->mapper;
     mapper.clear();
     // 初始化
     mapper["x_norm"] = llaisys::Tensor::create({cap, hs}, dtype, device, device_id);
@@ -289,7 +289,7 @@ __C {
         const float scale = 1.0f / std::sqrt(static_cast<float>(dh));
 
         // 提取 mapper
-        std::map<std::string, llaisys::tensor_t> &mapper = model->mapper;
+        std::unordered_map<std::string, llaisys::tensor_t> &mapper = model->mapper;
 
         // 逐层执行 transformer 前向推导
         for (size_t layer = 0; layer < meta.nlayer; ++layer) {
