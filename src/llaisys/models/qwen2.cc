@@ -18,6 +18,7 @@
 
 #include <cmath>
 #include <cstring>
+#include <map>
 #include <vector>
 
 struct LlaisysQwen2Model {
@@ -29,12 +30,13 @@ struct LlaisysQwen2Model {
     std::vector<llaisys::tensor_t> v_cache;
     size_t cache_len{0};
     std::vector<int64_t> cached_tokens;
+    std::map<std::string, llaisys::tensor_t> mapper;
+    size_t mapper_cap{0};
 };
 
 /**
  * namespace下qwen2.h的实现
  */
-
 namespace {
 static int get_device_id(const LlaisysQwen2Model *model) {
     if (!model || model->device_ids.empty()) {
@@ -47,7 +49,7 @@ static llaisys::tensor_t to_tensor(llaisysTensor_t t) {
     return t ? t->tensor : nullptr;
 }
 
-/** 
+/**
  * 初始化 kv_cache
  */
 static void init_kv_cache(LlaisysQwen2Model *model) {
@@ -68,6 +70,58 @@ static void init_kv_cache(LlaisysQwen2Model *model) {
 static void reset_kv_cache(LlaisysQwen2Model *model) {
     model->cache_len = 0;
     model->cached_tokens.clear();
+}
+
+/**
+ * 初始化model mapper
+ */
+static size_t next_mapper_cap(size_t current_cap, size_t required) {
+    if (current_cap == 0) {
+        return required;
+    }
+    size_t cap = current_cap;
+    while (cap < required) {
+        cap *= 1.2;
+    }
+    return cap;
+}
+
+static void init_mapper(LlaisysQwen2Model *model, size_t seqlen) {
+    const LlaisysQwen2Meta meta = model->meta;
+    // 加载其他参数
+    const size_t hs = meta.hs;
+    const size_t nh = meta.nh;
+    const size_t nkvh = meta.nkvh;
+    const size_t dh = meta.dh;
+    const size_t di = meta.di;
+    // 加载设备
+    const int device_id = get_device_id(model);
+    const llaisysDeviceType_t device = model->device;
+    // 数据类型
+    const llaisysDataType_t dtype = meta.dtype;
+    if (model->mapper_cap >= seqlen && !model->mapper.empty()) {
+        return;
+    }
+    const size_t cap = std::min(next_mapper_cap(model->mapper_cap, seqlen), meta.maxseq);
+    model->mapper_cap = cap;
+    std::map<std::string, llaisys::tensor_t> &mapper = model->mapper;
+    mapper.clear();
+    // 初始化
+    mapper["x_norm"] = llaisys::Tensor::create({cap, hs}, dtype, device, device_id);
+    mapper["q"] = llaisys::Tensor::create({cap, nh * dh}, dtype, device, device_id);
+    mapper["k"] = llaisys::Tensor::create({cap, nkvh * dh}, dtype, device, device_id);
+    mapper["v"] = llaisys::Tensor::create({cap, nkvh * dh}, dtype, device, device_id);
+    mapper["q_rope"] = llaisys::Tensor::create({cap, nh, dh}, dtype, device, device_id);
+    mapper["k_rope"] = llaisys::Tensor::create({cap, nkvh, dh}, dtype, device, device_id);
+    mapper["attn_val"] = llaisys::Tensor::create({cap, nh, dh}, meta.dtype, device, device_id);
+    mapper["attn_out"] = llaisys::Tensor::create({cap, hs}, meta.dtype, device, device_id);
+    mapper["x_attn"] = llaisys::Tensor::create({cap, hs}, meta.dtype, device, device_id);
+    mapper["m_norm"] = llaisys::Tensor::create({cap, hs}, meta.dtype, device, device_id);
+    mapper["gate"] = llaisys::Tensor::create({cap, di}, meta.dtype, device, device_id);
+    mapper["up"] = llaisys::Tensor::create({cap, di}, meta.dtype, device, device_id);
+    mapper["swiglu"] = llaisys::Tensor::create({cap, di}, meta.dtype, device, device_id);
+    mapper["down"] = llaisys::Tensor::create({cap, hs}, meta.dtype, device, device_id);
+    mapper["x_mlp"] = llaisys::Tensor::create({cap, hs}, meta.dtype, device, device_id);
 }
 
 /**
@@ -138,6 +192,8 @@ __C {
         }
         init_weight_arrays(model->weights, meta->nlayer);
         init_kv_cache(model);
+
+        // mapper 延迟初始化，按推理 seqlen 复用/扩容
         return model;
     }
 
@@ -177,7 +233,7 @@ __C {
         if (ntoken > meta.maxseq) {
             return model->meta.end_token;
         }
-        
+
         // 查看传输的前缀token_ids与kv_cache是否匹配
         size_t start = 0;
         if (model->cache_len > 0 && ntoken >= model->cache_len) {
@@ -205,11 +261,13 @@ __C {
         const size_t nh = meta.nh;
         const size_t nkvh = meta.nkvh;
         const size_t dh = meta.dh;
-        const size_t di = meta.di;
         const size_t voc = meta.voc;
         // 加载设备
         const int device_id = get_device_id(model);
         const llaisysDeviceType_t device = model->device;
+
+        // 初始化/扩容 mapper（按 seqlen 复用）
+        init_mapper(model, seqlen);
 
         // 创建待处理的input ids张量: 输入信息
         llaisys::tensor_t input_ids = llaisys::Tensor::create({seqlen}, LLAISYS_DTYPE_I64, device, device_id);
@@ -226,34 +284,43 @@ __C {
         // embedding: 根据 input_ids 从 embedding权重矩阵 中提取对应的语意向量
         llaisys::tensor_t x = llaisys::Tensor::create({seqlen, hs}, meta.dtype, device, device_id);
         llaisys::ops::embedding(x, input_ids, to_tensor(w.in_embed));
-        
+
         // 计算 self_attention 所需的参数 scale
         const float scale = 1.0f / std::sqrt(static_cast<float>(dh));
+
+        // 提取 mapper
+        std::map<std::string, llaisys::tensor_t> &mapper = model->mapper;
 
         // 逐层执行 transformer 前向推导
         for (size_t layer = 0; layer < meta.nlayer; ++layer) {
             // 自注意力机制 Attention block
-            llaisys::tensor_t x_norm = llaisys::Tensor::create({seqlen, hs}, meta.dtype, device, device_id);
+            // llaisys::tensor_t x_norm = llaisys::Tensor::create({seqlen, hs}, meta.dtype, device, device_id);
+            llaisys::tensor_t x_norm = mapper["x_norm"]->slice(0, 0, seqlen);
             llaisys::ops::rms_norm(x_norm, x, to_tensor(w.attn_norm_w[layer]), meta.epsilon);
 
             // 初始化 Q K V
-            llaisys::tensor_t q = llaisys::Tensor::create({seqlen, nh * dh}, meta.dtype, device, device_id);
+            // llaisys::tensor_t q = llaisys::Tensor::create({seqlen, nh * dh}, meta.dtype, device, device_id);
+            llaisys::tensor_t q = mapper["q"]->slice(0, 0, seqlen);
             llaisys::ops::linear(q, x_norm, to_tensor(w.attn_q_w[layer]), to_tensor(w.attn_q_b[layer]));
 
-            llaisys::tensor_t k = llaisys::Tensor::create({seqlen, nkvh * dh}, meta.dtype, device, device_id);
+            // llaisys::tensor_t k = llaisys::Tensor::create({seqlen, nkvh * dh}, meta.dtype, device, device_id);
+            llaisys::tensor_t k = mapper["k"]->slice(0, 0, seqlen);
             llaisys::ops::linear(k, x_norm, to_tensor(w.attn_k_w[layer]), to_tensor(w.attn_k_b[layer]));
 
-            llaisys::tensor_t v = llaisys::Tensor::create({seqlen, nkvh * dh}, meta.dtype, device, device_id);
+            // llaisys::tensor_t v = llaisys::Tensor::create({seqlen, nkvh * dh}, meta.dtype, device, device_id);
+            llaisys::tensor_t v = mapper["v"]->slice(0, 0, seqlen);
             llaisys::ops::linear(v, x_norm, to_tensor(w.attn_v_w[layer]), to_tensor(w.attn_v_b[layer]));
-            
+
             llaisys::tensor_t q_view = q->view({seqlen, nh, dh});
             llaisys::tensor_t k_view = k->view({seqlen, nkvh, dh});
             llaisys::tensor_t v_view = v->view({seqlen, nkvh, dh});
 
             // 旋转位置编码 rope
             // 将位置信息融入进 Q / K 当中
-            llaisys::tensor_t q_rope = llaisys::Tensor::create({seqlen, nh, dh}, meta.dtype, device, device_id);
-            llaisys::tensor_t k_rope = llaisys::Tensor::create({seqlen, nkvh, dh}, meta.dtype, device, device_id);
+            // llaisys::tensor_t q_rope = llaisys::Tensor::create({seqlen, nh, dh}, meta.dtype, device, device_id);
+            // llaisys::tensor_t k_rope = llaisys::Tensor::create({seqlen, nkvh, dh}, meta.dtype, device, device_id);
+            llaisys::tensor_t q_rope = mapper["q_rope"]->slice(0, 0, seqlen);
+            llaisys::tensor_t k_rope = mapper["k_rope"]->slice(0, 0, seqlen);
             llaisys::ops::rope(q_rope, q_view, pos_ids, meta.theta);
             llaisys::ops::rope(k_rope, k_view, pos_ids, meta.theta);
 
@@ -269,38 +336,54 @@ __C {
             llaisys::tensor_t v_total = model->v_cache[layer]->slice(0, 0, total_len);
 
             // 自注意力 self_attention
-            llaisys::tensor_t attn_val = llaisys::Tensor::create({seqlen, nh, dh}, meta.dtype, device, device_id);
+            // llaisys::tensor_t attn_val = llaisys::Tensor::create({seqlen, nh, dh}, meta.dtype, device, device_id);
+            llaisys::tensor_t attn_val = mapper["attn_val"]->slice(0, 0, seqlen);
             llaisys::ops::self_attention(attn_val, q_rope, k_total, v_total, scale);
 
             // 得到多头注意力输出投影
             llaisys::tensor_t attn_merge = attn_val->view({seqlen, nh * dh});
-            llaisys::tensor_t attn_out = llaisys::Tensor::create({seqlen, hs}, meta.dtype, device, device_id);
+            // llaisys::tensor_t attn_out = llaisys::Tensor::create({seqlen, hs}, meta.dtype, device, device_id);
+            llaisys::tensor_t attn_out = mapper["attn_out"]->slice(0, 0, seqlen);
+
             llaisys::ops::linear(attn_out, attn_merge, to_tensor(w.attn_o_w[layer]), nullptr);
 
             // 实现残差连接: x(上一层信息) + attn_out(当前层信息)
-            llaisys::tensor_t x_attn = llaisys::Tensor::create({seqlen, hs}, meta.dtype, device, device_id);
+            // llaisys::tensor_t x_attn = llaisys::Tensor::create({seqlen, hs}, meta.dtype, device, device_id);
+            llaisys::tensor_t x_attn = mapper["x_attn"]->slice(0, 0, seqlen);
             llaisys::ops::add(x_attn, x, attn_out);
-            x = x_attn;
+            // finished: 这里得交换 mapper["x_attn"] 与 x 的地址
+            // x = x_attn;
+            std::swap(x, x_attn);
 
             // 多层感知机 MLP block
-            llaisys::tensor_t m_norm = llaisys::Tensor::create({seqlen, hs}, meta.dtype, device, device_id);
+            // llaisys::tensor_t m_norm = llaisys::Tensor::create({seqlen, hs}, meta.dtype, device, device_id);
+            llaisys::tensor_t m_norm = mapper["m_norm"]->slice(0, 0, seqlen);
+
             llaisys::ops::rms_norm(m_norm, x, to_tensor(w.mlp_norm_w[layer]), meta.epsilon);
 
-            llaisys::tensor_t gate = llaisys::Tensor::create({seqlen, di}, meta.dtype, device, device_id);
+            // llaisys::tensor_t gate = llaisys::Tensor::create({seqlen, di}, meta.dtype, device, device_id);
+            llaisys::tensor_t gate = mapper["gate"]->slice(0, 0, seqlen);
+
             llaisys::ops::linear(gate, m_norm, to_tensor(w.mlp_gate_w[layer]), nullptr);
 
-            llaisys::tensor_t up = llaisys::Tensor::create({seqlen, di}, meta.dtype, device, device_id);
+            // llaisys::tensor_t up = llaisys::Tensor::create({seqlen, di}, meta.dtype, device, device_id);
+            llaisys::tensor_t up = mapper["up"]->slice(0, 0, seqlen);
             llaisys::ops::linear(up, m_norm, to_tensor(w.mlp_up_w[layer]), nullptr);
 
-            llaisys::tensor_t swiglu = llaisys::Tensor::create({seqlen, di}, meta.dtype, device, device_id);
+            // llaisys::tensor_t swiglu = llaisys::Tensor::create({seqlen, di}, meta.dtype, device, device_id);
+            llaisys::tensor_t swiglu = mapper["swiglu"]->slice(0, 0, seqlen);
             llaisys::ops::swiglu(swiglu, gate, up);
 
-            llaisys::tensor_t down = llaisys::Tensor::create({seqlen, hs}, meta.dtype, device, device_id);
+            // llaisys::tensor_t down = llaisys::Tensor::create({seqlen, hs}, meta.dtype, device, device_id);
+            llaisys::tensor_t down = mapper["down"]->slice(0, 0, seqlen);
+
             llaisys::ops::linear(down, swiglu, to_tensor(w.mlp_down_w[layer]), nullptr);
 
-            llaisys::tensor_t x_mlp = llaisys::Tensor::create({seqlen, hs}, meta.dtype, device, device_id);
+            // llaisys::tensor_t x_mlp = llaisys::Tensor::create({seqlen, hs}, meta.dtype, device, device_id);
+            llaisys::tensor_t x_mlp = mapper["x_mlp"]->slice(0, 0, seqlen);
             llaisys::ops::add(x_mlp, x, down);
-            x = x_mlp;
+            // x = x_mlp;
+            std::swap(x, x_mlp);
         }
 
         // Final norm and logits
