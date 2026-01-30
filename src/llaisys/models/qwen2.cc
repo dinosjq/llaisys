@@ -31,6 +31,10 @@ struct LlaisysQwen2Model {
     std::vector<int64_t> cached_tokens;
 };
 
+/**
+ * namespace下qwen2.h的实现
+ */
+
 namespace {
 static int get_device_id(const LlaisysQwen2Model *model) {
     if (!model || model->device_ids.empty()) {
@@ -43,7 +47,9 @@ static llaisys::tensor_t to_tensor(llaisysTensor_t t) {
     return t ? t->tensor : nullptr;
 }
 
-// 初始化 kv_cache
+/** 
+ * 初始化 kv_cache
+ */
 static void init_kv_cache(LlaisysQwen2Model *model) {
     model->k_cache.resize(model->meta.nlayer);
     model->v_cache.resize(model->meta.nlayer);
@@ -83,7 +89,7 @@ static void init_weight_arrays(LlaisysQwen2Weights &w, size_t nlayer) {
 }
 
 /**
- * 释放内存
+ * 释放各种weight tensor的内存
  */
 static void free_weight_arrays(LlaisysQwen2Weights &w) {
     delete[] w.attn_norm_w;
@@ -147,7 +153,7 @@ __C {
     }
 
     /**
-     * 返回模型权重
+     * 返回模型权重指针: 可以通过这个方法实现对权重的传参
      */
     struct LlaisysQwen2Weights *llaisysQwen2ModelWeights(struct LlaisysQwen2Model * model) {
         if (!model) {
@@ -171,7 +177,8 @@ __C {
         if (ntoken > meta.maxseq) {
             return model->meta.end_token;
         }
-
+        
+        // 查看传输的前缀token_ids与kv_cache是否匹配
         size_t start = 0;
         if (model->cache_len > 0 && ntoken >= model->cache_len) {
             bool prefix_match = true;
@@ -188,25 +195,27 @@ __C {
             }
         }
 
+        // 计算需要处理的长度: 总长 - kv_cache缓存的长度
         const size_t seqlen = ntoken - start;
         if (seqlen == 0) {
             return token_ids[ntoken - 1];
         }
+        // 加载其他参数
         const size_t hs = meta.hs;
         const size_t nh = meta.nh;
         const size_t nkvh = meta.nkvh;
         const size_t dh = meta.dh;
         const size_t di = meta.di;
         const size_t voc = meta.voc;
-
+        // 加载设备
         const int device_id = get_device_id(model);
         const llaisysDeviceType_t device = model->device;
 
-        // input ids tensor
+        // 创建待处理的input ids张量: 输入信息
         llaisys::tensor_t input_ids = llaisys::Tensor::create({seqlen}, LLAISYS_DTYPE_I64, device, device_id);
         input_ids->load(token_ids + start);
 
-        // position ids tensor
+        // 创建待处理的position ids张量: 位置信息
         std::vector<int64_t> pos_ids_vec(seqlen);
         for (size_t i = 0; i < seqlen; ++i) {
             pos_ids_vec[i] = static_cast<int64_t>(start + i);
@@ -214,14 +223,16 @@ __C {
         llaisys::tensor_t pos_ids = llaisys::Tensor::create({seqlen}, LLAISYS_DTYPE_I64, device, device_id);
         pos_ids->load(pos_ids_vec.data());
 
-        // embedding
+        // embedding: 根据 input_ids 从 embedding权重矩阵 中提取对应的语意向量
         llaisys::tensor_t x = llaisys::Tensor::create({seqlen, hs}, meta.dtype, device, device_id);
         llaisys::ops::embedding(x, input_ids, to_tensor(w.in_embed));
-
+        
+        // 计算 self_attention 所需的参数 scale
         const float scale = 1.0f / std::sqrt(static_cast<float>(dh));
 
+        // 逐层执行 transformer 前向推导
         for (size_t layer = 0; layer < meta.nlayer; ++layer) {
-            // 注意力机制 Attention block
+            // 自注意力机制 Attention block
             llaisys::tensor_t x_norm = llaisys::Tensor::create({seqlen, hs}, meta.dtype, device, device_id);
             llaisys::ops::rms_norm(x_norm, x, to_tensor(w.attn_norm_w[layer]), meta.epsilon);
 
@@ -234,24 +245,26 @@ __C {
 
             llaisys::tensor_t v = llaisys::Tensor::create({seqlen, nkvh * dh}, meta.dtype, device, device_id);
             llaisys::ops::linear(v, x_norm, to_tensor(w.attn_v_w[layer]), to_tensor(w.attn_v_b[layer]));
-
+            
             llaisys::tensor_t q_view = q->view({seqlen, nh, dh});
             llaisys::tensor_t k_view = k->view({seqlen, nkvh, dh});
             llaisys::tensor_t v_view = v->view({seqlen, nkvh, dh});
 
             // 旋转位置编码 rope
+            // 将位置信息融入进 Q / K 当中
             llaisys::tensor_t q_rope = llaisys::Tensor::create({seqlen, nh, dh}, meta.dtype, device, device_id);
             llaisys::tensor_t k_rope = llaisys::Tensor::create({seqlen, nkvh, dh}, meta.dtype, device, device_id);
             llaisys::ops::rope(q_rope, q_view, pos_ids, meta.theta);
             llaisys::ops::rope(k_rope, k_view, pos_ids, meta.theta);
 
             // Update KV cache
+            // slice 返回视图, rearrange 将新数据写入对应的位置
             llaisys::tensor_t k_slice = model->k_cache[layer]->slice(0, start, start + seqlen);
             llaisys::tensor_t v_slice = model->v_cache[layer]->slice(0, start, start + seqlen);
             llaisys::ops::rearrange(k_slice, k_rope);
             llaisys::ops::rearrange(v_slice, v_view);
 
-            const size_t total_len = start + seqlen;
+            const size_t total_len = start + seqlen; // ntoken
             llaisys::tensor_t k_total = model->k_cache[layer]->slice(0, 0, total_len);
             llaisys::tensor_t v_total = model->v_cache[layer]->slice(0, 0, total_len);
 
@@ -259,10 +272,12 @@ __C {
             llaisys::tensor_t attn_val = llaisys::Tensor::create({seqlen, nh, dh}, meta.dtype, device, device_id);
             llaisys::ops::self_attention(attn_val, q_rope, k_total, v_total, scale);
 
+            // 得到多头注意力输出投影
             llaisys::tensor_t attn_merge = attn_val->view({seqlen, nh * dh});
             llaisys::tensor_t attn_out = llaisys::Tensor::create({seqlen, hs}, meta.dtype, device, device_id);
             llaisys::ops::linear(attn_out, attn_merge, to_tensor(w.attn_o_w[layer]), nullptr);
 
+            // 实现残差连接: x(上一层信息) + attn_out(当前层信息)
             llaisys::tensor_t x_attn = llaisys::Tensor::create({seqlen, hs}, meta.dtype, device, device_id);
             llaisys::ops::add(x_attn, x, attn_out);
             x = x_attn;
@@ -292,9 +307,11 @@ __C {
         llaisys::tensor_t x_norm = llaisys::Tensor::create({seqlen, hs}, meta.dtype, device, device_id);
         llaisys::ops::rms_norm(x_norm, x, to_tensor(w.out_norm_w), meta.epsilon);
 
+        // 把隐藏向量映射到词表维度（voc）生成未归一化的打分（logits）
         llaisys::tensor_t logits = llaisys::Tensor::create({seqlen, voc}, meta.dtype, device, device_id);
         llaisys::ops::linear(logits, x_norm, to_tensor(w.out_embed), nullptr);
 
+        // 选出最后一个 token 的预测结果
         llaisys::tensor_t last = logits->slice(0, seqlen - 1, seqlen)->view({voc});
         llaisys::tensor_t max_idx = llaisys::Tensor::create({1}, LLAISYS_DTYPE_I64, device, device_id);
         llaisys::tensor_t max_val = llaisys::Tensor::create({1}, meta.dtype, device, device_id);
