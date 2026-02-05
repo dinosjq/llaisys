@@ -221,7 +221,7 @@ __C {
     /**
      * 执行模型前向推导
      */
-    int64_t llaisysQwen2ModelInfer(struct LlaisysQwen2Model * model, int64_t *token_ids, size_t ntoken) {
+    int64_t llaisysQwen2ModelInfer(struct LlaisysQwen2Model *model, int64_t *token_ids, size_t ntoken) {
         if (!model) {
             return -1;
         }
