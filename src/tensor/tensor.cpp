@@ -361,25 +361,83 @@ void Tensor::load(const void *src_) {
     }
 }
 
+/**
+ * @brief 返回一个连续内存布局的张量副本。
+ *        如果当前张量已是连续内存，则直接返回视图；否则分配新内存并重排数据。
+ * @return 连续内存布局的张量对象。
+ */
 tensor_t Tensor::contiguous() const {
     if (this->isContiguous()) {
         return std::shared_ptr<Tensor>(new Tensor(_meta, _storage, _offset));
     }
-
     tensor_t out = Tensor::create(this->shape(), this->dtype(), this->deviceType(), this->deviceId());
     tensor_t in_view = std::shared_ptr<Tensor>(new Tensor(_meta, _storage, _offset));
     llaisys::ops::rearrange(out, in_view);
     return out;
 }
 
+/**
+ * @brief 返回一个新形状的张量视图或副本。
+ *        若原张量为连续内存，直接返回视图；否则先转为连续再视图。
+ * @param shape 新形状
+ * @return 新形状的张量对象
+ * @throws std::runtime_error 元素数量不一致时报错
+ */
 tensor_t Tensor::reshape(const std::vector<size_t> &shape) const {
-    // TO_BE_IMPLEMENTED();
-    return std::shared_ptr<Tensor>(new Tensor(_meta, _storage));
+    size_t new_numel = std::accumulate(shape.begin(), shape.end(), (size_t)1, std::multiplies<size_t>());
+    if (new_numel != this->numel()) {
+        throw std::runtime_error("Tensor::reshape : shape size mismatch");
+    }
+    if (this->isContiguous()) {
+        return this->view(shape);
+    }
+    return this->contiguous()->view(shape);
 }
 
+/**
+ * @brief 返回一个拷贝到指定设备的新张量。
+ *        若目标设备与当前一致，返回视图；否则分配新内存并拷贝数据。
+ * @param device_type 目标设备类型（如 CPU、GPU）
+ * @param device 目标设备编号，<0 时自动推断
+ * @return 新设备上的张量对象
+ */
 tensor_t Tensor::to(llaisysDeviceType_t device_type, int device) const {
-    // TO_BE_IMPLEMENTED();
-    return std::shared_ptr<Tensor>(new Tensor(_meta, _storage));
+    int target_device = device;
+    if (target_device < 0) {
+        target_device = (device_type == this->deviceType()) ? this->deviceId() : 0;
+    }
+
+    if (device_type == this->deviceType() && target_device == this->deviceId()) {
+        return std::shared_ptr<Tensor>(new Tensor(_meta, _storage, _offset));
+    }
+
+    tensor_t out = Tensor::create(this->shape(), this->dtype(), device_type, target_device);
+    size_t total_bytes = this->numel() * this->elementSize();
+    llaisysMemcpyKind_t kind = LLAISYS_MEMCPY_H2H;
+
+    if (this->deviceType() == LLAISYS_DEVICE_CPU && device_type == LLAISYS_DEVICE_CPU) {
+        kind = LLAISYS_MEMCPY_H2H;
+    } else if (this->deviceType() == LLAISYS_DEVICE_CPU && device_type != LLAISYS_DEVICE_CPU) {
+        kind = LLAISYS_MEMCPY_H2D;
+    } else if (this->deviceType() != LLAISYS_DEVICE_CPU && device_type == LLAISYS_DEVICE_CPU) {
+        kind = LLAISYS_MEMCPY_D2H;
+    } else {
+        kind = LLAISYS_MEMCPY_D2D;
+    }
+
+    if (kind == LLAISYS_MEMCPY_D2H) {
+        core::context().setDevice(this->deviceType(), this->deviceId());
+    } else if (kind != LLAISYS_MEMCPY_H2H) {
+        core::context().setDevice(device_type, target_device);
+    }
+
+    core::context().runtime().api()->memcpy_sync(
+        out->data(),
+        this->data(),
+        total_bytes,
+        kind);
+
+    return out;
 }
 
 } // namespace llaisys

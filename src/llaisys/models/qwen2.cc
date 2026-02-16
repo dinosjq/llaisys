@@ -177,13 +177,17 @@ __C {
     /**
      * 根据特征meta信息和设备device信息, 创建初始化模型
      */
-    struct LlaisysQwen2Model *llaisysQwen2ModelCreate(const LlaisysQwen2Meta *meta, llaisysDeviceType_t device, int *device_ids, int ndevice) {
+    struct LlaisysQwen2Model *llaisysQwen2ModelCreate(LlaisysQwen2Meta *meta, llaisysDeviceType_t device, int *device_ids, int ndevice) {
         if (!meta || meta->nlayer == 0) {
             return nullptr;
         }
         if (meta->maxseq == 0) {
             return nullptr;
         }
+
+        // 限制为 512 防止爆显存
+        meta->maxseq = 512;
+
         auto *model = new LlaisysQwen2Model();
         model->meta = *meta;
         model->device = device;
@@ -262,6 +266,7 @@ __C {
         const size_t nkvh = meta.nkvh;
         const size_t dh = meta.dh;
         const size_t voc = meta.voc;
+
         // 加载设备
         const int device_id = get_device_id(model);
         const llaisysDeviceType_t device = model->device;
@@ -304,7 +309,7 @@ __C {
             llaisys::ops::linear(q, x_norm, to_tensor(w.attn_q_w[layer]), to_tensor(w.attn_q_b[layer]));
 
             // llaisys::tensor_t k = llaisys::Tensor::create({seqlen, nkvh * dh}, meta.dtype, device, device_id);
-            llaisys::tensor_t k = mapper["k"]->slice(0, 0, seqlen);
+            llaisys::tensor_t k  = mapper["k"]->slice(0, 0, seqlen);
             llaisys::ops::linear(k, x_norm, to_tensor(w.attn_k_w[layer]), to_tensor(w.attn_k_b[layer]));
 
             // llaisys::tensor_t v = llaisys::Tensor::create({seqlen, nkvh * dh}, meta.dtype, device, device_id);

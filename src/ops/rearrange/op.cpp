@@ -3,6 +3,7 @@
 #include "../../core/llaisys_core.hpp"
 #include "../../utils.hpp"
 #include "cpu/rearrange_cpu.hpp"
+#include "nvidia/rearrange_nvidia.cuh"
 
 namespace llaisys::ops {
 void rearrange(tensor_t out, tensor_t in) {
@@ -17,24 +18,16 @@ void rearrange(tensor_t out, tensor_t in) {
         return;
     }
 
-    // 优先支持CPU计算
-    if (out->deviceType() == LLAISYS_DEVICE_CPU) {
-        return cpu::rearrange(out->data(), in->data(), out->dtype(), out->shape(), out->strides(), in->strides());
-    }
-
     // 设置当前设备（如GPU等）
     llaisys::core::context().setDevice(out->deviceType(), out->deviceId());
 
     // 根据设备类型分发实现
     switch (out->deviceType()) {
     case LLAISYS_DEVICE_CPU:
-        // 再次处理CPU（冗余，理论上不会走到这里）
         return cpu::rearrange(out->data(), in->data(), out->dtype(), out->shape(), out->strides(), in->strides());
 #ifdef ENABLE_NVIDIA_API
     case LLAISYS_DEVICE_NVIDIA:
-        // NVIDIA GPU实现待补充
-        TO_BE_IMPLEMENTED();
-        return;
+        return nvidia::rearrange(out->data(), in->data(), out->dtype(), out->shape(), out->strides(), in->strides());
 #endif
     default:
         // 不支持的设备类型

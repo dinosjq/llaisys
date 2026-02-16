@@ -3,6 +3,7 @@
 #include "../../core/llaisys_core.hpp"
 #include "../../utils.hpp"
 #include "cpu/self_attention_cpu.hpp"
+#include "nvidia/self_attention_nvidia.cuh"
 
 namespace llaisys::ops {
 void self_attention(tensor_t attn_val, tensor_t q, tensor_t k, tensor_t v, float scale) {
@@ -36,27 +37,17 @@ void self_attention(tensor_t attn_val, tensor_t q, tensor_t k, tensor_t v, float
     const size_t total_len = k_shape[0];
     const size_t nkvhead = k_shape[1];
 
-    // 优先支持CPU计算
-    if (attn_val->deviceType() == LLAISYS_DEVICE_CPU) {
-        // 调用CPU实现的self_attention
-        return cpu::self_attention(attn_val->data(), q->data(), k->data(), v->data(), scale, attn_val->dtype(), 
-                                    seqlen, nhead, dv, d, total_len, nkvhead);
-    }
-
-    // 设置当前设备（如GPU等）
     llaisys::core::context().setDevice(attn_val->deviceType(), attn_val->deviceId());
 
     // 根据设备类型分发实现
     switch (attn_val->deviceType()) {
     case LLAISYS_DEVICE_CPU:
-        // 再次处理CPU（冗余，理论上不会走到这里）
         return cpu::self_attention(attn_val->data(), q->data(), k->data(), v->data(), scale, attn_val->dtype(), 
                                     seqlen, nhead, dv, d, total_len, nkvhead);
 #ifdef ENABLE_NVIDIA_API
     case LLAISYS_DEVICE_NVIDIA:
-        // NVIDIA GPU实现待补充
-        TO_BE_IMPLEMENTED();
-        return;
+        return nvidia::self_attention(attn_val->data(), q->data(), k->data(), v->data(), scale, attn_val->dtype(),
+                                   seqlen, nhead, dv, d, total_len, nkvhead);
 #endif
     default:
         // 不支持的设备类型

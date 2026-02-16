@@ -1,3 +1,5 @@
+#pragma once
+
 #include "llaisys.h"
 
 #include <iostream>
@@ -112,6 +114,9 @@ fp16_t _f32_to_f16(float val);
 
 float _bf16_to_f32(bf16_t val);
 bf16_t _f32_to_bf16(float val);
+
+uint32_t float_to_uint32(float val);
+float uint32_to_float(uint32_t val);
 
 template <typename TypeTo, typename TypeFrom>
 TypeTo cast(TypeFrom val) {

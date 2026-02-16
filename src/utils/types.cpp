@@ -3,6 +3,19 @@
 #include <cstring>
 
 namespace llaisys::utils {
+
+uint32_t float_to_uint32(float val){
+    uint32_t result;
+    memcpy(&result, &val, sizeof(result));
+    return result;
+}
+
+float uint32_to_float(uint32_t val){
+    float result;
+    memcpy(&result, &val, sizeof(result));
+    return result;
+}
+
 float _f16_to_f32(fp16_t val) {
     uint16_t h = val._v;
     uint32_t sign = (h & 0x8000) << 16;

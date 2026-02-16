@@ -3,6 +3,7 @@
 #include "../../core/llaisys_core.hpp"
 #include "../../utils.hpp"
 #include "cpu/rms_norm_cpu.hpp"
+#include "nvidia/rms_norm_nvidia.cuh"
 
 namespace llaisys::ops {
 void rms_norm(tensor_t out, tensor_t in, tensor_t weight, float eps) {
@@ -26,25 +27,16 @@ void rms_norm(tensor_t out, tensor_t in, tensor_t weight, float eps) {
     const size_t n = out_shape[0];
     const size_t m = out_shape[1];
 
-    // 优先支持CPU计算
-    if (out->deviceType() == LLAISYS_DEVICE_CPU) {
-        // 调用CPU实现的rms_norm
-        return cpu::rms_norm(out->data(), in->data(), weight->data(), eps, out->dtype(), n, m);
-    }
-
-    // 设置当前设备（如GPU等）
+    // 设置当前设备
     llaisys::core::context().setDevice(out->deviceType(), out->deviceId());
 
     // 根据设备类型分发实现
     switch (out->deviceType()) {
     case LLAISYS_DEVICE_CPU:
-        // 再次处理CPU（冗余，理论上不会走到这里）
         return cpu::rms_norm(out->data(), in->data(), weight->data(), eps, out->dtype(), n, m);
 #ifdef ENABLE_NVIDIA_API
     case LLAISYS_DEVICE_NVIDIA:
-        // NVIDIA GPU实现待补充
-        TO_BE_IMPLEMENTED();
-        return;
+        return nvidia::rms_norm(out->data(), in->data(), weight->data(), eps, out->dtype(), n, m);
 #endif
     default:
         // 不支持的设备类型
