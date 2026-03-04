@@ -9,27 +9,30 @@
 #include <stdexcept>
 #include <type_traits>
 
-template <typename T>
-void swiglu_(T *out, const T *gate, const T *up, size_t numel) {
-    for (size_t i = 0; i < numel; i++) {
-        if constexpr (std::is_same_v<T, llaisys::bf16_t> || std::is_same_v<T, llaisys::fp16_t>) {
-            const float t = llaisys::utils::cast<float>(up[i]);
-            const float s = llaisys::utils::cast<float>(gate[i]);
-            out[i] = llaisys::utils::cast<T>(t * s / (1.0f + std::exp(-s)));
-        } else {
-            out[i] = up[i] * gate[i] / (1 + std::exp(-gate[i]));
-        }
-    }
+__device__ __forceinline__ float4 calc(const float4 &flo4_t, const float4 &flo4_s){
+    return make_float4(flo4_t.x * flo4_s.x / (1.0f + expf(-flo4_s.x)),
+                       flo4_t.y * flo4_s.y / (1.0f + expf(-flo4_s.y)), 
+                       flo4_t.z * flo4_s.z / (1.0f + expf(-flo4_s.z)),
+                       flo4_t.w * flo4_s.w / (1.0f + expf(-flo4_s.w)));
 }
 
 template <typename T>
-__global__ void swiglu_kernel(T *out, const T *gate, const T *up, const size_t numel) {
-    const size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+__global__ void swiglu_kernel(T *__restrict__ out, const T *__restrict__ gate, const T *__restrict__ up, const size_t numel) {
+    const int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    const int idx = tid << 2;
 
-    if(idx < numel){
-        const float t = llaisys::utils::nvidia::cast<float>(up[idx]);
-        const float s = llaisys::utils::nvidia::cast<float>(gate[idx]);
-        out[idx] = llaisys::utils::nvidia::cast<T>(t * s / (1.0f + std::exp(-s)));
+    if(idx + 3 < numel){
+        const float4 flo4_t = llaisys::utils::nvidia::load_4d(up + idx);
+        const float4 flo4_s = llaisys::utils::nvidia::load_4d(gate + idx);
+        const float4 flo4_v = calc(flo4_t, flo4_s);
+        llaisys::utils::nvidia::save_4d(out + idx, flo4_v);
+    } else {
+        for (int j = idx; j < numel; ++ j){
+            const float t = llaisys::utils::nvidia::cast<float>(up[j]);
+            const float s = llaisys::utils::nvidia::cast<float>(gate[j]);
+            const float val = t * s / (1.0f + expf(-s));
+            out[j] = llaisys::utils::nvidia::cast<T>(val);
+        }
     }
 }
 
@@ -40,12 +43,11 @@ void swiglu_launch(std::byte *out, const std::byte *gate, const std::byte *up, c
     const auto *d_up = reinterpret_cast<const T *>(up);
 
     dim3 blockDim(256);
-    dim3 gridDim((numel + 255) / 256);
+    dim3 gridDim((((numel + 3) >> 2) + 255) >> 8);
 
     swiglu_kernel<<<gridDim, blockDim>>>(d_out, d_gate, d_up, numel);
 
     CUDA_CHECK(cudaGetLastError());
-    CUDA_CHECK(cudaDeviceSynchronize());
 }
 
 namespace llaisys::ops::nvidia {

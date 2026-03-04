@@ -112,6 +112,10 @@ target("llaisys")
         add_packages("cuda")
         add_rules("cuda")
         set_policy("build.cuda.devlink", true)
+        -- link cuBLAS libraries for GPU-accelerated ops
+        add_linkdirs("/usr/local/cuda/lib64")
+        add_syslinks("cublas", "cublasLt")
+        add_ldflags("-Wl,-rpath=/usr/local/cuda/lib64")
     end
 
     set_languages("cxx17")

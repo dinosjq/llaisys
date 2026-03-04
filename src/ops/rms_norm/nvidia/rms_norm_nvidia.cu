@@ -15,48 +15,82 @@ __device__ float warp_reduce(float val) {
     return val;
 }
 
-template<typename T>
-__global__ void rms_norm_kernel(T *out, const T *in, const T *weight, const float eps, const size_t n, const size_t m){
+template <typename T>
+__global__ void rms_norm_kernel(T *__restrict__ out, const T *__restrict__ in, const T *__restrict__ weight,
+                                const float eps, const size_t n, const size_t m) {
     __shared__ float sm_den[8];
     extern __shared__ float sm_in[];
 
     const size_t row = blockIdx.x;
+    const T *r_in = in + row * m;
+    T *r_out = out + row * m;
 
     const size_t tid = threadIdx.x;
     const size_t warp_id = tid >> 5;
     const size_t lane_id = tid & 31;
 
     float sum = 0.0f;
-    for (size_t col = tid; col < m; col += 256){
-        float t = llaisys::utils::nvidia::cast<float>(in[row * m + col]);
-        sm_in[col] = t;
-        sum += t * t;
+    for (size_t col = (tid << 2); col < m; col += 1024) {
+        if (col + 3 < m) {
+            const float4 flo4 = llaisys::utils::nvidia::load_4d(r_in + col);
+            sm_in[col | 0] = flo4.x;
+            sm_in[col | 1] = flo4.y;
+            sm_in[col | 2] = flo4.z;
+            sm_in[col | 3] = flo4.w;
+
+            sum += flo4.x * flo4.x;
+            sum += flo4.y * flo4.y;
+            sum += flo4.z * flo4.z;
+            sum += flo4.w * flo4.w;
+        } else {
+            for (size_t j = col; j < m; ++j) {
+                const float t = llaisys::utils::nvidia::cast<float>(r_in[j]);
+                sm_in[j] = t;
+                sum += t * t;
+            }
+        }
     }
 
     sum = warp_reduce(sum);
 
-    if(lane_id == 0){
+    if (lane_id == 0) {
         sm_den[warp_id] = sum;
     }
     __syncthreads();
 
-    if(tid < 32){
+    if (tid < 32) {
         float den = tid < 8 ? sm_den[tid] : 0.0f;
         den = warp_reduce(den);
-        if(tid == 0){
+        if (tid == 0) {
             den /= m;
             den += eps;
-            den = std::sqrt(den);
+            den = sqrtf(den);
             sm_den[0] = den;
         }
     }
 
     __syncthreads();
 
-    const float den = sm_den[0];
-    for (size_t col = tid; col < m; col += 256) {
-        const float w = llaisys::utils::nvidia::cast<float>(weight[col]);
-        out[row * m + col] = llaisys::utils::nvidia::cast<T>(w * sm_in[col] / den);
+    const float inv = 1.0f / sm_den[0];
+    // const float den = sm_den[0];
+
+    for (size_t col = (tid << 2); col < m; col += 1024) {
+        if (col + 3 < m) {
+            const float4 w_flo4 = llaisys::utils::nvidia::load_4d(weight + col);
+            const float4 flo4 = make_float4(
+                w_flo4.x * sm_in[col | 0] * inv,
+                w_flo4.y * sm_in[col | 1] * inv,
+                w_flo4.z * sm_in[col | 2] * inv,
+                w_flo4.w * sm_in[col | 3] * inv
+            );
+            llaisys::utils::nvidia::save_4d(r_out + col, flo4);
+        } else {
+            for (size_t j = col; j < m; ++j) {
+                const float w = llaisys::utils::nvidia::cast<float>(weight[j]);
+                const float val = w * sm_in[j] * inv;
+                r_out[j] = llaisys::utils::nvidia::cast<T>(val);
+            }
+        }
     }
 }
 
@@ -73,7 +107,6 @@ void rms_norm_launch(std::byte *out, const std::byte *in, const std::byte *weigh
     rms_norm_kernel<<<gridDim, blockDim, m * sizeof(float)>>>(d_out, d_in, d_weight, eps, n, m);
 
     CUDA_CHECK(cudaGetLastError());
-    CUDA_CHECK(cudaDeviceSynchronize());
 }
 
 namespace llaisys::ops::nvidia {

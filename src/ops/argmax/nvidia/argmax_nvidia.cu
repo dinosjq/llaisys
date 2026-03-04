@@ -9,7 +9,7 @@
 #include <stdexcept>
 #include <type_traits>
 
-__device__ unsigned long long warp_reduce(unsigned long long val) {
+__device__ __forceinline__ unsigned long long warp_reduce(unsigned long long val) {
 #pragma unroll
     for (int offset = 16; offset > 0; offset >>= 1) {
         unsigned long long tmp = __shfl_xor_sync(0xFFFFFFFF, val, offset);
@@ -23,7 +23,7 @@ __device__ unsigned long long warp_reduce(unsigned long long val) {
 /**
  * 保序 解决负数转 uint 因符号位，导致大小顺序反转的问题
  */
-__host__ __device__ uint32_t float_to_ordered_uint32(float f) {
+__host__ __device__ __forceinline__ uint32_t float_to_ordered_uint32(float f) {
     uint32_t u;
 #ifdef __CUDA_ARCH__
     u = __float_as_uint(f); 
@@ -39,7 +39,7 @@ __host__ __device__ uint32_t float_to_ordered_uint32(float f) {
     return u;
 }
 
-__host__ __device__ float ordered_uint32_to_float(uint32_t u) {
+__host__ __device__ __forceinline__ float ordered_uint32_to_float(uint32_t u) {
     const uint32_t sign_mask = 0x80000000;
     if (u & sign_mask) {
         u &= ~sign_mask;
@@ -53,31 +53,41 @@ __host__ __device__ float ordered_uint32_to_float(uint32_t u) {
 #endif
 }
 
-__device__ unsigned long long nv_merge(float val, size_t idx){
+__device__ __forceinline__ unsigned long long nv_merge(float val, size_t idx){
     uint32_t t = float_to_ordered_uint32(val);
     return (static_cast<unsigned long long>(t) << 32) | static_cast<unsigned long long>(idx);
 }
 
 static constexpr size_t BLOCK_DIM = 256;
-static constexpr size_t SMEM_SIZE = BLOCK_DIM >> 5;
-
-static_assert(BLOCK_DIM % 32 == 0, "BLOCK_DIM illegal");
+static constexpr size_t SMEM_SIZE = 8;
 
 template <typename T>
-__global__ void argmax_kernel(unsigned long long *mx_pack, const T *vals, size_t numel) {
-    __shared__ unsigned long long smem[SMEM_SIZE];
+__global__ void argmax_kernel(unsigned long long *__restrict__ mx_pack, const T *__restrict__ vals, size_t numel) {
+    __shared__ unsigned long long smem[8];
 
     const size_t tid = threadIdx.x;
-    const size_t idx = static_cast<size_t>(blockIdx.x) * blockDim.x + tid;
-    const size_t step = static_cast<size_t>(blockDim.x) * gridDim.x;
+    const size_t gid = static_cast<size_t>(blockIdx.x) * blockDim.x + tid;
+    const size_t idx = gid << 2;
 
     unsigned long long mx = nv_merge(-INFINITY, size_t(0));
 
-    for (size_t i = idx; i < numel; i += step) {
-        float val = llaisys::utils::nvidia::cast<float>(vals[i]);
-        unsigned long long val_idx = nv_merge(val, i);
-        if (mx < val_idx) {
-            mx = val_idx;
+    if (idx + 3 < numel) {
+        const float4 flo4 = llaisys::utils::nvidia::load_4d(vals + idx);     
+        const unsigned long long v_0 = nv_merge(flo4.x, idx | 0);
+        const unsigned long long v_1 = nv_merge(flo4.y, idx | 1);
+        const unsigned long long v_2 = nv_merge(flo4.z, idx | 2);
+        const unsigned long long v_3 = nv_merge(flo4.w, idx | 3);
+        const unsigned long long mv = max(max(v_0, v_1), max(v_2, v_3));
+        if (mx < mv) {
+            mx = mv;
+        }
+    } else {
+        for (size_t i = idx; i < numel; ++i) {
+            const float v = llaisys::utils::nvidia::cast<float>(vals[i]);
+            const unsigned long long v_i = nv_merge(v, i);
+            if (mx < v_i) {
+                mx = v_i;
+            }
         }
     }
 
@@ -94,8 +104,7 @@ __global__ void argmax_kernel(unsigned long long *mx_pack, const T *vals, size_t
 
     // warp 间归约
     if (tid < 32) {
-        size_t top = (blockDim.x + 31) >> 5;
-        unsigned long long b_mx = tid < top ? smem[tid] : nv_merge(-INFINITY, size_t(0));
+        unsigned long long b_mx = tid < 8 ? smem[tid] : nv_merge(-INFINITY, size_t(0));
         b_mx = warp_reduce(b_mx);
 
         if (tid == 0) {
@@ -109,24 +118,24 @@ __global__ void argmax_kernel(unsigned long long *mx_pack, const T *vals, size_t
  */
 template <typename T>
 void argmax_launch(std::byte *max_idx, std::byte *max_val, const std::byte *vals, size_t numel) {
-    dim3 blockDim(BLOCK_DIM);
-    dim3 gridDim(min((numel + blockDim.x - 1) / blockDim.x, size_t(65535)));
+    dim3 blockDim(256);
+    dim3 gridDim((((numel + 3) >> 2) + 255) >> 8);
 
     const auto *d_vals = reinterpret_cast<const T *>(vals);
-    unsigned long long *d_max_pack = nullptr;    
-    unsigned long long init;
-    {
-        uint32_t v = float_to_ordered_uint32(-INFINITY);
-        init = (static_cast<unsigned long long>(v) << 32) | 0u;
+
+    static unsigned long long *d_max_pack = nullptr;
+    if (d_max_pack == nullptr) {
+        CUDA_CHECK(cudaMalloc(&d_max_pack, sizeof(unsigned long long)));
     }
 
-    CUDA_CHECK(cudaMalloc(&d_max_pack, sizeof(unsigned long long)));
+    static uint32_t v = float_to_ordered_uint32(-INFINITY);
+    static unsigned long long init = (static_cast<unsigned long long>(v) << 32) | 0ull;
+
     CUDA_CHECK(cudaMemcpy(d_max_pack, &init, sizeof(init), cudaMemcpyHostToDevice));
 
     argmax_kernel<<<gridDim, blockDim>>>(d_max_pack, d_vals, numel);
 
     CUDA_CHECK(cudaGetLastError());
-    CUDA_CHECK(cudaDeviceSynchronize());
 
     unsigned long long result;
     CUDA_CHECK(cudaMemcpy(&result, d_max_pack, sizeof(result), cudaMemcpyDeviceToHost));
@@ -138,8 +147,6 @@ void argmax_launch(std::byte *max_idx, std::byte *max_val, const std::byte *vals
 
     CUDA_CHECK(cudaMemcpy(max_val, &val, sizeof(val), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(max_idx, &idx, sizeof(idx), cudaMemcpyHostToDevice));
-
-    CUDA_CHECK(cudaFree(d_max_pack));
 }
 
 namespace llaisys::ops::nvidia {
@@ -156,3 +163,4 @@ void argmax(std::byte *max_idx, std::byte *max_val, const std::byte *vals, llais
     }
 }
 } // namespace llaisys::ops::nvidia
+

@@ -12,7 +12,8 @@ private:
     size_t _size;
     Runtime &_runtime;
     bool _is_host;
-    Storage(std::byte *memory, size_t size, Runtime &runtime, bool is_host);
+    bool _is_first; // 判断是不是内存的起点
+    Storage(std::byte *memory, size_t size, Runtime &runtime, bool is_host, bool is_first = true);
 
 public:
     friend class Runtime;

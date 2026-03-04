@@ -1,6 +1,7 @@
 #include "tensor.hpp"
 
 #include "../ops/rearrange/op.hpp"
+
 #include "../utils.hpp"
 
 #include <cstring>
@@ -41,7 +42,7 @@ tensor_t Tensor::create(const std::vector<size_t> &shape,
     size_t ndim_ = shape.size();
     std::vector<ptrdiff_t> strides(ndim_);
     size_t stride = 1;
-    for (size_t i = 1; i <= ndim_; i++) {
+    for (size_t i = 1; i <= ndim_; ++ i) {
         strides[ndim_ - i] = stride;
         stride *= shape[ndim_ - i];
     }
@@ -64,6 +65,80 @@ tensor_t Tensor::create(const std::vector<size_t> &shape,
         return std::shared_ptr<Tensor>(new Tensor(meta, storage));
     }
 }
+
+// kv cache 专用
+std::vector<std::vector<tensor_t>> Tensor::createKV(
+    const std::vector<size_t> &shape,
+    const size_t nlayer,
+    llaisysDataType_t dtype,
+    llaisysDeviceType_t device_type,
+    int device)
+{
+    ASSERT(device_type == LLAISYS_DEVICE_NVIDIA, "createKV device type wrong.");
+
+    size_t ndim_ = shape.size();
+    std::vector<ptrdiff_t> strides(ndim_);
+    size_t stride = 1;
+    for (size_t i = 1; i <= ndim_; ++ i) {
+        strides[ndim_ - i] = stride;
+        stride *= shape[ndim_ - i];
+    }
+
+    TensorMeta meta{dtype, shape, strides};
+    size_t total_elems = stride;
+    size_t dtype_size = utils::dsize(dtype);
+
+    core::context().setDevice(device_type, device);
+    auto storages = core::context().runtime().allocateKVStorage(nlayer, total_elems * dtype_size);
+
+    std::vector<std::vector<tensor_t>> result(2, std::vector<tensor_t>(nlayer));
+    for (size_t i = 0; i < 2; ++ i) {
+        for (size_t j = 0; j < nlayer; ++ j){
+            result[i][j] = std::shared_ptr<Tensor>(new Tensor(meta, storages[i * nlayer + j]));
+        }
+    }
+
+    return result;
+}
+
+// 多层注意力中间矩阵专用
+std::vector<tensor_t> Tensor::createMP(
+    const std::vector<std::vector<size_t>> &shapes,
+    llaisysDataType_t dtype,
+    llaisysDeviceType_t device_type,
+    int device) 
+{
+    ASSERT(device_type == LLAISYS_DEVICE_NVIDIA, "createMP device type wrong.");
+
+    const size_t n = shapes.size();
+
+    std::vector<std::vector<ptrdiff_t>> strides(n);
+    std::vector<size_t> sizes(n);
+    size_t dtype_size = utils::dsize(dtype);
+
+    for (size_t i = 0; i < n; ++i) {
+        size_t ndim_ = shapes[i].size();
+        strides[i] = std::vector<ptrdiff_t>(ndim_);
+        size_t stride = 1;
+        for (size_t j = 1; j <= ndim_; ++ j) {
+            strides[i][ndim_ - j] = stride;
+            stride *= shapes[i][ndim_ - j];
+        }
+        sizes[i] = stride * dtype_size;
+    }
+
+    core::context().setDevice(device_type, device);
+    auto storages = core::context().runtime().allocateMPStorage(sizes);
+
+    std::vector<tensor_t> result(n);
+    
+    for (size_t i = 0; i < n; ++i) {
+        TensorMeta meta{dtype, shapes[i], strides[i]};
+        result[i] = std::shared_ptr<Tensor>(new Tensor(meta, storages[i]));
+    }
+
+    return result;
+ }
 
 /**
  * @brief 获取张量数据的可写指针。
@@ -353,10 +428,11 @@ void Tensor::load(const void *src_) {
         // 张量在设备上，使用 runtime 的 memcpy_sync
         core::context().setDevice(this->deviceType(), this->deviceId());
         core::context().runtime().api()->memcpy_sync(
-            this->data(),      // 目标：设备内存
-            src_,              // 源：主机内存
-            total_elems,       // 拷贝字节数
-            LLAISYS_MEMCPY_H2D // 主机到设备
+            this->data(),                               // 目标：设备内存
+            src_,                                       // 源：主机内存
+            total_elems,                                // 拷贝字节数
+            LLAISYS_MEMCPY_H2D                          // 主机到设备
+            // ,core::context().runtime().stream()          // 使用 runtime 中已有的 stream
         );
     }
 }

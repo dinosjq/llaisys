@@ -10,35 +10,37 @@
 #include <type_traits>
 
 namespace {
-template <typename T>
-__device__ __forceinline__ T add_value(T a, T b) {
-    if constexpr (std::is_same_v<T, llaisys::bf16_t> || std::is_same_v<T, llaisys::fp16_t>) {
-        float sum = llaisys::utils::nvidia::cast<float>(a) + llaisys::utils::nvidia::cast<float>(b);
-        return llaisys::utils::nvidia::cast<T>(sum);
-    } else {
-        return a + b;
-    }
-}
 
 template <typename T>
-__global__ void add_kernel(T *c, const T *a, const T *b, size_t numel) {
-    size_t idx = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-    if (idx < numel) {
-        c[idx] = add_value(a[idx], b[idx]);
+__global__ void add_kernel(T *__restrict__ c, const T *__restrict__ a, const T *__restrict__ b, size_t numel) {
+    size_t tid = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    size_t idx = tid << 2;
+    if (idx + 3 < numel) {
+        float4 flo4_a = llaisys::utils::nvidia::load_4d(a + idx);
+        float4 flo4_b = llaisys::utils::nvidia::load_4d(b + idx);
+        float4 flo4_c = llaisys::utils::nvidia::add(flo4_a, flo4_b);
+        llaisys::utils::nvidia::save_4d(c + idx, flo4_c);
+    } else {
+        for (size_t i = idx; i < numel; ++i) {
+            float val = llaisys::utils::nvidia::cast<float>(a[i]) + llaisys::utils::nvidia::cast<float>(b[i]);
+            c[i] = llaisys::utils::nvidia::cast<T>(val);
+        }
     }
 }
 
 template <typename T>
 void add_launch(std::byte *c, const std::byte *a, const std::byte *b, size_t numel) {
     dim3 blockDim(256);
-    dim3 gridDim((numel + blockDim.x - 1) / blockDim.x);
+    dim3 gridDim((((numel + 3) >> 2) + 255) >> 8);
+
     // 这里传递的数据已经就是在device端的了
     auto *d_c = reinterpret_cast<T *>(c);
     const auto *d_a = reinterpret_cast<const T *>(a);
     const auto *d_b = reinterpret_cast<const T *>(b);
+
     add_kernel<<<gridDim, blockDim>>>(d_c, d_a, d_b, numel);
+
     CUDA_CHECK(cudaGetLastError());
-    CUDA_CHECK(cudaDeviceSynchronize());
 }
 } // namespace
 

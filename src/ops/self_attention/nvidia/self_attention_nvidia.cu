@@ -1,152 +1,191 @@
 #include "self_attention_nvidia.cuh"
-
 #include "utils.hpp"
 #include "utils/nvidia_utils.cuh"
-
 #include <cuda_runtime.h>
-
 #include <iostream>
 #include <stdexcept>
 #include <type_traits>
 
-constexpr static int BLOCK_M = 32;
+__device__ __forceinline__ float warp_reduce(float val) {
+#pragma unroll
+    for (size_t offset = 16; offset > 0; offset >>= 1) {
+        val += __shfl_xor_sync(0xFFFFFFFF, val, offset);
+    }
+    return val;
+}
 
+// 0 1 2 3 4 5 ... 127   =>  0 32 64 96 1 33 ... 127
+// physical addr => logical addr
+__device__ __forceinline__ size_t hash(size_t idx) {
+    return ((idx & 3) << 5) + (idx >> 2);
+}
+
+// logical addr => physical addr
+__device__ __forceinline__ size_t in_hash(size_t idx) {
+    return ((idx & 31) << 2) + (idx >> 5);
+}
+
+static constexpr size_t BLOCK_M = 8;
+static constexpr size_t block_dim = 256;
+
+// 针对模型特化的 flash_attention
 template <typename T>
-__global__ void flash_attention_kernel(T *attn, const T *Q, const T *K, const T *V, const float scale, const size_t seqlen,
-                                       const size_t nhead, const size_t dv, const size_t d, const size_t totlen, const size_t nkvhead) {
-    const size_t q = blockIdx.x * BLOCK_M;
-    const size_t nh = blockIdx.y;
-    const size_t tid = threadIdx.x;
-
-    const size_t kv_repeat = (nkvhead != 0 && nhead % nkvhead == 0) ? (nhead / nkvhead) : 0;
-
-    const size_t nkvh = (kv_repeat > 0) ? (nh / kv_repeat) : (nh % nkvhead);
+__global__ void flash_attention_kernel(T *__restrict__ _attn, const T *__restrict__ _Q, const T *__restrict__ _K, const T *__restrict__ _V,
+                                       const float _scale, const size_t _seqlen, const size_t _nhead, const size_t _dv, const size_t _d,
+                                       const size_t _totlen, const size_t _nkvhead) {
 
     extern __shared__ float smem[];
-    float *s_acc = smem;                                    // (BLOCK_M X dv) 计算的暂存值
-    float *s_l = s_acc + static_cast<size_t>(BLOCK_M) * dv; // (BLOCK_M X 1) 分母和
-    float *s_m = s_l + BLOCK_M;                             // (BLOCK_M X 1) 最大值
-    float *s_alpha = s_m + BLOCK_M;                         // (BLOCK_M X 1)
-    float *s_beta = s_alpha + BLOCK_M;                      // (BLOCK_M X 1)
-    float *s_q = s_beta + BLOCK_M;                          // (BLOCK_M X d)
-    float *s_k = s_q + static_cast<size_t>(BLOCK_M) * d;    // (d X 1)
-    float *s_v = s_k + d;                                   // (dv X 1)
+    float *_s_acc = smem;                 // (BLOCK_M X dv) 计算的暂存值
+    float *_s_l = _s_acc + BLOCK_M * _dv; // (BLOCK_M X 1)  分母和
+    float *_s_m = _s_l + BLOCK_M;         // (BLOCK_M X 1)  最大值
+    float *_s_alpha = _s_m + BLOCK_M;     // (BLOCK_M X 1)
+    float *_s_beta = _s_alpha + BLOCK_M;  // (BLOCK_M X 1)
+    float *_s_q = _s_beta + BLOCK_M;      // (BLOCK_M X d)
+    float *_s_k = _s_q + BLOCK_M * _d;    // (BLOCK_M X d)
+    float *_s_v = _s_k + BLOCK_M * _d;    // (BLOCK_M X dv)
+
+    const size_t q = blockIdx.x * BLOCK_M;
+    const size_t nh = blockIdx.y;
+    const size_t kv_repeat = (_nkvhead != 0 && _nhead % _nkvhead == 0) ? (_nhead / _nkvhead) : 0;
+    const size_t nkvh = (kv_repeat > 0) ? (nh / kv_repeat) : (nh % _nkvhead);
+    const size_t extra = (_totlen > _seqlen) ? (_totlen - _seqlen) : 0;
+
+    const size_t tid = threadIdx.x;
+    const size_t warp_id = tid >> 5;
+    const size_t lane_id = tid & 31;
+
+    const size_t qi = q + warp_id;
+    const size_t limit = min(qi + extra, _totlen - 1);
+
+    const T *_q = _Q + (qi * _nhead + nh) * _d;
+    float *s_acc = _s_acc + warp_id * _dv;
+    float *s_q = _s_q + warp_id * _d;
 
     // init acc / l / m
-#pragma unroll
-    for (size_t i = 0; i < BLOCK_M; ++i) {
-        float *s_acc_i = s_acc + (i * dv);
-        for (size_t j = tid; j < dv; j += BLOCK_M) {
-            s_acc_i[j] = 0.0f;
+    {
+        // naive: warp init
+        for (size_t i = lane_id; i < _dv; i += 32) {
+            s_acc[i] = 0.0f;
         }
-    }
-    if (tid < BLOCK_M) {
-        s_l[tid] = 0.0f;
-        s_m[tid] = -INFINITY;
+        if (tid < 8) {
+            _s_l[tid] = 0.0f;
+            _s_m[tid] = -INFINITY;
+        }
     }
 
     // load q
-#pragma unroll
-    for (size_t i = 0; i < BLOCK_M; ++i) {
-        const size_t qi = q + i;
-        float *sq_ptr = s_q + i * d;
-        if (qi < seqlen) {
-            const T *q_ptr = Q + (qi * nhead + nh) * d;
-            for (size_t j = tid; j < d; j += BLOCK_M) {
-                sq_ptr[j] = llaisys::utils::nvidia::cast<float>(q_ptr[j]);
-            }
-        } else {
-            for (size_t j = tid; j < d; j += BLOCK_M) {
-                sq_ptr[j] = 0.0f;
+    {
+        // naive: warp init
+        if (qi < _seqlen) {
+            // vec load: assert _d = 128
+            for (size_t col = lane_id << 2; col < _d; col += 128) {
+                const float4 flo4 = llaisys::utils::nvidia::load_4d(_q + col);
+                // physical: [col + 0, col + 1, col + 2, col + 3]
+                s_q[hash(col | 0)] = flo4.x;
+                s_q[hash(col | 1)] = flo4.y;
+                s_q[hash(col | 2)] = flo4.z;
+                s_q[hash(col | 3)] = flo4.w;
             }
         }
     }
-    __syncthreads();
 
-    // single pass: online softmax
-    for (size_t k = 0; k < totlen; ++k) {
+    __syncwarp();
+
+    for (size_t k = 0; k < _totlen; ++k) {
         // load k / v
-        const T *k_ptr = K + (k * nkvhead + nkvh) * d;
-        const T *v_ptr = V + (k * nkvhead + nkvh) * dv;
+        if (k % BLOCK_M == 0) {
+            __syncthreads();
+            const size_t offset = k + warp_id;
+            if (offset < _totlen) {
+                const T *_k = _K + (offset * _nkvhead + nkvh) * _d;
+                const T *_v = _V + (offset * _nkvhead + nkvh) * _dv;
 
-        for (size_t i = tid; i < d; i += BLOCK_M) {
-            s_k[i] = llaisys::utils::nvidia::cast<float>(k_ptr[i]);
-        }
-        for (size_t i = tid; i < dv; i += BLOCK_M) {
-            s_v[i] = llaisys::utils::nvidia::cast<float>(v_ptr[i]);
-        }
+                // special realize: _d = _dv = 128
+                float *s_k = _s_k + warp_id * _d;
+                float *s_v = _s_v + warp_id * _dv;
 
-        __syncthreads();
-
-        if (tid < BLOCK_M) {
-            const size_t qi = q + tid;
-            const size_t extra = (totlen > seqlen) ? static_cast<size_t>(totlen - seqlen) : 0;
-            const size_t limit = min(qi + extra, static_cast<size_t>(totlen) - 1);
-
-            if (qi < seqlen && k <= limit) {
-                float dot = 0.0f;
-                const float *s_q_i = s_q + (tid * d);
-
-                for (size_t j = 0; j < d; ++j) {
-                    dot += s_q_i[j] * s_k[j];
+                // vec load: warp init
+                for (size_t col = lane_id << 2; col < _d; col += 128) {
+                    const float4 flo4 = llaisys::utils::nvidia::load_4d(_k + col);
+                    // physical: [col + 0, col + 1, col + 2, col + 3]
+                    s_k[hash(col | 0)] = flo4.x;
+                    s_k[hash(col | 1)] = flo4.y;
+                    s_k[hash(col | 2)] = flo4.z;
+                    s_k[hash(col | 3)] = flo4.w;
                 }
 
-                const float s = dot * scale;
-                const float m_old = s_m[tid];
-                const float m_new = fmaxf(m_old, s);
-                const float alpha = expf(m_old - m_new);
-                const float beta = expf(s - m_new);
+                for (size_t col = lane_id << 2; col < _dv; col += 128) {
+                    const float4 flo4 = llaisys::utils::nvidia::load_4d(_v + col);
+                    s_v[hash(col | 0)] = flo4.x;
+                    s_v[hash(col | 1)] = flo4.y;
+                    s_v[hash(col | 2)] = flo4.z;
+                    s_v[hash(col | 3)] = flo4.w;
+                }
+            }
+            __syncthreads();
+        }
 
-                s_m[tid] = m_new;
-                s_l[tid] = s_l[tid] * alpha + beta;
-                s_alpha[tid] = alpha;
-                s_beta[tid] = beta;
+        const float *s_k = _s_k + (k & 7) * _d;
+        const float *s_v = _s_v + (k & 7) * _dv;
+
+        // online softmax
+        {
+            // naive: warp compute
+            if (qi < _seqlen && k <= limit) {
+                float dot = 0.0f;
+                for (size_t i = lane_id; i < _d; i += 32) {
+                    dot += s_q[i] * s_k[i];
+                }
+                dot = warp_reduce(dot);
+
+                if (lane_id == 0) {
+                    const float s = dot * _scale;
+                    const float m_old = _s_m[warp_id];
+                    const float m_new = fmaxf(m_old, s);
+                    const float alpha = expf(m_old - m_new);
+                    const float beta = expf(s - m_new);
+
+                    _s_m[warp_id] = m_new;
+                    _s_l[warp_id] = _s_l[warp_id] * alpha + beta;
+                    _s_alpha[warp_id] = alpha;
+                    _s_beta[warp_id] = beta;
+                }
             } else {
-                s_alpha[tid] = 1.0f;
-                s_beta[tid] = 0.0f;
+                _s_alpha[warp_id] = 1.0f;
+                _s_beta[warp_id] = 0.0f;
             }
+
+            __syncwarp();
+
+            // naive: warp update
+            if (qi < _seqlen && k <= limit) {
+                const float alpha = _s_alpha[warp_id];
+                const float beta = _s_beta[warp_id];
+
+                for (size_t i = lane_id; i < _dv; i += 32) {
+                    s_acc[i] = s_acc[i] * alpha + s_v[i] * beta;
+                }
+            }
+
+            __syncwarp();
         }
-
-        __syncthreads();
-
-#pragma unroll
-        for (size_t i = 0; i < BLOCK_M; ++i) {
-            const size_t qi = q + i;
-            float *s_acc_i = s_acc + (i * dv);
-
-            const size_t extra = (totlen > seqlen) ? static_cast<size_t>(totlen - seqlen) : 0;
-            const size_t limit = min(qi + extra, static_cast<size_t>(totlen) - 1);
-            if (qi >= seqlen || k > limit) {
-                continue;
-            }
-
-            const float alpha = s_alpha[i];
-            const float beta = s_beta[i];
-
-            for (size_t j = tid; j < dv; j += BLOCK_M) {
-                s_acc_i[j] = s_acc_i[j] * alpha + beta * s_v[j];
-            }
-        }
-
-        __syncthreads();
     }
 
     // write out
-#pragma unroll
-    for (size_t i = 0; i < BLOCK_M; ++i) {
-        const size_t qi = q + i;
-        float *s_acc_i = s_acc + (i * dv);
-
-        if (qi >= seqlen) {
-            continue;
+    {
+        // naive: warp load back
+        if (qi >= _seqlen) {
+            return;
         }
-        const float den = s_l[i];
+        const float den = _s_l[warp_id];
+        const float inv = (den > 0.0f) ? 1.0f / den : 0.0f;
+        const size_t offset = (qi * _nhead + nh) * _dv;
 
-        for (size_t j = tid; j < dv; j += BLOCK_M) {
-            const float out = (den > 0.0f) ? (s_acc_i[j] / den) : 0.0f;
-            const size_t idx = (qi * nhead + nh) * dv + j;
+        for (size_t i = lane_id; i < _dv; i += 32) {
+            const float out = s_acc[i] * inv;
+            const size_t idx = offset + in_hash(i);
 
-            attn[idx] = llaisys::utils::nvidia::cast<T>(out);
+            _attn[idx] = llaisys::utils::nvidia::cast<T>(out);
         }
     }
 }
@@ -159,15 +198,14 @@ void self_attention_launch(std::byte *attn_val, const std::byte *q, const std::b
     const auto *d_k = reinterpret_cast<const T *>(k);
     const auto *d_v = reinterpret_cast<const T *>(v);
 
-    dim3 blockDim(BLOCK_M);
-    dim3 gridDim((seqlen + BLOCK_M - 1) / BLOCK_M, nhead);
+    dim3 blockDim(256);
+    dim3 gridDim((seqlen + 7) >> 3, nhead);
 
-    const size_t smem_bytes = sizeof(float) * (BLOCK_M * (d + dv + 4) + d + dv);
+    const size_t smem_bytes = sizeof(float) * (BLOCK_M * (d + dv + 4 + d + dv));
 
     flash_attention_kernel<<<gridDim, blockDim, smem_bytes>>>(d_attn, d_q, d_k, d_v, scale, seqlen, nhead, dv, d, total_len, nkvhead);
 
     CUDA_CHECK(cudaGetLastError());
-    CUDA_CHECK(cudaDeviceSynchronize());
 }
 
 namespace llaisys::ops::nvidia {

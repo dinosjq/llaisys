@@ -7,8 +7,9 @@
 
 namespace llaisys::ops {
 void embedding(tensor_t out, tensor_t index, tensor_t weight) {
-    // 检查设备一致性
-    CHECK_SAME_DEVICE(out, index, weight);
+    // 检查设备一致性 index为host端
+    CHECK_SAME_DEVICE(out, weight);
+    ASSERT(index->deviceType() == LLAISYS_DEVICE_CPU, "embedding: index device type wrong");
 
     // 判断out的dtype与weight的dtype相同
     CHECK_SAME_DTYPE(out->dtype(), weight->dtype());

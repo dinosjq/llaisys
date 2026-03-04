@@ -1,4 +1,5 @@
 #include "runtime.hpp"
+#include <numeric>
 
 #include "../../device/runtime_api.hpp"
 #include "../allocator/naive_allocator.hpp"
@@ -68,6 +69,39 @@ llaisysStream_t Runtime::stream() const {
 
 void Runtime::synchronize() const {
     _api->stream_synchronize(_stream);
+}
+
+/**
+ * TODO: kv cache 专用
+ */
+std::vector<storage_t> Runtime::allocateKVStorage(size_t nlayer, size_t nsize) {
+    std::vector<storage_t> result(nlayer << 1);
+    std::byte *memory = _allocator->allocate((nlayer << 1) * nsize);
+
+    result[0] = std::shared_ptr<Storage>(new Storage(memory, nsize, *this, false));
+    for (size_t i = 1; i < (nlayer << 1); ++i) {
+        result[i] = std::shared_ptr<Storage>(new Storage(memory + i * nsize, nsize, *this, false, false));
+    }
+
+    return result;
+}
+
+/**
+ * TODO: 多层注意力中间矩阵专用
+ */
+std::vector<storage_t> Runtime::allocateMPStorage(const std::vector<size_t> &sizes){
+    std::vector<storage_t> result(sizes.size());
+    size_t sum_size = std::accumulate(sizes.begin(), sizes.end(), size_t(0));
+    std::byte *memory = _allocator->allocate(sum_size);
+
+    result[0] = std::shared_ptr<Storage>(new Storage(memory, sizes[0], *this, false));
+    size_t offset = sizes[0];
+    for (size_t i = 1; i < sizes.size(); ++i) {
+        result[i] = std::shared_ptr<Storage>(new Storage(memory + offset, sizes[i], *this, false, false));
+        offset += sizes[i];
+    }
+    
+    return result;
 }
 
 } // namespace llaisys::core

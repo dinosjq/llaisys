@@ -11,9 +11,9 @@ namespace llaisys::ops::nvidia {
 
 // Kernel implementations
 template <int ELEM>
-__global__ void rearrange_kernel(uint8_t *out, const uint8_t *in,
-                                 const size_t *shape, const ptrdiff_t *out_strides,
-                                 const ptrdiff_t *in_strides, const size_t *dim_prod,
+__global__ void rearrange_kernel(uint8_t *__restrict__ out, const uint8_t *__restrict__ in,
+                                 const size_t *__restrict__ shape, const ptrdiff_t *__restrict__ out_strides,
+                                 const ptrdiff_t *__restrict__ in_strides, const size_t *__restrict__ dim_prod,
                                  int ndim, size_t numel) {
     size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
     const size_t stride = gridDim.x * blockDim.x;
@@ -152,7 +152,6 @@ void rearrange(std::byte *out, const std::byte *in, llaisysDataType_t dtype,
     launch_kernel(static_cast<int>(elem_size));
 
     CUDA_CHECK(cudaGetLastError());
-    CUDA_CHECK(cudaDeviceSynchronize());
 
     cudaFree(d_shape);
     cudaFree(d_dim_prod);

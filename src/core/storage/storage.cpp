@@ -3,11 +3,13 @@
 #include "../runtime/runtime.hpp"
 
 namespace llaisys::core {
-Storage::Storage(std::byte *memory, size_t size, Runtime &runtime, bool is_host)
-    : _memory(memory), _size(size), _runtime(runtime), _is_host(is_host) {}
+Storage::Storage(std::byte *memory, size_t size, Runtime &runtime, bool is_host, bool is_first)
+    : _memory(memory), _size(size), _runtime(runtime), _is_host(is_host), _is_first(is_first) {}
 
 Storage::~Storage() {
-    _runtime.freeStorage(this);
+    if(_is_first){
+        _runtime.freeStorage(this);
+    }
 }
 
 std::byte *Storage::memory() const {
