@@ -77,12 +77,13 @@ class Qwen2:
 
         # 设置 meta
         self._meta = meta
+        device_ids = (c_int * 1)(0)
         # 通过 create 创建 model
         self._model: llaisysQwen2Model_t = LIB_LLAISYS.llaisysQwen2ModelCreate(
             byref(meta),
             int(device),
-            None,
-            0,
+            device_ids,
+            1,
         )
         if not self._model:
             raise RuntimeError("Failed to create Qwen2 model")

@@ -1,6 +1,6 @@
 #include "linear_nvidia.cuh"
 
-#include "utils.hpp"
+#include "../../../utils.hpp"
 #include "utils/nvidia_utils.cuh"
 #include <cublas_v2.h>
 #include <cuda_runtime.h>

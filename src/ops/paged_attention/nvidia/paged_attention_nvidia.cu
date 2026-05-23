@@ -1,5 +1,5 @@
 #include "../../../utils.hpp"
-#include "self_attention_nvidia.cuh"
+#include "paged_attention_nvidia.cuh"
 #include "utils/nvidia_utils.cuh"
 #include <cuda_runtime.h>
 #include <iostream>
@@ -14,25 +14,26 @@ __device__ __forceinline__ float warp_reduce(float val) {
     return val;
 }
 
-// 0 1 2 3 4 5 ... 127   =>  0 32 64 96 1 33 ... 127
-// physical addr => logical addr
-__device__ __forceinline__ size_t hash(size_t idx) {
-    return ((idx & 3) << 5) + (idx >> 2);
-}
-
-// logical addr => physical addr
-__device__ __forceinline__ size_t in_hash(size_t idx) {
-    return ((idx & 31) << 2) + (idx >> 5);
-}
-
 static constexpr size_t BLOCK_M = 8;
 static constexpr size_t block_dim = 256;
 
-// 针对模型特化的 flash_attention
+// 自定义 paged_attention 以 flash_attention_v2 为基础
 template <typename T>
-__global__ void flash_attention_kernel(T *__restrict__ _attn, const T *__restrict__ _Q, const T *__restrict__ _K, const T *__restrict__ _V,
-                                       const float _scale, const size_t _seqlen, const size_t _nhead, const size_t _dv, const size_t _d,
-                                       const size_t _totlen, const size_t _nkvhead) {
+__global__ void paged_attention_kernel(T *__restrict__ _attn, 
+                                       const T *__restrict__ _Q, 
+                                       const T *__restrict__ _K_cache, 
+                                       const T *__restrict__ _V_cache, 
+                                       const int *_block_ids,
+                                       const size_t _token_num,
+                                       const size_t _nblock,
+                                       const float _scale, 
+                                       const size_t _seqlen, 
+                                       const size_t _nhead, 
+                                       const size_t _dv, 
+                                       const size_t _d,
+                                       const size_t _totlen, 
+                                       const size_t _nkvhead) 
+{
 
     extern __shared__ float smem[];
     float *_s_acc = smem;                 // (BLOCK_M X dv) 计算的暂存值
@@ -46,8 +47,8 @@ __global__ void flash_attention_kernel(T *__restrict__ _attn, const T *__restric
 
     const size_t q = blockIdx.x * BLOCK_M;
     const size_t nh = blockIdx.y;
-    const size_t kv_repeat = (_nkvhead != 0 && _nhead % _nkvhead == 0) ? (_nhead / _nkvhead) : 0;
-    const size_t nkvh = (kv_repeat > 0) ? (nh / kv_repeat) : (nh % _nkvhead);
+    const size_t kv_rep = (_nkvhead != 0 && _nhead % _nkvhead == 0) ? (_nhead / _nkvhead) : 0;
+    const size_t nkvh = (kv_rep > 0) ? (nh / kv_rep) : (nh % _nkvhead);
     const size_t extra = (_totlen > _seqlen) ? (_totlen - _seqlen) : 0;
 
     const size_t tid = threadIdx.x;
@@ -92,12 +93,18 @@ __global__ void flash_attention_kernel(T *__restrict__ _attn, const T *__restric
         // load k / v
         if (k % BLOCK_M == 0) {
             __syncthreads();
-            const size_t offset = k + warp_id;
-            if (offset < _totlen) {
-                const T *_k = _K + (offset * _nkvhead + nkvh) * _d;
-                const T *_v = _V + (offset * _nkvhead + nkvh) * _dv;
 
-                // special realize: _d = _dv = 128
+            size_t token_id = k + warp_id;
+
+            if(token_id < _totlen){
+                const int block_id = _block_ids[token_id / _token_num];
+                token_id %= _token_num;
+
+                // global memory
+                const T *_k = _K_cache + ((block_id * _token_num + token_id) * _nkvhead + nkvh) * _d;
+                const T *_v = _V_cache + ((block_id * _token_num + token_id) * _nkvhead + nkvh) * _dv;
+
+                // shared memory
                 float *s_k = _s_k + warp_id * _d;
                 float *s_v = _s_v + warp_id * _dv;
 
@@ -110,6 +117,7 @@ __global__ void flash_attention_kernel(T *__restrict__ _attn, const T *__restric
 
                 for (size_t col = lane_id << 2; col < _dv; col += 128) {
                     const float4 flo4 = llaisys::utils::nvidia::load_4d(_v + col);
+                    // physical: [col + 0, col + 1, col + 2, col + 3]
                     llaisys::utils::nvidia::save_4d(s_v + col, flo4);
                 }
             }
@@ -182,35 +190,69 @@ __global__ void flash_attention_kernel(T *__restrict__ _attn, const T *__restric
 }
 
 template <typename T>
-void self_attention_launch(std::byte *attn_val, const std::byte *q, const std::byte *k, const std::byte *v, const float &scale,
-                           const size_t &seqlen, const size_t &nhead, const size_t &dv, const size_t &d, const size_t &total_len, const size_t &nkvhead) {
+void paged_attention_launch(std::byte *attn_val,      
+                            const std::byte *q,       
+                            const std::byte *k_cache,  
+                            const std::byte *v_cache,  
+                            const std::byte *block_ids,
+                            const size_t block_num,   
+                            const size_t token_num,   
+                            const size_t nblock,       
+                            const float &scale,        
+                            const size_t &seqlen,      
+                            const size_t &nh,          
+                            const size_t &dv, 
+                            const size_t &d, 
+                            const size_t &totlen, 
+                            const size_t &nkvh) 
+{
     auto *d_attn = reinterpret_cast<T *>(attn_val);
     const auto *d_q = reinterpret_cast<const T *>(q);
-    const auto *d_k = reinterpret_cast<const T *>(k);
-    const auto *d_v = reinterpret_cast<const T *>(v);
+    const auto *d_k_cache = reinterpret_cast<const T *>(k_cache);
+    const auto *d_v_cache = reinterpret_cast<const T *>(v_cache);
+    const auto *d_block_ids = reinterpret_cast<const int *>(block_ids);
 
     dim3 blockDim(256);
-    dim3 gridDim((seqlen + 7) >> 3, nhead);
+    dim3 gridDim((seqlen + 7) >> 3, nh);
 
     const size_t smem_bytes = sizeof(float) * (BLOCK_M * (d + dv + 4 + d + dv));
 
-    flash_attention_kernel<<<gridDim, blockDim, smem_bytes>>>(d_attn, d_q, d_k, d_v, scale, seqlen, nhead, dv, d, total_len, nkvhead);
+    paged_attention_kernel<<<gridDim, blockDim, smem_bytes>>>(d_attn, d_q, d_k_cache, d_v_cache, d_block_ids, token_num,
+                                                nblock, scale, seqlen, nh, dv, d, totlen, nkvh);
 
     CUDA_CHECK(cudaGetLastError());
 }
 
 namespace llaisys::ops::nvidia {
-void self_attention(std::byte *attn_val, const std::byte *q, const std::byte *k, const std::byte *v, const float &scale, llaisysDataType_t type,
-                    const size_t &seqlen, const size_t &nhead, const size_t &dv, const size_t &d, const size_t &total_len, const size_t &nkvhead) {
-    switch (type) {
+void paged_attention(std::byte *attn_val,       // 输出 (seqlen, nh, dv)
+                     const std::byte *q,        // q (seqlen, nh, d)
+                     const std::byte *k_cache,  // k底层缓存 (totlen, nkvh, d)
+                     const std::byte *v_cache,  // q底层缓存 (totlen, nkvh, dv)
+                     const std::byte *block_ids,// 块表 记录块号 (block_num, token_num, nkvh, d | dv) 
+                     const size_t block_num,    // 总块数
+                     const size_t token_num,    // 每个块的token数
+                     const size_t nblock,       // 块表中块的个数
+                     llaisysDataType_t dtype,   // 权重数据类型
+                     const float &scale,        // 缩放因子
+                     const size_t &seqlen,      // 需计算序列长度
+                     const size_t &nh,          // 其他参数 ...
+                     const size_t &dv, 
+                     const size_t &d, 
+                     const size_t &totlen, 
+                     const size_t &nkvh)
+{
+    switch (dtype) {
     case LLAISYS_DTYPE_F32:
-        return self_attention_launch<float>(attn_val, q, k, v, scale, seqlen, nhead, dv, d, total_len, nkvhead);
+        return paged_attention_launch<float>(attn_val, q, k_cache, v_cache, block_ids, block_num, token_num, 
+                                            nblock, scale, seqlen, nh, dv, d, totlen, nkvh);
     case LLAISYS_DTYPE_BF16:
-        return self_attention_launch<llaisys::bf16_t>(attn_val, q, k, v, scale, seqlen, nhead, dv, d, total_len, nkvhead);
+        return paged_attention_launch<llaisys::bf16_t>(attn_val, q, k_cache, v_cache, block_ids, block_num, token_num, 
+                                            nblock, scale, seqlen, nh, dv, d, totlen, nkvh);
     case LLAISYS_DTYPE_F16:
-        return self_attention_launch<llaisys::fp16_t>(attn_val, q, k, v, scale, seqlen, nhead, dv, d, total_len, nkvhead);
+        return paged_attention_launch<llaisys::fp16_t>(attn_val, q, k_cache, v_cache, block_ids, block_num, token_num, 
+                                            nblock, scale, seqlen, nh, dv, d, totlen, nkvh);
     default:
-        EXCEPTION_UNSUPPORTED_DATATYPE(type);
+        EXCEPTION_UNSUPPORTED_DATATYPE(dtype);
     }
 }
 } // namespace llaisys::ops::nvidia

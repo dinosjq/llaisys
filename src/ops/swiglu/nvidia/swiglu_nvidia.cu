@@ -1,6 +1,6 @@
 #include "swiglu_nvidia.cuh"
 
-#include "utils.hpp"
+#include "../../../utils.hpp"
 #include "utils/nvidia_utils.cuh"
 
 #include <cuda_runtime.h>

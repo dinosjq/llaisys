@@ -1,6 +1,6 @@
 #include "rope_nvidia.cuh"
 
-#include "utils.hpp"
+#include "../../../utils.hpp"
 #include "utils/nvidia_utils.cuh"
 
 #include <cuda_runtime.h>
@@ -19,7 +19,7 @@ __global__ void rope_kernel(T *__restrict__ _out, const T *__restrict__ _in, con
     const int hf_d = _d >> 1;
     const int offset = ((i * _head) + h) * _d;
 
-    const float inv_d = -1.0f / static_cast<float>(_d);
+    const float inv_d = 1.0f / static_cast<float>(_d);
     const float pi = static_cast<float>(_pos_ids[i]);
 
     const T *in_a = _in + offset;
@@ -30,22 +30,22 @@ __global__ void rope_kernel(T *__restrict__ _out, const T *__restrict__ _in, con
     for (int col = (tid << 2); col < hf_d; col += 128) {
         if (col + 3 < hf_d) {
             const float den_0 = powf(_theta, static_cast<float>((col | 0) << 1) * inv_d);
-            const float phi_0 = pi * den_0;
+            const float phi_0 = pi / den_0;
             const float cos_phi_0 = cosf(phi_0);
             const float sin_phi_0 = sinf(phi_0);
 
             const float den_1 = powf(_theta, static_cast<float>((col | 1) << 1) * inv_d);
-            const float phi_1 = pi * den_1;
+            const float phi_1 = pi / den_1;
             const float cos_phi_1 = cosf(phi_1);
             const float sin_phi_1 = sinf(phi_1);
 
             const float den_2 = powf(_theta, static_cast<float>((col | 2) << 1) * inv_d);
-            const float phi_2 = pi * den_2;
+            const float phi_2 = pi / den_2;
             const float cos_phi_2 = cosf(phi_2);
             const float sin_phi_2 = sinf(phi_2);
 
             const float den_3 = powf(_theta, static_cast<float>((col | 3) << 1) * inv_d);
-            const float phi_3 = pi * den_3;
+            const float phi_3 = pi / den_3;
             const float cos_phi_3 = cosf(phi_3);
             const float sin_phi_3 = sinf(phi_3);
 

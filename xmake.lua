@@ -64,6 +64,8 @@ target("llaisys-core")
     end
 
     add_files("src/core/*/*.cpp")
+    add_files("src/kv_cache/*.cpp")
+    add_files("src/models/*.cpp")
 
     on_install(function (target) end)
 target_end()

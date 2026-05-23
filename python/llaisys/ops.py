@@ -1,6 +1,6 @@
 from .libllaisys import LIB_LLAISYS
 from .tensor import Tensor
-from ctypes import c_float, c_int
+from ctypes import c_float, c_size_t
 
 
 class Ops:
@@ -21,7 +21,10 @@ class Ops:
     @staticmethod
     def linear(out: Tensor, inp: Tensor, weight: Tensor, bias: Tensor):
         LIB_LLAISYS.llaisysLinear(
-            out.lib_tensor(), inp.lib_tensor(), weight.lib_tensor(), bias.lib_tensor()
+            out.lib_tensor(),
+            inp.lib_tensor(),
+            weight.lib_tensor(),
+            bias.lib_tensor() if bias is not None else None,
         )
 
     @staticmethod
@@ -38,6 +41,19 @@ class Ops:
     def rope(out: Tensor, inp: Tensor, pos_ids: Tensor, theta: float):
         LIB_LLAISYS.llaisysROPE(
             out.lib_tensor(), inp.lib_tensor(), pos_ids.lib_tensor(), c_float(theta)
+        )
+
+    @staticmethod
+    def paged_attention(attn_val: Tensor, q: Tensor, k_cache: Tensor, v_cache: Tensor, block_ids: Tensor, nblock: int, totlen: int, scale: float):
+        LIB_LLAISYS.llaisysPagedAttention(
+            attn_val.lib_tensor(),
+            q.lib_tensor(),
+            k_cache.lib_tensor(),
+            v_cache.lib_tensor(),
+            block_ids.lib_tensor(),
+            c_size_t(nblock),
+            c_size_t(totlen),
+            c_float(scale),
         )
 
     @staticmethod

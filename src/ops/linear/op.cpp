@@ -33,11 +33,6 @@ void linear(tensor_t out, tensor_t in, tensor_t weight, tensor_t bias) {
     // 设置当前设备（如GPU等）
     llaisys::core::context().setDevice(out->deviceType(), out->deviceId());
 
-    const std::byte *d_bias = nullptr;
-    if(bias != nullptr){
-        d_bias = bias->data();
-    }
-
     // 根据设备类型分发实现
     switch (out->deviceType()) {
     case LLAISYS_DEVICE_CPU:
@@ -48,7 +43,7 @@ void linear(tensor_t out, tensor_t in, tensor_t weight, tensor_t bias) {
         }
 #ifdef ENABLE_NVIDIA_API
     case LLAISYS_DEVICE_NVIDIA:
-        return nvidia::linear(out->data(), in->data(), weight->data(), d_bias, out->dtype(), m, n, k);
+    return nvidia::linear(out->data(), in->data(), weight->data(), bias != nullptr ? bias->data() : nullptr, out->dtype(), m, n, k);
 #endif
     default:
         // 不支持的设备类型

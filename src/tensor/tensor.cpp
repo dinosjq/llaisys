@@ -432,7 +432,6 @@ void Tensor::load(const void *src_) {
             src_,                                       // 源：主机内存
             total_elems,                                // 拷贝字节数
             LLAISYS_MEMCPY_H2D                          // 主机到设备
-            // ,core::context().runtime().stream()          // 使用 runtime 中已有的 stream
         );
     }
 }

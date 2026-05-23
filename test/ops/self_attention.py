@@ -17,7 +17,7 @@ def torch_self_attention(attn_val, query, key, value, scale):
 
     temp_mask = torch.ones(L, S, dtype=torch.bool, device=query.device).tril(diagonal=S-L)
     attn_bias.masked_fill_(temp_mask.logical_not(), float("-inf"))
-    attn_bias.to(query.dtype)
+    attn_bias = attn_bias.to(query.dtype)
 
     key = key.repeat_interleave(query.size(-3) // key.size(-3), -3)
     value = value.repeat_interleave(query.size(-3) // value.size(-3), -3)
