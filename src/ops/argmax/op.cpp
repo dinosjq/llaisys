@@ -13,7 +13,7 @@ void argmax(tensor_t max_idx, tensor_t max_val, tensor_t vals) {
     // 检查数据类型一致
     CHECK_SAME_DTYPE(max_val->dtype(), vals->dtype());
     // vals 是否连续
-    ASSERT(vals->isContiguous() && max_idx->contiguous() && max_val->contiguous(), "argmax: tensor must be contiguous.");
+    ASSERT(vals->isContiguous() && max_idx->isContiguous() && max_val->isContiguous(), "argmax: tensor must be contiguous.");
 
     // 设置当前设备
     llaisys::core::context().setDevice(vals->deviceType(), vals->deviceId());

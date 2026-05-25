@@ -10,6 +10,7 @@
 #include "../ops/self_attention/op.hpp"
 #include "../ops/paged_attention/op.hpp"
 #include "../ops/swiglu/op.hpp"
+#include "../ops/top_k/op.hpp"
 
 #include <algorithm>
 #include <numeric>
@@ -122,7 +123,6 @@ int64_t Qwen2::forward(const int64_t *token_ids, const size_t ntoken){
     const size_t voc = meta.voc;
     const float epsilon = meta.epsilon;
     const float theta = meta.theta;
-    const int64_t end_token = meta.end_token;
 
     // 加载设备
     const int device_id = this->device_id();
@@ -215,47 +215,8 @@ int64_t Qwen2::forward(const int64_t *token_ids, const size_t ntoken){
             ops::rearrange(v_block, v_slice);
         } 
 
-        /**
-         * 推理流程 debug 复盘：
-         * 
-         *  先对整个链路去除 kv cache、paged attention 确保其他算子和流程的正确性
-         * 
-         *  由于现在还是单请求，并且 kv cache 就是连续的块，所以分块搬等价于连续搬
-         * 
-         *  所以我构造了一种情况：直接拿现成的 kv cache 构造成可被 flash attention 可用的情况
-         * 
-         *  验证了链路在连续搬运 kv cache 且 无 paged attention 的情况下是正确的
-         * 
-         *  然后替换为 paged attention 发现也可以跑通了 所以 paged attention 也是对的
-         * 
-         *  所以定位问题在分块搬运的过程中
-         * 
-         *  tensor 的 reshape 要求张量要连续 isContigous 连续会返回视图 复用内存 否则会调用 contigous 创建临时张量
-         *  
-         *  而分块搬运连续两次 slice 导致张量不再连续 并且在搬之前还 slice 了一次
-         * 
-         *  导致张量直接 reshape 就会调用 contigous 创建临时张量 而不是写入块中
-         * 
-         *  解决方案：每次 slice 了，就 reshape 一下 
-         */
-
-        // 去掉 layer 维度
-        // k_layer = k_layer->reshape({block_num * token_num, nkvh, dh});
-        // v_layer = v_layer->reshape({block_num * token_num, nkvh, dh});
-
-        // tensor_t k_slice = k_layer->slice(0, start, ntoken);
-        // tensor_t v_slice = v_layer->slice(0, start, ntoken);
-
-        // ops::rearrange(k_slice, k_rope);
-        // ops::rearrange(v_slice, v_view);
-
-        // k_layer = k_layer->slice(0, 0, ntoken);
-        // v_layer = v_layer->slice(0, 0, ntoken);
-
         // 自注意力: paged_attention(flash v2)
         ops::paged_attention(attn_val, q_rope, k_layer, v_layer, dev_block_ids, block_ids.size(), ntoken, scale);
-
-        // ops::self_attention(attn_val, q_rope, k_layer, v_layer, scale);
 
         // 得到多头注意力输出投影
         tensor_t attn_merge = attn_val->view({seqlen, nh * dh});
@@ -283,23 +244,26 @@ int64_t Qwen2::forward(const int64_t *token_ids, const size_t ntoken){
 
     // 选出最后一个 token 的预测结果
     tensor_t last = logits->slice(0, seqlen - 1, seqlen)->view({voc});
-    tensor_t max_idx = Tensor::create({1}, LLAISYS_DTYPE_I64, device, device_id);
-    tensor_t max_val = Tensor::create({1}, dtype, device, device_id);
-    ops::argmax(max_idx, max_val, last);
+    
+    // argmax
+    // tensor_t max_idx = Tensor::create({1}, LLAISYS_DTYPE_I64, device, device_id);
+    // tensor_t max_val = Tensor::create({1}, dtype, device, device_id);
+    // ops::argmax(max_idx, max_val, last);
+    // if (device != LLAISYS_DEVICE_CPU) {
+    //     max_idx = max_idx->to(LLAISYS_DEVICE_CPU, 0);
+    // }
+    // int64_t result = reinterpret_cast<int64_t *>(max_idx->data())[0];
 
-    int64_t result = end_token;
-    if (device == LLAISYS_DEVICE_CPU) {
-        result = reinterpret_cast<int64_t *>(max_idx->data())[0];
-    } else {
-        tensor_t host_idx = Tensor::create({1}, LLAISYS_DTYPE_I64, LLAISYS_DEVICE_CPU, 0);
-        core::context().setDevice(device, device_id);
-        core::context().runtime().api()->memcpy_sync(
-            host_idx->data(),
-            max_idx->data(),
-            sizeof(int64_t),
-            LLAISYS_MEMCPY_D2H);
-        result = reinterpret_cast<int64_t *>(host_idx->data())[0];
+    // top_k
+    constexpr size_t K = 1;
+    tensor_t top_idx = Tensor::create({K}, LLAISYS_DTYPE_I64, device, device_id);
+    tensor_t top_val = Tensor::create({K}, dtype, device, device_id);
+    ops::topk(top_idx, top_val, last, K);
+    if (device != LLAISYS_DEVICE_CPU) {
+        top_idx = top_idx->to(LLAISYS_DEVICE_CPU, 0);
     }
+    int random_idx = rand() % K;
+    int64_t result = reinterpret_cast<int64_t *>(top_idx->data())[random_idx];
     return result;
 }
 

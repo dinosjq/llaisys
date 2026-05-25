@@ -8,6 +8,9 @@ def load_ops(lib):
     lib.llaisysArgmax.argtypes = [llaisysTensor_t, llaisysTensor_t, llaisysTensor_t]
     lib.llaisysArgmax.restype = None
 
+    lib.llaisysTopk.argtypes = [llaisysTensor_t, llaisysTensor_t, llaisysTensor_t, c_size_t]
+    lib.llaisysTopk.restype = None
+
     lib.llaisysEmbedding.argtypes = [llaisysTensor_t, llaisysTensor_t, llaisysTensor_t]
     lib.llaisysEmbedding.restype = None
 

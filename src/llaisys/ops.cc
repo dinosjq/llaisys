@@ -13,6 +13,7 @@
 #include "../ops/rope/op.hpp"
 #include "../ops/self_attention/op.hpp"
 #include "../ops/swiglu/op.hpp"
+#include "../ops/top_k/op.hpp"
 
 __C {
 void llaisysAdd(llaisysTensor_t c, llaisysTensor_t a, llaisysTensor_t b) {
@@ -21,6 +22,10 @@ void llaisysAdd(llaisysTensor_t c, llaisysTensor_t a, llaisysTensor_t b) {
 
 void llaisysArgmax(llaisysTensor_t max_idx, llaisysTensor_t max_val, llaisysTensor_t vals) {
     llaisys::ops::argmax(max_idx->tensor, max_val->tensor, vals->tensor);
+}
+
+void llaisysTopk(llaisysTensor_t out_idx, llaisysTensor_t out_val, llaisysTensor_t vals, size_t k) {
+    llaisys::ops::topk(out_idx->tensor, out_val->tensor, vals->tensor, k);
 }
 
 void llaisysEmbedding(llaisysTensor_t out, llaisysTensor_t index, llaisysTensor_t weight) {

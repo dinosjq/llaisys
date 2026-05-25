@@ -13,6 +13,10 @@ class Ops:
         LIB_LLAISYS.llaisysArgmax(max_idx.lib_tensor(), max_val.lib_tensor(), vals.lib_tensor())
 
     @staticmethod
+    def topk(out_idx: Tensor, out_val: Tensor, vals: Tensor, k: int):
+        LIB_LLAISYS.llaisysTopk(out_idx.lib_tensor(), out_val.lib_tensor(), vals.lib_tensor(), c_size_t(k))
+
+    @staticmethod
     def embedding(out: Tensor, index: Tensor, weight: Tensor):
         LIB_LLAISYS.llaisysEmbedding(
             out.lib_tensor(), index.lib_tensor(), weight.lib_tensor()

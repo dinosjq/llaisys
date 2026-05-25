@@ -460,9 +460,7 @@ tensor_t Tensor::contiguous() const {
  */
 tensor_t Tensor::reshape(const std::vector<size_t> &shape) const {
     size_t new_numel = std::accumulate(shape.begin(), shape.end(), (size_t)1, std::multiplies<size_t>());
-    if (new_numel != this->numel()) {
-        throw std::runtime_error("Tensor::reshape : shape size mismatch");
-    }
+    ASSERT(new_numel == this->numel(), "Tensor::reshape : shape size mismatch");
     if (this->isContiguous()) {
         return this->view(shape);
     }
