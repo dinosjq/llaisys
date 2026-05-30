@@ -19,10 +19,10 @@ enum class SeqStatus {
 
 class Sequence{
 private:
-    size_t _seq_id;             // 序列号
+    size_t _seq_id;             // 序列号 其实没用
     SeqStatus _status;          // 当前状态 (等待prefill、decode中、结束)
     bool _is_prefill;           // 是否处于prefill阶段
-    long long _prompt_hash;     // prompt部分hash值
+    long long _prompt_hash;     // prompt部分hash值，根据这个hash值来确定请求是否匹配
     size_t _ntoken;             // 总token数
     size_t _cached_ntoken;      // 已缓存(计算)token数
     size_t _prompt_ntoken;      // prompt部分总token数

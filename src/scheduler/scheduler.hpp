@@ -50,14 +50,19 @@ public:
     Scheduler(Scheduler &&) = delete;
     Scheduler &operator=(Scheduler &&) = delete;
 
+    // 原子添加请求信息到未使用的等待队列
     void add(seq_t seq);
 
+    // 执行 PD 分离调度 [本次计算序列, is_prefill]
     std::pair<std::vector<seq_t>, bool> schedule();
-
+    
+    // 预先清空对应使用的kv cache信息
     void preempty(seq_t &seq);
 
+    // 后处理更新对应缓存块的信息
     void postprocess(std::vector<seq_t> &seqs, std::vector<int64_t> token_ids, bool is_prefill);
-
+    
+    // 每块 token 数
     size_t token_num() { return this->_token_num; }
 };
 };

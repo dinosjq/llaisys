@@ -77,6 +77,7 @@ static void free_weight_arrays(Qwen2Weights &w) {
     w.mlp_down_w = nullptr;
 }
 
+// 随机采样方法 保证前缀 >= top_p
 static int64_t _random_sample(const std::vector<int64_t> &candidates, const std::vector<float> &weights, float top_p){
     const size_t n = candidates.size();
     std::vector<std::pair<float, int64_t>> p(n);
@@ -86,11 +87,14 @@ static int64_t _random_sample(const std::vector<int64_t> &candidates, const std:
     auto cmp = [](const std::pair<float, int64_t> &p1, const std::pair<float, int64_t> &p2) -> bool{
         return p1.first > p2.first;
     };
+    // 按照概率从大到小排列 然后计算前缀和
     std::sort(p.begin(), p.end(), cmp);
     for(size_t i = 1; i < n; ++ i){
         p[i].first += p[i - 1].first;
     }
+    // 二分查找界限大小
     size_t lim = lower_bound(p.begin(), p.end(), std::make_pair(top_p, int64_t(0))) - p.begin() + 1;
+    // 随机取模
     return p[rand() % lim].second;
 }
 } // namespace
@@ -105,13 +109,16 @@ Qwen2::Qwen2(Qwen2Meta meta,
              _running(false)
 
 {
+    // 加载一些数据
     const size_t nlayer = meta.nlayer;
     const size_t nkvh = meta.nkvh;
     const size_t dh = meta.dh;
     const size_t token_num = KV_CACHE_TOKEN_NUM;
     const size_t block_num = KV_CACHE_BLOCK_NUM;
     const size_t block_size = block_num * token_num * nkvh * dh;
+    // 初始化权重数组
     init_weight_arrays(this->_weights, nlayer);
+    // 初始化分层 kv cache
     this->_k_cache = std::vector<tensor_t>(nlayer, nullptr);
     this->_v_cache = std::vector<tensor_t>(nlayer, nullptr);
     tensor_t cache = Tensor::create({2, nlayer, block_size}, meta.dtype, device, device_ids[0]);
@@ -121,15 +128,20 @@ Qwen2::Qwen2(Qwen2Meta meta,
         this->_k_cache[i] = k_cache->slice(0, i, i + 1)->reshape({block_num, token_num, nkvh, dh});
         this->_v_cache[i] = v_cache->slice(0, i, i + 1)->reshape({block_num, token_num, nkvh, dh});
     }
+    // 创建调度器
     this->_scheduler = std::make_shared<Scheduler>(token_num, block_num, BATCH_MAX_TOKEN_NUM, BATCH_MAX_SEQ_NUM, meta.end_token);
+    // 启动时间循环
     this->start();
 }
 
 Qwen2::~Qwen2() {
+    // 先终止事件循环
     this->stop();
+    // 暂停对应的生产者线程
     if (this->_worker.joinable()) {
         this->_worker.join();
     }
+    // 释放权重所占内存
     free_weight_arrays(this->_weights);
 }  
 
@@ -137,25 +149,35 @@ void Qwen2::start(){
     if (this->_running) {
         return;
     }
+    // 事件循环方法
     auto loop = [](Qwen2 *model)->void{
         while(model->_running){
+            // 先根据调度器的调度方法决定本次计算的序列
             auto [seqs, is_prefill] = model->_scheduler->schedule();
             if(seqs.empty()) continue;
+            // 预处理块表
             auto block_ids = model->prepare_block_table(seqs);
+            // 根据是 prefill 还是 decode 分别进行预处理
             Qwen2Pack pack = is_prefill ? model->prepare_prefill(seqs) : model->prepare_decode(seqs);
+            // 执行一次批处理前向传播
             std::vector<int64_t> token_ids = model->forward(pack, block_ids);
+            // 后处理更新kv cache信息
             model->_scheduler->postprocess(seqs, token_ids, is_prefill);
         }
     };
+    // Genshen启动!
     this->_running = true;
     this->_worker = std::thread(loop, this);
 }
 
+// 暂停事件循环
 void Qwen2::stop(){
     this->_running = false;
 }
 
+// 请求方法
 int64_t Qwen2::request(int64_t *token_ids, size_t ntoken){
+    // 先根据 token_ids 计算 prompt hash 尝试进行最长前缀匹配 查找对应的seq
     long long hash = 0;
     std::shared_ptr<Sequence> seq;
     {
@@ -166,6 +188,7 @@ int64_t Qwen2::request(int64_t *token_ids, size_t ntoken){
                 seq = _hash_2_seq[hash];
             }
         }
+        // 匹配失败 就新建一个 seq 对象加入调度器 并更新查询 hash 表
         if(seq == nullptr){
             seq = std::make_shared<Sequence>(token_ids, ntoken);
             _hash_2_seq[seq->prompt_hash()] = seq;
@@ -173,11 +196,14 @@ int64_t Qwen2::request(int64_t *token_ids, size_t ntoken){
         }
     }
 
+    // 没到指定长度之前先空转
     while(seq->token_num() <= ntoken){
         std::this_thread::yield();
     }
 
+    // 索引找到应该返回的 token_id
     int64_t token = seq->token_ids()[ntoken];
+    // 当请求完成 就从查询表中进行清除
     if(token == this->_meta.end_token){
         std::lock_guard<std::mutex> lk(this->_hash_lock);
         this->_hash_2_seq.erase(seq->prompt_hash());
@@ -185,26 +211,41 @@ int64_t Qwen2::request(int64_t *token_ids, size_t ntoken){
     return token;
 }
 
+/**
+ * 预处理块表 
+ * 输入: 本次调度要计算的序列
+ * 输出: 合并后的总块表，每个序列按照最长块表长度对齐
+ */
 std::vector<int> Qwen2::prepare_block_table(const std::vector<seq_t> &seqs){
     const size_t batch_size = seqs.size();
     size_t max_block_num = 0;
     for(size_t i = 0; i < batch_size; ++ i){
         max_block_num = std::max(max_block_num, seqs[i]->block_ids().size());
     }
-    std::vector<int> block_table(batch_size * max_block_num);
+    std::vector<int> block_table(batch_size * max_block_num, -1);
     for(size_t i = 0; i < batch_size; ++ i){
+        // 复制到指定位置
         std::copy(seqs[i]->block_ids().begin(), seqs[i]->block_ids().end(), block_table.begin() + i * max_block_num);
     }
     return block_table;
 }
 
+/**
+ * prefill预处理
+ * prefill阶段每个seq的计算长度可能不同，导致直接对tensor添加batch维度会无法对齐
+ * 所以这里的做法是: 直接将所有要计算的seq拼接在一起，并记录对应的端点信息；
+ * 原因是：除了 attention 和 采样算子(top_k) 之外的其他算子天然支持并行计算，
+ *        并且 top_k 可以先将要处理的信息先按 batch 划分，然后执行批次计算，
+ *        对 attention 则需要记录间断点（load q）和最长序列信息（算子分块）还需要已计算部分的总长信息（totlen），
+ *        也可以进行批处理改造
+ */
 Qwen2Pack Qwen2::prepare_prefill(const std::vector<seq_t> &seqs){
     const size_t batch_size = seqs.size();
-    std::vector<int64_t> token_ids;
-    std::vector<int64_t> pos_ids;
-    std::vector<int> cut_idx(1, 0);
-    std::vector<int> tot_len;
-    size_t max_seq_len = 0;
+    std::vector<int64_t> token_ids; // token信息
+    std::vector<int64_t> pos_ids;   // 位置信息
+    std::vector<int> cut_idx(1, 0); // 切断点
+    std::vector<int> tot_len;       // 总长信息
+    size_t max_seq_len = 0;         // 最大序列长度
     for(size_t i = 0; i < batch_size; ++ i){
         seq_t seq = seqs[i];
         const size_t seq_len = seq->scheduled_token_num();
@@ -222,6 +263,10 @@ Qwen2Pack Qwen2::prepare_prefill(const std::vector<seq_t> &seqs){
     return Qwen2Pack{token_ids, pos_ids, cut_idx, tot_len, max_seq_len};
 }
 
+/**
+ * decode预处理
+ * 相较于 prefill 更加简单，因为所有 seq 当前的计算长度 seqlen 都是 1
+ */
 Qwen2Pack Qwen2::prepare_decode(const std::vector<seq_t> &seqs){
     const size_t batch_size = seqs.size();
     std::vector<int64_t> token_ids;
@@ -337,15 +382,20 @@ std::vector<int64_t> Qwen2::forward(Qwen2Pack &pack, std::vector<int> &block_ids
         tensor_t v_layer = this->_v_cache[layer];
 
         for(size_t i = 0; i < batch_size; ++ i){
+            // 在拼接序列的的起始位置
             size_t offset = cut_idx[i];
+            // 在原序列的起点、终点坐标
             size_t begin = pos_ids[cut_idx[i]];
             size_t end = pos_ids[cut_idx[i + 1] - 1];
             for(size_t j = begin; j <= end; j += token_num){
+                // 计算对应块该搬运的起点、终点索引
                 size_t b = j / token_num;
                 size_t l = std::max(begin, b * token_num);
                 size_t r = std::min(end, (b + 1) * token_num - 1);
+                // 查找块表
                 int block_id = block_ids[i * max_block_num + b];
                 if(block_id == -1) break;
+                // 找到对应块的位置
                 tensor_t k_block = k_layer->slice(0, block_id, block_id + 1)->reshape({token_num, nkvh, dh});
                 tensor_t v_block = v_layer->slice(0, block_id, block_id + 1)->reshape({token_num, nkvh, dh});
                 k_block = k_block->slice(0, l % token_num, r % token_num + 1)->reshape({r - l + 1, nkvh, dh});
@@ -407,10 +457,12 @@ std::vector<int64_t> Qwen2::forward(Qwen2Pack &pack, std::vector<int> &block_ids
     tensor_t top_idx = Tensor::create({batch_size, K}, LLAISYS_DTYPE_I64, device, device_id);
     tensor_t top_val = Tensor::create({batch_size, K}, dtype, device, device_id);
     ops::topk(top_idx, top_val, last, K);
+    // 搬到cpu
     if (device != LLAISYS_DEVICE_CPU) {
         top_idx = top_idx->to(LLAISYS_DEVICE_CPU, 0);
         top_val = top_val->to(LLAISYS_DEVICE_CPU, 0);
     }
+    // 逐个进行随机 top_p 采样
     std::vector<int64_t> result(batch_size);
     for(size_t i = 0; i < batch_size; ++ i){
         std::vector<int64_t> idx = top_idx->slice(0, i, i + 1)->reshape({K})->to_vector<int64_t>();
