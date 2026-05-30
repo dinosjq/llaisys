@@ -1,8 +1,10 @@
 import gc
 from test_utils import *
+import warnings
 
 import argparse
 from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import logging as hf_logging
 import torch
 from huggingface_hub import snapshot_download
 import os
@@ -12,7 +14,9 @@ import sys
 import io
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
-
+hf_logging.set_verbosity_error()
+warnings.filterwarnings("ignore", category=UserWarning, module="transformers")
+warnings.filterwarnings("ignore", message="`torch_dtype` is deprecated! Use `dtype` instead!")
 
 def load_hf_model(model_path=None, device_name="cpu"):
     model_id = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"

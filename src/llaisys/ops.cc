@@ -53,11 +53,20 @@ void llaisysPagedAttention(llaisysTensor_t attn_val,
                            llaisysTensor_t k_cache,
                            llaisysTensor_t v_cache,
                            llaisysTensor_t block_ids_tensor,
-                           size_t nblock,
-                           size_t totlen,
+                           llaisysTensor_t cut_idx_tensor,
+                           llaisysTensor_t tot_len_tensor,
+                           size_t max_seq_len,
                            float scale) 
 {
-    llaisys::ops::paged_attention(attn_val->tensor, q->tensor, k_cache->tensor, v_cache->tensor, block_ids_tensor->tensor, nblock, totlen, scale);
+    llaisys::ops::paged_attention(attn_val->tensor,
+                                   q->tensor,
+                                   k_cache->tensor,
+                                   v_cache->tensor,
+                                   block_ids_tensor->tensor,
+                                   cut_idx_tensor->tensor,
+                                   tot_len_tensor->tensor,
+                                   max_seq_len,
+                                   scale);
 }
 
 void llaisysSelfAttention(llaisysTensor_t attn_val, llaisysTensor_t q, llaisysTensor_t k, llaisysTensor_t v, float scale) {

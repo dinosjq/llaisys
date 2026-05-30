@@ -40,16 +40,6 @@ public:
 
     storage_t allocateDeviceStorage(size_t size);
     storage_t allocateHostStorage(size_t size);
-    /**
-     * 参考内存池的思路：统一分配内存防止碎片和多次释放的开销
-     * TODO: kv cache 专用
-     */
-    std::vector<storage_t> allocateKVStorage(size_t nlayer, size_t nsize);
-
-    /**
-     * TODO: 多层注意力中间矩阵专用
-     */
-    std::vector<storage_t> allocateMPStorage(const std::vector<size_t> &sizes);
 
     void freeStorage(Storage *storage);
 

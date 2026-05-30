@@ -27,14 +27,15 @@ def load_ops(lib):
     lib.llaisysROPE.restype = None
 
     lib.llaisysPagedAttention.argtypes = [
-        llaisysTensor_t,
-        llaisysTensor_t,
-        llaisysTensor_t,
-        llaisysTensor_t,
-        llaisysTensor_t,
-        c_size_t,
-        c_size_t,
-        c_float,
+        llaisysTensor_t,  # attn_val
+        llaisysTensor_t,  # q
+        llaisysTensor_t,  # k_cache
+        llaisysTensor_t,  # v_cache
+        llaisysTensor_t,  # block_ids
+        llaisysTensor_t,  # cut_idx
+        llaisysTensor_t,  # tot_len
+        c_size_t,         # max_seq_len
+        c_float,          # scale
     ]
     lib.llaisysPagedAttention.restype = None
 

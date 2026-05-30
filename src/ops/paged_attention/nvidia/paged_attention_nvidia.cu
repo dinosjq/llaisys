@@ -24,14 +24,14 @@ __global__ void paged_attention_kernel(T *__restrict__ _attn,
                                        const T *__restrict__ _K_cache, 
                                        const T *__restrict__ _V_cache, 
                                        const int *_block_ids,
+                                       const int *_cut_idx,
+                                       const int *_tot_len,
                                        const size_t _token_num,
-                                       const size_t _nblock,
+                                       const size_t _max_block_num,
                                        const float _scale, 
-                                       const size_t _seqlen, 
                                        const size_t _nhead, 
                                        const size_t _dv, 
                                        const size_t _d,
-                                       const size_t _totlen, 
                                        const size_t _nkvhead) 
 {
 
@@ -45,20 +45,25 @@ __global__ void paged_attention_kernel(T *__restrict__ _attn,
     float *_s_k = _s_q + BLOCK_M * _d;    // (BLOCK_M X d)
     float *_s_v = _s_k + BLOCK_M * _d;    // (BLOCK_M X dv)
 
-    const size_t q = blockIdx.x * BLOCK_M;
-    const size_t nh = blockIdx.y;
-    const size_t kv_rep = (_nkvhead != 0 && _nhead % _nkvhead == 0) ? (_nhead / _nkvhead) : 0;
-    const size_t nkvh = (kv_rep > 0) ? (nh / kv_rep) : (nh % _nkvhead);
-    const size_t extra = (_totlen > _seqlen) ? (_totlen - _seqlen) : 0;
-
     const size_t tid = threadIdx.x;
     const size_t warp_id = tid >> 5;
     const size_t lane_id = tid & 31;
+    const size_t batch_id = blockIdx.z;
+
+    const int *batch_block_ids = _block_ids + batch_id * _max_block_num;
+    const size_t _seqlen = _cut_idx[batch_id + 1] - _cut_idx[batch_id];
+    const size_t _totlen = _tot_len[batch_id];
+
+    const size_t q = blockIdx.x * BLOCK_M;
+    const size_t nh = blockIdx.y;
+    const size_t kv_rep = _nhead / _nkvhead;
+    const size_t nkvh = nh / kv_rep;
+    const size_t extra = _totlen - _seqlen;
 
     const size_t qi = q + warp_id;
     const size_t limit = min(qi + extra, _totlen - 1);
 
-    const T *_q = _Q + (qi * _nhead + nh) * _d;
+    const T *_q = _Q + ((qi + _cut_idx[batch_id]) * _nhead + nh) * _d;
     float *s_acc = _s_acc + warp_id * _dv;
     float *s_q = _s_q + warp_id * _d;
 
@@ -97,7 +102,7 @@ __global__ void paged_attention_kernel(T *__restrict__ _attn,
             size_t token_id = k + warp_id;
 
             if(token_id < _totlen){
-                const int block_id = _block_ids[token_id / _token_num];
+                const int block_id = batch_block_ids[token_id / _token_num];
                 token_id %= _token_num;
 
                 // global memory
@@ -178,7 +183,7 @@ __global__ void paged_attention_kernel(T *__restrict__ _attn,
         }
         const float den = _s_l[warp_id];
         const float inv = (den > 0.0f) ? 1.0f / den : 0.0f;
-        const size_t offset = (qi * _nhead + nh) * _dv;
+        const size_t offset = ((qi + _cut_idx[batch_id]) * _nhead + nh) * _dv;
 
         for (size_t i = lane_id; i < _dv; i += 32) {
             const float out = s_acc[i] * inv;
@@ -190,67 +195,71 @@ __global__ void paged_attention_kernel(T *__restrict__ _attn,
 }
 
 template <typename T>
-void paged_attention_launch(std::byte *attn_val,      
-                            const std::byte *q,       
-                            const std::byte *k_cache,  
-                            const std::byte *v_cache,  
-                            const std::byte *block_ids,
-                            const size_t block_num,   
-                            const size_t token_num,   
-                            const size_t nblock,       
-                            const float &scale,        
-                            const size_t &seqlen,      
-                            const size_t &nh,          
+void paged_attention_launch(std::byte *attn_val,       // 输出 (tot_seqlen, nh, dv)
+                            const std::byte *q,        // q (tot_seqlen, nh, d)
+                            const std::byte *k_cache,  // k底层缓存 (tot_len, nkvh, d) 
+                            const std::byte *v_cache,  // q底层缓存 (tot_len, nkvh, dv)
+                            const std::byte *block_ids,// 块表 (batch, block_ids) 记录块号 (block_num, token_num, nkvh, d | dv) 
+                            const std::byte *cut_idx,  // 记录对应序列起始位置，也可计算seqlen
+                            const std::byte *tot_len,  // 已计算kv总长
+                            const size_t token_num,    // 每个块的token数
+                            const size_t batch_size,   // 批次大小
+                            const size_t max_block_num,// 块表最多块数
+                            const size_t max_seq_len,  // 最大序列长度 用于分块
+                            const float &scale,        // 缩放因子
+                            const size_t &nh,          // 其他参数 ...
                             const size_t &dv, 
                             const size_t &d, 
-                            const size_t &totlen, 
-                            const size_t &nkvh) 
+                            const size_t &nkvh)
 {
     auto *d_attn = reinterpret_cast<T *>(attn_val);
     const auto *d_q = reinterpret_cast<const T *>(q);
     const auto *d_k_cache = reinterpret_cast<const T *>(k_cache);
     const auto *d_v_cache = reinterpret_cast<const T *>(v_cache);
     const auto *d_block_ids = reinterpret_cast<const int *>(block_ids);
+    const auto *d_cut_idx = reinterpret_cast<const int *>(cut_idx);
+    const auto *d_tot_len = reinterpret_cast<const int *>(tot_len);
 
     dim3 blockDim(256);
-    dim3 gridDim((seqlen + 7) >> 3, nh);
+    dim3 gridDim((max_seq_len + 7) >> 3, nh, batch_size);
 
     const size_t smem_bytes = sizeof(float) * (BLOCK_M * (d + dv + 4 + d + dv));
 
-    paged_attention_kernel<<<gridDim, blockDim, smem_bytes>>>(d_attn, d_q, d_k_cache, d_v_cache, d_block_ids, token_num,
-                                                nblock, scale, seqlen, nh, dv, d, totlen, nkvh);
+    paged_attention_kernel<<<gridDim, blockDim, smem_bytes>>>(d_attn, d_q, d_k_cache, d_v_cache, d_block_ids, d_cut_idx, d_tot_len,
+                                                                 token_num, max_block_num, scale, nh, dv, d, nkvh);
 
     CUDA_CHECK(cudaGetLastError());
 }
 
 namespace llaisys::ops::nvidia {
-void paged_attention(std::byte *attn_val,       // 输出 (seqlen, nh, dv)
-                     const std::byte *q,        // q (seqlen, nh, d)
-                     const std::byte *k_cache,  // k底层缓存 (totlen, nkvh, d)
-                     const std::byte *v_cache,  // q底层缓存 (totlen, nkvh, dv)
-                     const std::byte *block_ids,// 块表 记录块号 (block_num, token_num, nkvh, d | dv) 
-                     const size_t block_num,    // 总块数
+void paged_attention(std::byte *attn_val,       // 输出 (tot_seqlen, nh, dv)
+                     const std::byte *q,        // q (tot_seqlen, nh, d)
+                     const std::byte *k_cache,  // k底层缓存 (tot_len, nkvh, d) 
+                     const std::byte *v_cache,  // q底层缓存 (tot_len, nkvh, dv)
+                     const std::byte *block_ids,// 块表 (batch, block_ids) 记录块号 (block_num, token_num, nkvh, d | dv) 
+                     const std::byte *cut_idx,  // 记录对应序列起始位置，也可计算seqlen
+                     const std::byte *tot_len,  // 已计算kv总长
                      const size_t token_num,    // 每个块的token数
-                     const size_t nblock,       // 块表中块的个数
+                     const size_t batch_size,   // 批次大小
+                     const size_t max_block_num,// 块表最多块数
+                     const size_t max_seq_len,  // 最大序列长度 用于分块
                      llaisysDataType_t dtype,   // 权重数据类型
                      const float &scale,        // 缩放因子
-                     const size_t &seqlen,      // 需计算序列长度
                      const size_t &nh,          // 其他参数 ...
                      const size_t &dv, 
                      const size_t &d, 
-                     const size_t &totlen, 
                      const size_t &nkvh)
 {
     switch (dtype) {
     case LLAISYS_DTYPE_F32:
-        return paged_attention_launch<float>(attn_val, q, k_cache, v_cache, block_ids, block_num, token_num, 
-                                            nblock, scale, seqlen, nh, dv, d, totlen, nkvh);
+        return paged_attention_launch<float>(attn_val, q, k_cache, v_cache, block_ids, cut_idx, tot_len, token_num,
+                                             batch_size, max_block_num, max_seq_len, scale, nh, dv, d, nkvh);
     case LLAISYS_DTYPE_BF16:
-        return paged_attention_launch<llaisys::bf16_t>(attn_val, q, k_cache, v_cache, block_ids, block_num, token_num, 
-                                            nblock, scale, seqlen, nh, dv, d, totlen, nkvh);
+        return paged_attention_launch<llaisys::bf16_t>(attn_val, q, k_cache, v_cache, block_ids, cut_idx, tot_len, token_num,
+                                             batch_size, max_block_num, max_seq_len, scale, nh, dv, d, nkvh);
     case LLAISYS_DTYPE_F16:
-        return paged_attention_launch<llaisys::fp16_t>(attn_val, q, k_cache, v_cache, block_ids, block_num, token_num, 
-                                            nblock, scale, seqlen, nh, dv, d, totlen, nkvh);
+        return paged_attention_launch<llaisys::fp16_t>(attn_val, q, k_cache, v_cache, block_ids, cut_idx, tot_len, token_num,
+                                             batch_size, max_block_num, max_seq_len, scale, nh, dv, d, nkvh);
     default:
         EXCEPTION_UNSUPPORTED_DATATYPE(dtype);
     }

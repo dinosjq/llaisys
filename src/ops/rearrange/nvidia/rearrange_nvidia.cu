@@ -152,6 +152,7 @@ void rearrange(std::byte *out, const std::byte *in, llaisysDataType_t dtype,
     launch_kernel(static_cast<int>(elem_size));
 
     CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
 
     cudaFree(d_shape);
     cudaFree(d_dim_prod);

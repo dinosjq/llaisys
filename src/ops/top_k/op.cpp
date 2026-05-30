@@ -19,13 +19,24 @@ void topk(tensor_t out_idx, tensor_t out_val, tensor_t vals, size_t k) {
     // 设置当前设备
     llaisys::core::context().setDevice(vals->deviceType(), vals->deviceId());
 
+    std::vector<size_t> shape = vals->shape();
+    size_t batch_size = 1;
+    size_t numel = 0;
+    if (shape.size() == 1) {
+        batch_size = 1;
+        numel = shape[0];
+    } else {
+        batch_size = shape[0];
+        numel = shape[1];
+    }
+
     // 根据设备类型分发实现
     switch (vals->deviceType()) {
     case LLAISYS_DEVICE_CPU:
-        return cpu::topk(out_idx->data(), out_val->data(), vals->data(), vals->dtype(), vals->numel(), k);
+        return cpu::topk(out_idx->data(), out_val->data(), vals->data(), vals->dtype(), batch_size, numel, k);
 #ifdef ENABLE_NVIDIA_API
     case LLAISYS_DEVICE_NVIDIA:
-        return nvidia::topk(out_idx->data(), out_val->data(), vals->data(), vals->dtype(), vals->numel(), k);
+        return nvidia::topk(out_idx->data(), out_val->data(), vals->data(), vals->dtype(), batch_size, numel, k);
 #endif
     default:
         // 不支持的设备类型

@@ -66,80 +66,6 @@ tensor_t Tensor::create(const std::vector<size_t> &shape,
     }
 }
 
-// kv cache 专用
-std::vector<std::vector<tensor_t>> Tensor::createKV(
-    const std::vector<size_t> &shape,
-    const size_t nlayer,
-    llaisysDataType_t dtype,
-    llaisysDeviceType_t device_type,
-    int device)
-{
-    ASSERT(device_type == LLAISYS_DEVICE_NVIDIA, "createKV device type wrong.");
-
-    size_t ndim_ = shape.size();
-    std::vector<ptrdiff_t> strides(ndim_);
-    size_t stride = 1;
-    for (size_t i = 1; i <= ndim_; ++ i) {
-        strides[ndim_ - i] = stride;
-        stride *= shape[ndim_ - i];
-    }
-
-    TensorMeta meta{dtype, shape, strides};
-    size_t total_elems = stride;
-    size_t dtype_size = utils::dsize(dtype);
-
-    core::context().setDevice(device_type, device);
-    auto storages = core::context().runtime().allocateKVStorage(nlayer, total_elems * dtype_size);
-
-    std::vector<std::vector<tensor_t>> result(2, std::vector<tensor_t>(nlayer));
-    for (size_t i = 0; i < 2; ++ i) {
-        for (size_t j = 0; j < nlayer; ++ j){
-            result[i][j] = std::shared_ptr<Tensor>(new Tensor(meta, storages[i * nlayer + j]));
-        }
-    }
-
-    return result;
-}
-
-// 多层注意力中间矩阵专用
-std::vector<tensor_t> Tensor::createMP(
-    const std::vector<std::vector<size_t>> &shapes,
-    llaisysDataType_t dtype,
-    llaisysDeviceType_t device_type,
-    int device) 
-{
-    ASSERT(device_type == LLAISYS_DEVICE_NVIDIA, "createMP device type wrong.");
-
-    const size_t n = shapes.size();
-
-    std::vector<std::vector<ptrdiff_t>> strides(n);
-    std::vector<size_t> sizes(n);
-    size_t dtype_size = utils::dsize(dtype);
-
-    for (size_t i = 0; i < n; ++i) {
-        size_t ndim_ = shapes[i].size();
-        strides[i] = std::vector<ptrdiff_t>(ndim_);
-        size_t stride = 1;
-        for (size_t j = 1; j <= ndim_; ++ j) {
-            strides[i][ndim_ - j] = stride;
-            stride *= shapes[i][ndim_ - j];
-        }
-        sizes[i] = stride * dtype_size;
-    }
-
-    core::context().setDevice(device_type, device);
-    auto storages = core::context().runtime().allocateMPStorage(sizes);
-
-    std::vector<tensor_t> result(n);
-    
-    for (size_t i = 0; i < n; ++i) {
-        TensorMeta meta{dtype, shapes[i], strides[i]};
-        result[i] = std::shared_ptr<Tensor>(new Tensor(meta, storages[i]));
-    }
-
-    return result;
- }
-
 /**
  * @brief 获取张量数据的可写指针。
  * @return 指向张量数据起始位置的 std::byte* 指针。
@@ -512,5 +438,42 @@ tensor_t Tensor::to(llaisysDeviceType_t device_type, int device) const {
 
     return out;
 }
+
+
+/**
+ *  一维张量转向量
+ */
+template<typename T>
+std::vector<T> Tensor::to_vector(){
+    ASSERT(this->ndim() == 1, "Tensor_to_vector: dim error.");
+    ASSERT(this->isContiguous(), "Tensor_to_vector: not contiguous.");
+    if constexpr (std::is_same_v<T, float>) {
+        llaisysDataType_t type = this->dtype();
+        ASSERT(type == LLAISYS_DTYPE_BF16 || type == LLAISYS_DTYPE_F16 || type == LLAISYS_DTYPE_F32, "Tensor_to_vector: type error");
+        std::vector<float> res(this->numel(), 0.0);
+        if(type == LLAISYS_DTYPE_BF16){
+            const bf16_t *d = reinterpret_cast<const bf16_t *>(this->data());
+            for(size_t i = 0; i < res.size(); ++ i){
+                res[i] = llaisys::utils::cast<float>(d[i]);
+            }
+        }else if(type == LLAISYS_DTYPE_F16){
+            const fp16_t *d = reinterpret_cast<const fp16_t *>(this->data());
+            for(size_t i = 0; i < res.size(); ++ i){
+                res[i] = llaisys::utils::cast<float>(d[i]);
+            }
+        }else{
+            const float *d = reinterpret_cast<float *>(this->data());
+            res = std::vector<float>(d, d + this->numel());
+        }
+        return res;
+    } else{
+        const T *d = reinterpret_cast<const T*>(this->data());
+        return std::vector<T>(d, d + this->numel());
+    }
+    return std::vector<T>();
+}
+// 显式实例化常用类型，确保符号导出供共享库使用
+template std::vector<int64_t> Tensor::to_vector<int64_t>();
+template std::vector<float> Tensor::to_vector<float>();
 
 } // namespace llaisys

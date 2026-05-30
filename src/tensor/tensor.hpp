@@ -26,21 +26,6 @@ public:
         llaisysDeviceType_t device_type = LLAISYS_DEVICE_CPU,
         int device = 0);
 
-    // kv cache 专用
-    static std::vector<std::vector<tensor_t>> createKV(
-        const std::vector<size_t> &shape,
-        const size_t nlayer,
-        llaisysDataType_t dtype,
-        llaisysDeviceType_t device_type = LLAISYS_DEVICE_CPU,
-        int device = 0);
-
-    // 多层注意力中间矩阵专用
-    static std::vector<tensor_t> createMP(
-        const std::vector<std::vector<size_t>> &shapes,
-        llaisysDataType_t dtype,
-        llaisysDeviceType_t device_type = LLAISYS_DEVICE_CPU,
-        int device = 0);
-
     ~Tensor() = default;
     // Info
     std::byte *data();
@@ -71,6 +56,9 @@ public:
     tensor_t contiguous() const;
     tensor_t reshape(const std::vector<size_t> &shape) const;
     tensor_t to(llaisysDeviceType_t device_type, int device = -1) const;
+
+    template<typename T>
+    std::vector<T> to_vector();
 };
 
 } // namespace llaisys

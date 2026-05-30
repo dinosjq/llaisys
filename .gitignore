@@ -1,9 +1,11 @@
 # Xmake cache
 .xmake/
 build/
+.gitignore
 
 任务书.md
 CLAUDE.md
+LLAISYS框架描述.md
 
 # Binaries
 bin/

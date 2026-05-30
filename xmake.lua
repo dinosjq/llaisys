@@ -65,6 +65,7 @@ target("llaisys-core")
 
     add_files("src/core/*/*.cpp")
     add_files("src/kv_cache/*.cpp")
+    add_files("src/scheduler/*.cpp")
     add_files("src/models/*.cpp")
 
     on_install(function (target) end)
@@ -124,6 +125,7 @@ target("llaisys")
     set_warnings("all", "error")
     add_files("src/llaisys/*.cc")
     add_files("src/llaisys/models/*.cc")
+    add_files("src/sequence/*.cpp")
     set_installdir(".")
 
     

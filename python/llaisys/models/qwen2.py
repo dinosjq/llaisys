@@ -23,6 +23,7 @@ class Qwen2:
         model_path = Path(model_path)
         self._device = device
         self._tensors = []
+        self._closed = False
 
         # model 的 config 路径
         config_path = model_path / "config.json"
@@ -103,6 +104,20 @@ class Qwen2:
         # tie weights if needed
         if not self._weights.out_embed:
             self._weights.out_embed = self._weights.in_embed
+
+    def close(self):
+        if self._closed:
+            return
+        self._closed = True
+        if getattr(self, "_model", None):
+            LIB_LLAISYS.llaisysQwen2ModelDestroy(self._model)
+            self._model = None
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
 
     # 加载 tensor: 将 numpy 转为 tensor
     def _tensor_from_numpy(self, arr: np.ndarray) -> Tensor:

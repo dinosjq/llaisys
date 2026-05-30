@@ -98,6 +98,59 @@ def test_op_topk(
         )
 
 
+def test_op_topk_batched(
+    batch: int,
+    n: int,
+    k: int,
+    dtype_name: str = "f32",
+    device_name_: str = "cpu",
+    profile: bool = False,
+):
+    print(f"   batch={batch} n={n} k={k} dtype <{dtype_name}>")
+    assert 0 < k <= n
+
+    if dtype_name == "f32":
+        atol, rtol = 1e-5, 1e-5
+    elif dtype_name == "f16":
+        atol, rtol = 1e-3, 1e-3
+    elif dtype_name == "bf16":
+        atol, rtol = 1e-2, 1e-2
+    else:
+        raise ValueError(f"Unsupported dtype: {dtype_name}")
+
+    vals, vals_ = random_tensor((batch, n), dtype_name, device_name_)
+    out_idx, out_idx_ = zero_tensor((batch, k), "i64", device_name_)
+    out_val, out_val_ = zero_tensor((batch, k), dtype_name, device_name_)
+
+    ref_val, ref_idx = torch_topk(vals, k)
+
+    llaisys.Ops.topk(out_idx_, out_val_, vals_, k)
+
+    got_idx = fetch_llaisys_tensor(out_idx_).to(torch.int64)
+    got_val = fetch_llaisys_tensor(out_val_).to(vals.dtype)
+
+    # Basic sanity checks
+    assert got_idx.shape == (batch, k)
+    assert got_val.shape == (batch, k)
+    assert int(got_idx.min()) >= 0
+    assert int(got_idx.max()) < n
+
+    # Per-row checks: indices/value consistency and value multiset vs torch
+    for b in range(batch):
+        gathered = vals[b, got_idx[b]]
+        assert torch.allclose(gathered, got_val[b], atol=atol, rtol=rtol)
+
+        got_sorted = torch.sort(got_val[b], descending=True).values
+        assert torch.allclose(got_sorted, ref_val[b], atol=atol, rtol=rtol)
+
+    if profile:
+        benchmark(
+            lambda: torch_topk(vals, k),
+            lambda: llaisys.Ops.topk(out_idx_, out_val_, vals_, k),
+            device_name_,
+        )
+
+
 if __name__ == "__main__":
     import argparse
 
@@ -118,5 +171,14 @@ if __name__ == "__main__":
     for n, k in test_cases:
         for dtype_name in test_dtypes:
             test_op_topk(n, k, dtype_name, args.device, args.profile)
+    # batched cases
+    batched_cases = [
+        (4, 16, 1),
+        (4, 16, 5),
+        (2, 4096, 32),
+    ]
+    for batch, n, k in batched_cases:
+        for dtype_name in test_dtypes:
+            test_op_topk_batched(batch, n, k, dtype_name, args.device, args.profile)
 
     print("\033[92mTest passed!\033[0m\n")

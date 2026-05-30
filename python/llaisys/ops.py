@@ -1,4 +1,4 @@
-from .libllaisys import LIB_LLAISYS
+from .libllaisys import LIB_LLAISYS, DataType, DeviceType
 from .tensor import Tensor
 from ctypes import c_float, c_size_t
 
@@ -48,17 +48,26 @@ class Ops:
         )
 
     @staticmethod
-    def paged_attention(attn_val: Tensor, q: Tensor, k_cache: Tensor, v_cache: Tensor, block_ids: Tensor, nblock: int, totlen: int, scale: float):
-        LIB_LLAISYS.llaisysPagedAttention(
-            attn_val.lib_tensor(),
-            q.lib_tensor(),
-            k_cache.lib_tensor(),
-            v_cache.lib_tensor(),
-            block_ids.lib_tensor(),
-            c_size_t(nblock),
-            c_size_t(totlen),
-            c_float(scale),
-        )
+    def paged_attention(attn_val: Tensor, q: Tensor, k_cache: Tensor, v_cache: Tensor, block_ids, *rest):
+        """
+        Support two call signatures:
+        - per-sample (legacy): (attn_val, q, k_cache, v_cache, block_ids_tensor, block_ids_len:int, tot_len:int, scale:float)
+        - batched single-shot: (attn_val, q_cat, k_cache, v_cache, block_ids_ll, cut_idx_ll, totlen_ll, max_seq_len:int, scale:float)
+
+        The wrapper detects which form is used and adapts to call the C binding.
+        """
+        def paged_attention(attn_val: Tensor, q: Tensor, k_cache: Tensor, v_cache: Tensor, block_ids: Tensor, cut_idx: Tensor, tot_len: Tensor, max_seq_len: int, scale: float):
+            LIB_LLAISYS.llaisysPagedAttention(
+                attn_val.lib_tensor(),
+                q.lib_tensor(),
+                k_cache.lib_tensor(),
+                v_cache.lib_tensor(),
+                block_ids.lib_tensor(),
+                cut_idx.lib_tensor(),
+                tot_len.lib_tensor(),
+                c_size_t(max_seq_len),
+                c_float(scale),
+            )
 
     @staticmethod
     def self_attention(attn_val: Tensor, q: Tensor, k: Tensor, v: Tensor, scale: float):
