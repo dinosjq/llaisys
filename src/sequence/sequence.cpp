@@ -2,13 +2,13 @@
 #include "../kv_cache/block_manager.hpp"
 
 namespace llaisys{
-
 Sequence::Sequence(int64_t *token_ids, size_t ntoken):
                     _seq_id(Sequence::counter()),
                     _status(SeqStatus::WAITING),
                     _is_prefill(true),
                     _prompt_hash(BlockManager::_compute_hash(token_ids, ntoken, -1)),
                     _ntoken(ntoken),
+                    _cached_ntoken(0),
                     _prompt_ntoken(ntoken),
                     _scheduled_ntoken(0),
                     _max_ntoken(MAX_TOKEN_NUM),
@@ -62,7 +62,7 @@ size_t &Sequence::scheduled_token_num(){
 }
 
 size_t Sequence::last_block_token_num() { 
-    return this->_ntoken - (this->block_num() - 1) * KV_CACHE_BLOCK_NUM; 
+    return this->_ntoken - (this->block_num() - 1) * KV_CACHE_TOKEN_NUM; 
 }
 
 int64_t Sequence::last_token(){

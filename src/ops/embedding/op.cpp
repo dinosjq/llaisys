@@ -25,13 +25,17 @@ void embedding(tensor_t out, tensor_t index, tensor_t weight) {
     // 设置当前设备
     llaisys::core::context().setDevice(weight->deviceType(), weight->deviceId());
 
+    const auto dtype = weight->dtype();
+    const size_t numel = index->numel();
+    const size_t len = weight->shape()[1];
+
     // 根据设备类型分发实现
     switch (weight->deviceType()) {
     case LLAISYS_DEVICE_CPU:
-        return cpu::embedding(out->data(), index->data(), weight->data(), index->numel(), weight->shape()[1], weight->elementSize());
+        return cpu::embedding(out->data(), index->data(), weight->data(), dtype, numel, len);
 #ifdef ENABLE_NVIDIA_API
     case LLAISYS_DEVICE_NVIDIA:
-        return nvidia::embedding(out->data(), index->data(), weight->data(), index->numel(), weight->shape()[1], weight->elementSize());
+        return nvidia::embedding(out->data(), index->data(), weight->data(), dtype, numel, len);
 #endif
     default:
         // 不支持的设备类型

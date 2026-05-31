@@ -53,7 +53,7 @@ public:
     // 原子添加请求信息到未使用的等待队列
     void add(seq_t seq);
 
-    // 执行 PD 分离调度 [本次计算序列, is_prefill]
+    // 执行调度 [本次计算序列, is_prefill]
     std::pair<std::vector<seq_t>, bool> schedule();
     
     // 预先清空对应使用的kv cache信息

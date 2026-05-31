@@ -30,6 +30,24 @@ struct Qwen2Pack {
 
 using Qwen2Weights = ::LlaisysQwen2Weights;
 
+struct Qwen2Tensors{
+    tensor_t _x_norm;
+    tensor_t _q;
+    tensor_t _k;
+    tensor_t _v;
+    tensor_t _q_rope;
+    tensor_t _k_rope;
+    tensor_t _attn_val;
+    tensor_t _attn_out;
+    tensor_t _x_attn;
+    tensor_t _m_norm;
+    tensor_t _gate;
+    tensor_t _up;
+    tensor_t _swiglu;
+    tensor_t _down;
+    tensor_t _x_mlp;
+};
+
 class Qwen2{
 private:
     // 模型、设备信息
@@ -37,6 +55,7 @@ private:
     llaisysDeviceType_t _device_type;
     std::vector<int> _device_ids;
     Qwen2Weights _weights;
+    Qwen2Tensors _tensors;
     // 请求调度、kv cache管理
     scheduler_t _scheduler;
     std::vector<tensor_t> _k_cache;

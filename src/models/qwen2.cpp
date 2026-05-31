@@ -110,18 +110,40 @@ Qwen2::Qwen2(Qwen2Meta meta,
 
 {
     // 加载一些数据
+    llaisysDataType_t dtype = meta.dtype;
     const size_t nlayer = meta.nlayer;
+    const size_t hs = meta.hs;
+    const size_t nh = meta.nh;
     const size_t nkvh = meta.nkvh;
     const size_t dh = meta.dh;
+    const size_t di = meta.di;
     const size_t token_num = KV_CACHE_TOKEN_NUM;
     const size_t block_num = KV_CACHE_BLOCK_NUM;
     const size_t block_size = block_num * token_num * nkvh * dh;
+    const size_t batch_max_token_num = BATCH_MAX_TOKEN_NUM;
+    int device_id = device_ids[0];
     // 初始化权重数组
     init_weight_arrays(this->_weights, nlayer);
+    // 初始化运行时张量
+    _tensors._x_norm = Tensor::create({batch_max_token_num, hs}, dtype, device, device_id);
+    _tensors._q = Tensor::create({batch_max_token_num, nh * dh}, dtype, device, device_id);
+    _tensors._k = Tensor::create({batch_max_token_num, nkvh * dh}, dtype, device, device_id);
+    _tensors._v = Tensor::create({batch_max_token_num, nkvh * dh}, dtype, device, device_id);
+    _tensors._q_rope = Tensor::create({batch_max_token_num, nh, dh}, dtype, device, device_id);
+    _tensors._k_rope = Tensor::create({batch_max_token_num, nkvh, dh}, dtype, device, device_id);
+    _tensors._attn_val = Tensor::create({batch_max_token_num, nh, dh}, dtype, device, device_id);
+    _tensors._attn_out = Tensor::create({batch_max_token_num, hs}, dtype, device, device_id);
+    _tensors._x_attn = Tensor::create({batch_max_token_num, hs}, dtype, device, device_id);
+    _tensors._m_norm = Tensor::create({batch_max_token_num, hs}, dtype, device, device_id);
+    _tensors._gate = Tensor::create({batch_max_token_num, di}, dtype, device, device_id);
+    _tensors._up = Tensor::create({batch_max_token_num, di}, dtype, device, device_id);
+    _tensors._swiglu = Tensor::create({batch_max_token_num, di}, dtype, device, device_id);
+    _tensors._down = Tensor::create({batch_max_token_num, hs}, dtype, device, device_id);
+    _tensors._x_mlp = Tensor::create({batch_max_token_num, hs}, dtype, device, device_id);
     // 初始化分层 kv cache
     this->_k_cache = std::vector<tensor_t>(nlayer, nullptr);
     this->_v_cache = std::vector<tensor_t>(nlayer, nullptr);
-    tensor_t cache = Tensor::create({2, nlayer, block_size}, meta.dtype, device, device_ids[0]);
+    tensor_t cache = Tensor::create({2, nlayer, block_size}, meta.dtype, device, device_id);
     tensor_t k_cache = cache->slice(0, 0, 1)->reshape({nlayer, block_size});
     tensor_t v_cache = cache->slice(0, 1, 2)->reshape({nlayer, block_size});
     for(size_t i = 0; i < nlayer; ++ i){
@@ -289,6 +311,7 @@ std::vector<int64_t> Qwen2::forward(Qwen2Pack &pack, std::vector<int> &block_ids
     // 加载元数据 + 权重
     const Qwen2Meta &meta = this->_meta;
     const Qwen2Weights &w = this->_weights;
+    const Qwen2Tensors &t = this->_tensors;
 
     // 预处理信息
     const std::vector<int64_t> &token_ids = pack.token_ids;
@@ -318,21 +341,21 @@ std::vector<int64_t> Qwen2::forward(Qwen2Pack &pack, std::vector<int> &block_ids
     const llaisysDeviceType_t device = this->_device_type;
 
     // 初始化中间张量
-    tensor_t x_norm = Tensor::create({tot_seq_len, hs}, dtype, device, device_id);
-    tensor_t q = Tensor::create({tot_seq_len, nh * dh}, dtype, device, device_id);
-    tensor_t k = Tensor::create({tot_seq_len, nkvh * dh}, dtype, device, device_id);
-    tensor_t v = Tensor::create({tot_seq_len, nkvh * dh}, dtype, device, device_id);
-    tensor_t q_rope = Tensor::create({tot_seq_len, nh, dh}, dtype, device, device_id);
-    tensor_t k_rope = Tensor::create({tot_seq_len, nkvh, dh}, dtype, device, device_id);
-    tensor_t attn_val = Tensor::create({tot_seq_len, nh, dh}, dtype, device, device_id);
-    tensor_t attn_out = Tensor::create({tot_seq_len, hs}, dtype, device, device_id);
-    tensor_t x_attn = Tensor::create({tot_seq_len, hs}, dtype, device, device_id);
-    tensor_t m_norm = Tensor::create({tot_seq_len, hs}, dtype, device, device_id);
-    tensor_t gate = Tensor::create({tot_seq_len, di}, dtype, device, device_id);
-    tensor_t up = Tensor::create({tot_seq_len, di}, dtype, device, device_id);
-    tensor_t swiglu = Tensor::create({tot_seq_len, di}, dtype, device, device_id);
-    tensor_t down = Tensor::create({tot_seq_len, hs}, dtype, device, device_id);
-    tensor_t x_mlp = Tensor::create({tot_seq_len, hs}, dtype, device, device_id);
+    tensor_t x_norm = t._x_norm->slice(0, 0, tot_seq_len)->view({tot_seq_len, hs});
+    tensor_t q = t._q->slice(0, 0, tot_seq_len)->view({tot_seq_len, nh * dh});
+    tensor_t k = t._k->slice(0, 0, tot_seq_len)->view({tot_seq_len, nkvh * dh});
+    tensor_t v = t._v->slice(0, 0, tot_seq_len)->view({tot_seq_len, nkvh * dh}); 
+    tensor_t q_rope = t._q_rope->slice(0, 0, tot_seq_len)->view({tot_seq_len, nh, dh});
+    tensor_t k_rope = t._k_rope->slice(0, 0, tot_seq_len)->view({tot_seq_len, nkvh, dh});
+    tensor_t attn_val = t._attn_val->slice(0, 0, tot_seq_len)->view({tot_seq_len, nh, dh});
+    tensor_t attn_out = t._attn_out->slice(0, 0, tot_seq_len)->view({tot_seq_len, hs});
+    tensor_t x_attn = t._x_attn->slice(0, 0, tot_seq_len)->view({tot_seq_len, hs});
+    tensor_t m_norm = t._m_norm->slice(0, 0, tot_seq_len)->view({tot_seq_len, hs});
+    tensor_t gate = t._gate->slice(0, 0, tot_seq_len)->view({tot_seq_len, di});
+    tensor_t up = t._up->slice(0, 0, tot_seq_len)->view({tot_seq_len, di});
+    tensor_t swiglu = t._swiglu->slice(0, 0, tot_seq_len)->view({tot_seq_len, di});
+    tensor_t down =  t._down->slice(0, 0, tot_seq_len)->view({tot_seq_len, hs});
+    tensor_t x_mlp = t._x_mlp->slice(0, 0, tot_seq_len)->view({tot_seq_len, hs});
 
     // 初始化设备端数据
     tensor_t dev_block_ids = Tensor::create({batch_size, max_block_num}, LLAISYS_DTYPE_I32, device, device_id);

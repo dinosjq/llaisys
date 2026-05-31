@@ -3,24 +3,67 @@
 #include "../../../utils.hpp"
 #include "utils/nvidia_utils.cuh"
 #include <cuda_runtime.h>
-#include <cstring>
+#include <cstdint>
+#include <algorithm>
+#include <type_traits>
 
 namespace llaisys::ops::nvidia {
-void embedding(std::byte *out, const std::byte *d_index, const std::byte *weight, const size_t numel, const size_t len, const size_t elem_size) {
-    const size_t len_size = len * elem_size;
 
-    const size_t byte_size = numel * sizeof(int64_t);
-    std::byte *h_index = (std::byte *) malloc(byte_size);
-    CUDA_CHECK(cudaMemcpy(h_index, d_index, byte_size, cudaMemcpyDeviceToHost));
+template <typename T>
+__global__ void embedding_gather_kernel(T *out, const int64_t *index, const T *weight, size_t numel, size_t len) {
+    size_t row = static_cast<size_t>(blockIdx.x) + static_cast<size_t>(blockIdx.y) * gridDim.x;
+    if (row >= numel) return;
 
-    int64_t *index = reinterpret_cast<int64_t *>(h_index);
+    size_t idx = static_cast<size_t>(index[row]);
+    const T *src = weight + idx * len;
+    T *dst = out + row * len;
 
-    for (size_t i = 0, o_offset = 0; i < numel; ++i, o_offset += len_size) {
-        size_t idx = static_cast<size_t>(index[i]);
-        size_t w_offset = idx * len_size;
-        CUDA_CHECK(cudaMemcpy(out + o_offset, weight + w_offset, len_size, cudaMemcpyDeviceToDevice));
+    constexpr size_t VEC = 4;
+    const size_t vec_len = len & ~(VEC - 1);
+
+    for (size_t i = static_cast<size_t>(threadIdx.x) * VEC; i + (VEC - 1) < vec_len; i += static_cast<size_t>(blockDim.x) * VEC) {
+        const float4 v = llaisys::utils::nvidia::load_4d(src + i);
+        llaisys::utils::nvidia::save_4d(dst + i, v);
     }
 
-    free(h_index);
+    for (size_t i = vec_len + threadIdx.x; i < len; i += blockDim.x) {
+        dst[i] = src[i];
+    }
 }
+
+template <typename T>
+void embedding_launch(std::byte *out, const std::byte *d_index, const std::byte *weight, const size_t numel, const size_t len) {
+    if (numel == 0 || len == 0) return;
+
+    const int64_t *index = reinterpret_cast<const int64_t *>(d_index);
+    auto *d_out = reinterpret_cast<T *>(out);
+    const auto *d_weight = reinterpret_cast<const T *>(weight);
+
+    const unsigned int MAX_X = 65535u;
+    size_t blocks_x = std::min(numel, (size_t)MAX_X);
+    size_t blocks_y = (numel + blocks_x - 1) / blocks_x;
+    dim3 grid((unsigned)blocks_x, (unsigned)blocks_y);
+
+    int threads = 256;
+    if (len < (size_t)threads) threads = (int)len;
+    if (threads <= 0) threads = 1;
+
+    embedding_gather_kernel<<<grid, threads>>>(d_out, index, d_weight, numel, len);
+    CUDA_CHECK(cudaGetLastError());
+}
+
+void embedding(std::byte *out, const std::byte *d_index, const std::byte *weight, llaisysDataType_t dtype,
+               const size_t numel, const size_t len) {
+    switch (dtype) {
+    case LLAISYS_DTYPE_F32:
+        return embedding_launch<float>(out, d_index, weight, numel, len);
+    case LLAISYS_DTYPE_BF16:
+        return embedding_launch<llaisys::bf16_t>(out, d_index, weight, numel, len);
+    case LLAISYS_DTYPE_F16:
+        return embedding_launch<llaisys::fp16_t>(out, d_index, weight, numel, len);
+    default:
+        EXCEPTION_UNSUPPORTED_DATATYPE(dtype);
+    }
+}
+
 } // namespace llaisys::ops::nvidia
