@@ -5,8 +5,8 @@
 #define KV_CACHE_BLOCK_NUM 128  // kv cache总块数
 
 // sample
-#define TOP_K 1   // 采样top_k
-#define TOP_P 1   // 采样累计概率前top_p
+#define TOP_K 10    // 采样top_k
+#define TOP_P 0.9   // 采样累计概率前top_p
 
 // bacth limit
 #define BATCH_MAX_TOKEN_NUM 16386   // 批次最大并行token总数

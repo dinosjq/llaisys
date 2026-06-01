@@ -95,27 +95,39 @@ void rearrange(std::byte *out, const std::byte *in, llaisysDataType_t dtype,
         dim_prod[d] = p;
     }
 
-    // Allocate device copies of small arrays
-    size_t *d_shape = nullptr, *d_dim_prod = nullptr;
-    ptrdiff_t *d_in_strides = nullptr, *d_out_strides = nullptr;
-    cudaError_t cerr = cudaSuccess;
-    cerr = cudaMalloc(&d_shape, ndim * sizeof(size_t));
-    ASSERT(cerr == cudaSuccess, "rearrange: cudaMalloc d_shape failed");
-    cerr = cudaMalloc(&d_dim_prod, ndim * sizeof(size_t));
-    ASSERT(cerr == cudaSuccess, "rearrange: cudaMalloc d_dim_prod failed");
-    cerr = cudaMalloc(&d_in_strides, ndim * sizeof(ptrdiff_t));
-    ASSERT(cerr == cudaSuccess, "rearrange: cudaMalloc d_in_strides failed");
-    cerr = cudaMalloc(&d_out_strides, ndim * sizeof(ptrdiff_t));
-    ASSERT(cerr == cudaSuccess, "rearrange: cudaMalloc d_out_strides failed");
+    // Use thread_local pre-allocated device buffers to avoid cudaMalloc/cudaFree on every call.
+    // Each buffer holds at most MAX_NDIM elements (more than enough for any tensor).
+    static constexpr size_t MAX_NDIM = 16;
+    static thread_local size_t *d_shape = nullptr;
+    static thread_local size_t *d_dim_prod = nullptr;
+    static thread_local ptrdiff_t *d_in_strides = nullptr;
+    static thread_local ptrdiff_t *d_out_strides = nullptr;
+    static thread_local bool bufs_inited = false;
+    if (!bufs_inited) {
+        CUDA_CHECK(cudaMalloc(&d_shape, MAX_NDIM * sizeof(size_t)));
+        CUDA_CHECK(cudaMalloc(&d_dim_prod, MAX_NDIM * sizeof(size_t)));
+        CUDA_CHECK(cudaMalloc(&d_in_strides, MAX_NDIM * sizeof(ptrdiff_t)));
+        CUDA_CHECK(cudaMalloc(&d_out_strides, MAX_NDIM * sizeof(ptrdiff_t)));
+        bufs_inited = true;
+    }
 
-    cerr = cudaMemcpy(d_shape, shape.data(), ndim * sizeof(size_t), cudaMemcpyHostToDevice);
-    ASSERT(cerr == cudaSuccess, "rearrange: cudaMemcpy d_shape failed");
-    cerr = cudaMemcpy(d_dim_prod, dim_prod.data(), ndim * sizeof(size_t), cudaMemcpyHostToDevice);
-    ASSERT(cerr == cudaSuccess, "rearrange: cudaMemcpy d_dim_prod failed");
-    cerr = cudaMemcpy(d_in_strides, in_strides.data(), ndim * sizeof(ptrdiff_t), cudaMemcpyHostToDevice);
-    ASSERT(cerr == cudaSuccess, "rearrange: cudaMemcpy d_in_strides failed");
-    cerr = cudaMemcpy(d_out_strides, out_strides.data(), ndim * sizeof(ptrdiff_t), cudaMemcpyHostToDevice);
-    ASSERT(cerr == cudaSuccess, "rearrange: cudaMemcpy d_out_strides failed");
+    ASSERT(ndim <= MAX_NDIM, "rearrange: ndim exceeds MAX_NDIM");
+
+    // Fast path: if in/out have same strides (simple contiguous copy), use cudaMemcpyAsync.
+    bool same_strides = true;
+    for (size_t d = 0; d < ndim; ++d) {
+        if (in_strides[d] != out_strides[d]) { same_strides = false; break; }
+    }
+    if (same_strides) {
+        CUDA_CHECK(cudaMemcpyAsync(out, in, numel * elem_size, cudaMemcpyDeviceToDevice, 0));
+        CUDA_CHECK(cudaGetLastError());
+        return;
+    }
+
+    CUDA_CHECK(cudaMemcpy(d_shape, shape.data(), ndim * sizeof(size_t), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_dim_prod, dim_prod.data(), ndim * sizeof(size_t), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_in_strides, in_strides.data(), ndim * sizeof(ptrdiff_t), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_out_strides, out_strides.data(), ndim * sizeof(ptrdiff_t), cudaMemcpyHostToDevice));
 
     const int block = 256;
     const int grid = static_cast<int>((numel + block - 1) / block);
@@ -152,11 +164,6 @@ void rearrange(std::byte *out, const std::byte *in, llaisysDataType_t dtype,
     launch_kernel(static_cast<int>(elem_size));
 
     CUDA_CHECK(cudaGetLastError());
-
-    cudaFree(d_shape);
-    cudaFree(d_dim_prod);
-    cudaFree(d_in_strides);
-    cudaFree(d_out_strides);
 }
 
 } // namespace llaisys::ops::nvidia

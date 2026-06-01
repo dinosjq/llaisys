@@ -232,16 +232,14 @@ void gemm_launch(T *out, const T *in, const T *weight,
         throw std::runtime_error("Unsupported data type for cuBLAS GEMM");
     }
 
-    // Reuse a thread-local cuBLAS handle to avoid create/destroy overhead.
-    static thread_local cublasHandle_t handle = nullptr;
-    static thread_local bool handle_inited = false;
-    
+    // Single static handle, created once and reused across all calls.
+    // Previously cached per-stream; now all calls use nullptr so a single handle suffices.
+    static cublasHandle_t handle = nullptr;
+    static bool handle_inited = false;
     if (!handle_inited) {
         CUBLAS_CHECK(cublasCreate(&handle));
-        // Enable tensor cores for fp16/bf16
         if (data_type == CUDA_R_16F || data_type == CUDA_R_16BF) {
-            cublasStatus_t s = cublasSetMathMode(handle, CUBLAS_TENSOR_OP_MATH);
-            (void)s;
+            CUBLAS_CHECK(cublasSetMathMode(handle, CUBLAS_TENSOR_OP_MATH));
         }
         handle_inited = true;
     }
@@ -263,9 +261,6 @@ void gemm_launch(T *out, const T *in, const T *weight,
         reinterpret_cast<void *>(out), data_type, static_cast<int>(N), // ldc
         compute_type,
         CUBLAS_GEMM_DEFAULT));
-
-    // Do not destroy handle here (reused across calls). Check for errors.
-    CUDA_CHECK(cudaGetLastError());
 }
 
 template <typename T>
