@@ -7,7 +7,7 @@
 #include <type_traits>
 #include <cmath>
 
-constexpr size_t RADIX_BITS = 2;
+constexpr size_t RADIX_BITS = 4;
 constexpr size_t RADIX_SIZE = 1 << RADIX_BITS;
 
 // float <---> uint32
@@ -132,7 +132,7 @@ void _topk_launch(std::byte *out_idx, std::byte *out_val, const std::byte *vals,
     T *d_out_val = reinterpret_cast<T *>(out_val);
     const T *d_vals = reinterpret_cast<const T *>(vals);
     
-    dim3 blockDim(256);
+    dim3 blockDim(1024);
     dim3 gridDim(batch_size);
 
     _topk_kernel<<<gridDim, blockDim>>>(d_out_idx, d_out_val, d_vals, numel, k);

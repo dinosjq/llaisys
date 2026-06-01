@@ -39,9 +39,9 @@ long long BlockManager::_compute_hash(const int64_t *token_ids, size_t n, long l
 }
 
 // 分配一个块 并清空块上的数据
-int BlockManager::_allocate_block(){
+int64_t BlockManager::_allocate_block(){
     ASSERT(!this->_free_block_ids.empty(), "BlockManager_allocate_block: free_queue is empty.");
-    int block_id = this->_free_block_ids.front();
+    int64_t block_id = this->_free_block_ids.front();
     this->_free_block_ids.pop_front();
     block_t block = this->_blocks[block_id];
     ASSERT(block->_ref_count == 0, "BlockManager_allocate_block: ref_count not 0");
@@ -54,7 +54,7 @@ int BlockManager::_allocate_block(){
 }
     
 // 释放所有权 再次使用需要重新申请 不清空块上数据
-void BlockManager::_deallocate_block(int block_id){
+void BlockManager::_deallocate_block(int64_t block_id){
     ASSERT(block_id >= 0 && size_t(block_id) < this->_block_num, "BlockManager_deallocate_block: out range.");
     ASSERT(this->_blocks[block_id]->_ref_count == 0, "BlockManager_deallocate_block: ref_count not 0.");
     this->_used_block_ids.erase(block_id);
@@ -97,14 +97,14 @@ int BlockManager::can_allocate(seq_t seq){
 
 // 对 prefill 的 seq 进行 kv cache 分配 cached_block_num 为已匹配前缀块数
 void BlockManager::allocate(seq_t seq, size_t cached_block_num){
-    std::vector<int> &block_ids = seq->block_ids();
+    std::vector<int64_t> &block_ids = seq->block_ids();
     ASSERT(block_ids.empty(), "BlockManager_allocate: block_ids not empty.");
     // 根据前缀哈希 先分配已经匹配的部分
     long long hash = -1;
     for(size_t i = 0; i < cached_block_num; ++ i){
         const auto &[token_ids, ntoken] = seq->block(i);
         hash = this->_compute_hash(token_ids, ntoken, hash);
-        const int block_id = this->_hash_2_block[hash];
+        const int64_t block_id = this->_hash_2_block[hash];
         // 已经被使用的 更新引用计数
         if(this->_used_block_ids.count(block_id)){
             ++ this->_blocks[block_id]->_ref_count;
@@ -129,9 +129,9 @@ void BlockManager::allocate(seq_t seq, size_t cached_block_num){
 // 释放 seq 占据 kv cache 块的所有权
 void BlockManager::deallocate(seq_t seq){
     // 得到对应的块表
-    std::vector<int> &block_ids = seq->block_ids();
+    std::vector<int64_t> &block_ids = seq->block_ids();
     for(int i = int(block_ids.size() - 1); i >= 0; -- i){
-        int block_id = block_ids[i];
+        int64_t block_id = block_ids[i];
         block_t block = this->_blocks[block_id];
         // 更新引用计数
         -- block->_ref_count;

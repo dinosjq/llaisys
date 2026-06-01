@@ -10,11 +10,11 @@
 namespace llaisys::ops::nvidia {
 
 template <typename T>
-__global__ void embedding_gather_kernel(T *out, const int64_t *index, const T *weight, size_t numel, size_t len) {
+__global__ void embedding_gather_kernel(T *out, const int64_t *index, const T *weight, size_t numel, size_t len, const int padding) {
     size_t row = static_cast<size_t>(blockIdx.x) + static_cast<size_t>(blockIdx.y) * gridDim.x;
     if (row >= numel) return;
 
-    size_t idx = static_cast<size_t>(index[row]);
+    size_t idx = static_cast<size_t>(index[row] + padding);
     const T *src = weight + idx * len;
     T *dst = out + row * len;
 
@@ -32,7 +32,7 @@ __global__ void embedding_gather_kernel(T *out, const int64_t *index, const T *w
 }
 
 template <typename T>
-void embedding_launch(std::byte *out, const std::byte *d_index, const std::byte *weight, const size_t numel, const size_t len) {
+void embedding_launch(std::byte *out, const std::byte *d_index, const std::byte *weight, const size_t numel, const size_t len, const int padding) {
     if (numel == 0 || len == 0) return;
 
     const int64_t *index = reinterpret_cast<const int64_t *>(d_index);
@@ -48,19 +48,19 @@ void embedding_launch(std::byte *out, const std::byte *d_index, const std::byte 
     if (len < (size_t)threads) threads = (int)len;
     if (threads <= 0) threads = 1;
 
-    embedding_gather_kernel<<<grid, threads>>>(d_out, index, d_weight, numel, len);
+    embedding_gather_kernel<<<grid, threads>>>(d_out, index, d_weight, numel, len, padding);
     CUDA_CHECK(cudaGetLastError());
 }
 
 void embedding(std::byte *out, const std::byte *d_index, const std::byte *weight, llaisysDataType_t dtype,
-               const size_t numel, const size_t len) {
+               const size_t numel, const size_t len, const int padding) {
     switch (dtype) {
     case LLAISYS_DTYPE_F32:
-        return embedding_launch<float>(out, d_index, weight, numel, len);
+        return embedding_launch<float>(out, d_index, weight, numel, len, padding);
     case LLAISYS_DTYPE_BF16:
-        return embedding_launch<llaisys::bf16_t>(out, d_index, weight, numel, len);
+        return embedding_launch<llaisys::bf16_t>(out, d_index, weight, numel, len, padding);
     case LLAISYS_DTYPE_F16:
-        return embedding_launch<llaisys::fp16_t>(out, d_index, weight, numel, len);
+        return embedding_launch<llaisys::fp16_t>(out, d_index, weight, numel, len, padding);
     default:
         EXCEPTION_UNSUPPORTED_DATATYPE(dtype);
     }

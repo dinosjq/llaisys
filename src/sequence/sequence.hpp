@@ -29,8 +29,8 @@ private:
     size_t _scheduled_ntoken;   // 规划计算token数
     size_t _max_ntoken;         // 最大产生token数
     int64_t _last_token;        // 最后一个token信息
-    std::vector<int64_t> _token_ids;// token列表
-    std::vector<int> _block_ids;    // 缓存块表
+    std::vector<int64_t> _token_ids;    // token列表
+    std::vector<int64_t> _block_ids;    // 缓存块表
 
 public:
     Sequence(int64_t *token_ids, size_t ntoken);
@@ -61,7 +61,7 @@ public:
 
     int64_t last_token();
     std::vector<int64_t> &token_ids();
-    std::vector<int> &block_ids();
+    std::vector<int64_t> &block_ids();
 
     std::pair<int64_t *, size_t> block(size_t i);
     void add(int64_t token); 

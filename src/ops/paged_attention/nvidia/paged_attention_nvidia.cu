@@ -23,9 +23,9 @@ __global__ void paged_attention_kernel(T *__restrict__ _attn,
                                        const T *__restrict__ _Q, 
                                        const T *__restrict__ _K_cache, 
                                        const T *__restrict__ _V_cache, 
-                                       const int *_block_ids,
-                                       const int *_cut_idx,
-                                       const int *_tot_len,
+                                       const int64_t *_block_ids,
+                                       const int64_t *_cut_idx,
+                                       const int64_t *_tot_len,
                                        const size_t _token_num,
                                        const size_t _max_block_num,
                                        const float _scale, 
@@ -50,7 +50,7 @@ __global__ void paged_attention_kernel(T *__restrict__ _attn,
     const size_t lane_id = tid & 31;
     const size_t batch_id = blockIdx.z;
 
-    const int *batch_block_ids = _block_ids + batch_id * _max_block_num;
+    const int64_t *batch_block_ids = _block_ids + batch_id * _max_block_num;
     const size_t _seqlen = _cut_idx[batch_id + 1] - _cut_idx[batch_id];
     const size_t _totlen = _tot_len[batch_id];
 
@@ -102,7 +102,7 @@ __global__ void paged_attention_kernel(T *__restrict__ _attn,
             size_t token_id = k + warp_id;
 
             if(token_id < _totlen){
-                const int block_id = batch_block_ids[token_id / _token_num];
+                const int64_t block_id = batch_block_ids[token_id / _token_num];
                 token_id %= _token_num;
 
                 // global memory
@@ -216,9 +216,9 @@ void paged_attention_launch(std::byte *attn_val,       // 输出 (tot_seqlen, nh
     const auto *d_q = reinterpret_cast<const T *>(q);
     const auto *d_k_cache = reinterpret_cast<const T *>(k_cache);
     const auto *d_v_cache = reinterpret_cast<const T *>(v_cache);
-    const auto *d_block_ids = reinterpret_cast<const int *>(block_ids);
-    const auto *d_cut_idx = reinterpret_cast<const int *>(cut_idx);
-    const auto *d_tot_len = reinterpret_cast<const int *>(tot_len);
+    const auto *d_block_ids = reinterpret_cast<const int64_t *>(block_ids);
+    const auto *d_cut_idx = reinterpret_cast<const int64_t *>(cut_idx);
+    const auto *d_tot_len = reinterpret_cast<const int64_t *>(tot_len);
 
     dim3 blockDim(256);
     dim3 gridDim((max_seq_len + 7) >> 3, nh, batch_size);

@@ -17,6 +17,16 @@ def load_ops(lib):
     lib.llaisysLinear.argtypes = [llaisysTensor_t, llaisysTensor_t, llaisysTensor_t, llaisysTensor_t]
     lib.llaisysLinear.restype = None
 
+    lib.llaisysKvCacheMove.argtypes = [
+        llaisysTensor_t,  # out
+        llaisysTensor_t,  # in
+        llaisysTensor_t,  # block_ids_tensor
+        llaisysTensor_t,  # cut_idx_tensor
+        llaisysTensor_t,  # pos_ids_tensor
+        c_size_t,         # max_seq_len
+    ]
+    lib.llaisysKvCacheMove.restype = None
+
     lib.llaisysRearrange.argtypes = [llaisysTensor_t, llaisysTensor_t]
     lib.llaisysRearrange.restype = None
 

@@ -55,6 +55,11 @@ def load_hf_model(model_path=None, device_name="cpu"):
         trust_remote_code=True,
     )
     model = model.to(torch_device(device_name))
+    # 添加专用 pad_token（不与 eos_token 冲突，否则 batch generate 不会正常停）
+    if tokenizer.pad_token is None:
+        tokenizer.add_special_tokens({"pad_token": "<|pad|>"})
+        model.resize_token_embeddings(len(tokenizer))
+        model.config.pad_token_id = tokenizer.pad_token_id
     return tokenizer, model, model_path
 
 
@@ -105,24 +110,6 @@ def build_prompt_bank(num_prompts, context_repeat):
     return prompts
 
 
-def hf_infer(prompt, tokenizer, model, max_new_tokens=128, top_p=0.8, top_k=50, temperature=0.8):
-    input_ids = build_input_tokens(tokenizer, prompt)
-    inputs = torch.tensor([input_ids], device=model.device, dtype=torch.long)
-    start = time.perf_counter()
-    with torch.no_grad():
-        outputs = model.generate(
-            inputs,
-            max_new_tokens=max_new_tokens,
-            top_k=top_k,
-            top_p=top_p,
-            temperature=temperature,
-            use_cache=True,
-        )
-    elapsed = time.perf_counter() - start
-    result_tokens = outputs[0].tolist()
-    return input_ids, result_tokens, tokenizer.decode(outputs[0], skip_special_tokens=True), elapsed
-
-
 def llaisys_infer(prompt, tokenizer, model, max_new_tokens=128, top_p=0.8, top_k=50, temperature=0.8):
     input_ids = build_input_tokens(tokenizer, prompt)
     start = time.perf_counter()
@@ -135,18 +122,6 @@ def llaisys_infer(prompt, tokenizer, model, max_new_tokens=128, top_p=0.8, top_k
     )
     elapsed = time.perf_counter() - start
     return input_ids, result_tokens, tokenizer.decode(result_tokens, skip_special_tokens=True), elapsed
-
-
-def run_single_hf(prompt, tokenizer, model, max_new_tokens, top_p, top_k, temperature, results, idx):
-    results[idx] = hf_infer(
-        prompt,
-        tokenizer,
-        model,
-        max_new_tokens=max_new_tokens,
-        top_p=top_p,
-        top_k=top_k,
-        temperature=temperature,
-    )
 
 
 def run_single_ll(prompt, tokenizer, model, max_new_tokens, top_p, top_k, temperature, results, idx):
@@ -162,14 +137,55 @@ def run_single_ll(prompt, tokenizer, model, max_new_tokens, top_p, top_k, temper
 
 
 def run_hf_batch(prompts, tokenizer, model, max_new_tokens, top_p, top_k, temperature, device_name):
-    results = [None] * len(prompts)
+    # Tokenize all prompts with padding for true batch inference
+    input_contents = [
+        tokenizer.apply_chat_template(
+            conversation=[{"role": "user", "content": prompt}],
+            add_generation_prompt=True,
+            tokenize=False,
+        )
+        for prompt in prompts
+    ]
+    enc = tokenizer(
+        input_contents,
+        return_tensors="pt",
+        padding=True,
+        truncation=True,
+    ).to(model.device)
+
     start = time.perf_counter()
-    for idx, prompt in enumerate(prompts):
-        run_single_hf(prompt, tokenizer, model, max_new_tokens, top_p, top_k, temperature, results, idx)
-        input_ids, output_tokens, _, prompt_elapsed = results[idx]
-        print(f"  HF [{idx}] input={len(input_ids)} output={len(output_tokens) - len(input_ids)} total={len(output_tokens)} prompt_time={prompt_elapsed*1000.0:.3f} ms")
+    with torch.no_grad():
+        outputs = model.generate(
+            **enc,
+            max_new_tokens=max_new_tokens,
+            top_k=top_k,
+            top_p=top_p,
+            temperature=temperature,
+            use_cache=True,
+        )
     sync_device(device_name)
     elapsed = time.perf_counter() - start
+
+    input_lens = enc.attention_mask.sum(dim=1).tolist()
+    max_input_len = enc.input_ids.shape[1]
+    results = []
+    for idx in range(len(prompts)):
+        input_ids = outputs[idx, :input_lens[idx]].tolist()
+        # Strip input padding: take actual input tokens + generated tokens (after max_input_len)
+        full = outputs[idx].tolist()
+        generated_part = full[max_input_len:]
+        # 去掉尾部 pad（提前结束的序列会被 HF 用 pad_token 填满）
+        while generated_part and generated_part[-1] == tokenizer.pad_token_id:
+            generated_part.pop()
+        output_ids = input_ids + generated_part
+        olen = len(generated_part)
+        print(f"  HF [{idx}] input={input_lens[idx]} output={olen} total={len(output_ids)} batch_time={elapsed*1000.0:.3f} ms")
+        results.append((
+            input_ids,
+            output_ids,
+            tokenizer.decode(output_ids, skip_special_tokens=True),
+            elapsed,
+        ))
     return results, elapsed
 
 

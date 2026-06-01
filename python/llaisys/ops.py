@@ -32,6 +32,17 @@ class Ops:
         )
 
     @staticmethod
+    def kv_cache_move(out: Tensor, inp: Tensor, block_ids: Tensor, cut_idx: Tensor, pos_ids: Tensor, max_seq_len: int):
+        LIB_LLAISYS.llaisysKvCacheMove(
+            out.lib_tensor(),
+            inp.lib_tensor(),
+            block_ids.lib_tensor(),
+            cut_idx.lib_tensor(),
+            pos_ids.lib_tensor(),
+            c_size_t(max_seq_len),
+        )
+
+    @staticmethod
     def rearrange(out: Tensor, inp: Tensor):
         LIB_LLAISYS.llaisysRearrange(out.lib_tensor(), inp.lib_tensor())
 

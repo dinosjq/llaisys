@@ -25,7 +25,7 @@ using BlockManager_t = std::shared_ptr<BlockManager>;
  
 // kv cache block
 struct Block{
-    int _block_id;                      // 块号
+    int64_t _block_id;                  // 块号
     long long _hash = -1;               // 哈希值 前缀+当前块信息
     std::vector<int64_t> _token_ids;    // 当前块缓存的token信息
     size_t _ref_count = 0;              // 引用计数
@@ -51,16 +51,16 @@ private:
     size_t _token_num;                                      // 单个block所包含token缓存个数
     size_t _block_num;                                      // 维护的总kv cache块数
     std::vector<block_t> _blocks;                           // 维护所有块的信息
-    std::unordered_map<long long, int> _hash_2_block;       // 哈希值转块号
-    std::list<int> _free_block_ids;                         // 可用的block的块号
-    std::unordered_set<int> _used_block_ids;                // 已经使用的block的块号
+    std::unordered_map<long long, int64_t> _hash_2_block;   // 哈希值转块号
+    std::list<int64_t> _free_block_ids;                     // 可用的block的块号
+    std::unordered_set<int64_t> _used_block_ids;            // 已经使用的block的块号
 
 private:
     // 分配一个块
-    int _allocate_block();
+    int64_t _allocate_block();
 
     // 释放一个块
-    void _deallocate_block(int block_id);
+    void _deallocate_block(int64_t block_id);
 
 public:
     BlockManager(const size_t token_num, const size_t block_num); 

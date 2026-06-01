@@ -1,3 +1,4 @@
+
 #include "../sequence/sequence.hpp"
 #include "qwen2.hpp"
 #include "../llaisys/llaisys_tensor.hpp"
@@ -13,6 +14,7 @@
 #include "../ops/swiglu/op.hpp"
 #include "../ops/top_k/op.hpp"
 #include "../config.hpp"
+#include "../ops/kv_cache_move/op.hpp"
 
 #include <algorithm>
 #include <numeric>
@@ -117,10 +119,13 @@ Qwen2::Qwen2(Qwen2Meta meta,
     const size_t nkvh = meta.nkvh;
     const size_t dh = meta.dh;
     const size_t di = meta.di;
+    const size_t voc = meta.voc;
     const size_t token_num = KV_CACHE_TOKEN_NUM;
     const size_t block_num = KV_CACHE_BLOCK_NUM;
     const size_t block_size = block_num * token_num * nkvh * dh;
     const size_t batch_max_token_num = BATCH_MAX_TOKEN_NUM;
+    const size_t batch_max_seq_num = BATCH_MAX_SEQ_NUM;
+    const size_t max_block_num = std::min(MAX_TOKEN_NUM / KV_CACHE_TOKEN_NUM, KV_CACHE_BLOCK_NUM);
     int device_id = device_ids[0];
     // 初始化权重数组
     init_weight_arrays(this->_weights, nlayer);
@@ -140,6 +145,17 @@ Qwen2::Qwen2(Qwen2Meta meta,
     _tensors._swiglu = Tensor::create({batch_max_token_num, di}, dtype, device, device_id);
     _tensors._down = Tensor::create({batch_max_token_num, hs}, dtype, device, device_id);
     _tensors._x_mlp = Tensor::create({batch_max_token_num, hs}, dtype, device, device_id);
+    _tensors._dev_block_ids = Tensor::create({batch_max_seq_num * max_block_num}, LLAISYS_DTYPE_I64, device, device_id);
+    _tensors._dev_cut_idx = Tensor::create({batch_max_seq_num + 1}, LLAISYS_DTYPE_I64, device, device_id);
+    _tensors._dev_tot_len = Tensor::create({batch_max_seq_num}, LLAISYS_DTYPE_I64, device, device_id);
+    _tensors._dev_token_ids = Tensor::create({batch_max_token_num}, LLAISYS_DTYPE_I64, device, device_id);
+    _tensors._dev_pos_ids = Tensor::create({batch_max_token_num}, LLAISYS_DTYPE_I64, device, device_id);
+    _tensors._x = Tensor::create({batch_max_token_num, hs}, dtype, device, device_id);
+    _tensors._x_part = Tensor::create({batch_max_seq_num, hs}, dtype, device, device_id);
+    _tensors._x_part_norm = Tensor::create({batch_max_seq_num, hs}, dtype, device, device_id);
+    _tensors._logits = Tensor::create({batch_max_seq_num, voc}, dtype, device, device_id);
+    _tensors._top_idx = Tensor::create({batch_max_seq_num, TOP_K}, LLAISYS_DTYPE_I64, device, device_id);
+    _tensors._top_val = Tensor::create({batch_max_seq_num, TOP_K}, dtype, device, device_id);
     // 初始化分层 kv cache
     this->_k_cache = std::vector<tensor_t>(nlayer, nullptr);
     this->_v_cache = std::vector<tensor_t>(nlayer, nullptr);
@@ -238,13 +254,13 @@ int64_t Qwen2::request(int64_t *token_ids, size_t ntoken){
  * 输入: 本次调度要计算的序列
  * 输出: 合并后的总块表，每个序列按照最长块表长度对齐
  */
-std::vector<int> Qwen2::prepare_block_table(const std::vector<seq_t> &seqs){
+std::vector<int64_t> Qwen2::prepare_block_table(const std::vector<seq_t> &seqs){
     const size_t batch_size = seqs.size();
     size_t max_block_num = 0;
     for(size_t i = 0; i < batch_size; ++ i){
         max_block_num = std::max(max_block_num, seqs[i]->block_ids().size());
     }
-    std::vector<int> block_table(batch_size * max_block_num, -1);
+    std::vector<int64_t> block_table(batch_size * max_block_num, -1);
     for(size_t i = 0; i < batch_size; ++ i){
         // 复制到指定位置
         std::copy(seqs[i]->block_ids().begin(), seqs[i]->block_ids().end(), block_table.begin() + i * max_block_num);
@@ -265,8 +281,8 @@ Qwen2Pack Qwen2::prepare_prefill(const std::vector<seq_t> &seqs){
     const size_t batch_size = seqs.size();
     std::vector<int64_t> token_ids; // token信息
     std::vector<int64_t> pos_ids;   // 位置信息
-    std::vector<int> cut_idx(1, 0); // 切断点
-    std::vector<int> tot_len;       // 总长信息
+    std::vector<int64_t> cut_idx(1, 0); // 切断点
+    std::vector<int64_t> tot_len;       // 总长信息
     size_t max_seq_len = 0;         // 最大序列长度
     for(size_t i = 0; i < batch_size; ++ i){
         seq_t seq = seqs[i];
@@ -293,8 +309,8 @@ Qwen2Pack Qwen2::prepare_decode(const std::vector<seq_t> &seqs){
     const size_t batch_size = seqs.size();
     std::vector<int64_t> token_ids;
     std::vector<int64_t> pos_ids;
-    std::vector<int> cut_idx(1, 0);
-    std::vector<int> tot_len;
+    std::vector<int64_t> cut_idx(1, 0);
+    std::vector<int64_t> tot_len;
     for(size_t i = 0; i < batch_size; ++ i){
         seq_t seq = seqs[i];
         const size_t idx = seq->cached_token_num();
@@ -307,7 +323,7 @@ Qwen2Pack Qwen2::prepare_decode(const std::vector<seq_t> &seqs){
     return Qwen2Pack{token_ids, pos_ids, cut_idx, tot_len, 1};
 }
 
-std::vector<int64_t> Qwen2::forward(Qwen2Pack &pack, std::vector<int> &block_ids){
+std::vector<int64_t> Qwen2::forward(Qwen2Pack &pack, std::vector<int64_t> &block_ids){
     // 加载元数据 + 权重
     const Qwen2Meta &meta = this->_meta;
     const Qwen2Weights &w = this->_weights;
@@ -316,15 +332,14 @@ std::vector<int64_t> Qwen2::forward(Qwen2Pack &pack, std::vector<int> &block_ids
     // 预处理信息
     const std::vector<int64_t> &token_ids = pack.token_ids;
     const std::vector<int64_t> &pos_ids = pack.pos_ids;
-    const std::vector<int> &cut_idx = pack.cut_idx;
-    const std::vector<int> &tot_len = pack.tot_len;
+    const std::vector<int64_t> &cut_idx = pack.cut_idx;
+    const std::vector<int64_t> &tot_len = pack.tot_len;
     const size_t &max_seq_len = pack.max_seq_len; 
     const size_t tot_seq_len = token_ids.size();
     const size_t batch_size = tot_len.size();
     const size_t max_block_num = block_ids.size() / batch_size;
 
     // 加载其他参数
-    llaisysDataType_t dtype = meta.dtype;
     const size_t nlayer = meta.nlayer;
     const size_t hs = meta.hs;
     const size_t nh = meta.nh;
@@ -334,10 +349,8 @@ std::vector<int64_t> Qwen2::forward(Qwen2Pack &pack, std::vector<int> &block_ids
     const size_t voc = meta.voc;
     const float epsilon = meta.epsilon;
     const float theta = meta.theta;
-    const size_t token_num = this->_scheduler->token_num();
 
     // 加载设备
-    const int device_id = this->_device_ids[0];
     const llaisysDeviceType_t device = this->_device_type;
 
     // 初始化中间张量
@@ -356,27 +369,21 @@ std::vector<int64_t> Qwen2::forward(Qwen2Pack &pack, std::vector<int> &block_ids
     tensor_t swiglu = t._swiglu->slice(0, 0, tot_seq_len)->view({tot_seq_len, di});
     tensor_t down =  t._down->slice(0, 0, tot_seq_len)->view({tot_seq_len, hs});
     tensor_t x_mlp = t._x_mlp->slice(0, 0, tot_seq_len)->view({tot_seq_len, hs});
+    tensor_t dev_block_ids = t._dev_block_ids->slice(0, 0, batch_size * max_block_num)->view({batch_size, max_block_num});
+    tensor_t dev_cut_idx = t._dev_cut_idx->slice(0, 0, batch_size + 1)->view({batch_size + 1});
+    tensor_t dev_tot_len = t._dev_tot_len->slice(0, 0, batch_size)->view({batch_size});
+    tensor_t dev_token_ids = t._dev_token_ids->slice(0, 0, tot_seq_len)->view({tot_seq_len});
+    tensor_t dev_pos_ids = t._dev_pos_ids->slice(0, 0, tot_seq_len)->view({tot_seq_len});
+    tensor_t x =  t._x->slice(0, 0, tot_seq_len)->view({tot_seq_len, hs});
 
     // 初始化设备端数据
-    tensor_t dev_block_ids = Tensor::create({batch_size, max_block_num}, LLAISYS_DTYPE_I32, device, device_id);
     dev_block_ids->load(block_ids.data());
-
-    tensor_t dev_cut_idx = Tensor::create({batch_size + 1}, LLAISYS_DTYPE_I32, device, device_id);
     dev_cut_idx->load(cut_idx.data());
-
-    tensor_t dev_tot_len = Tensor::create({batch_size}, LLAISYS_DTYPE_I32, device, device_id);
     dev_tot_len->load(tot_len.data());
-
-    // 创建待处理的token ids张量: 输入信息
-    tensor_t dev_token_ids = Tensor::create({tot_seq_len}, LLAISYS_DTYPE_I64, device, device_id);
     dev_token_ids->load(token_ids.data());
-
-    // 创建待处理的position ids张量: 位置信息
-    tensor_t dev_pos_ids = Tensor::create({tot_seq_len}, LLAISYS_DTYPE_I64, device, device_id);
     dev_pos_ids->load(pos_ids.data());
 
     // embedding: 根据 token ids 从 embedding 权重矩阵 中提取对应的语意向量
-    tensor_t x = Tensor::create({tot_seq_len, hs}, meta.dtype, device, device_id);
     ops::embedding(x, dev_token_ids, to_tensor(w.in_embed));
 
     // 计算 self_attention 所需的参数 scale
@@ -403,33 +410,8 @@ std::vector<int64_t> Qwen2::forward(Qwen2Pack &pack, std::vector<int> &block_ids
         // 按块加载到 kv cache
         tensor_t k_layer = this->_k_cache[layer];
         tensor_t v_layer = this->_v_cache[layer];
-
-        for(size_t i = 0; i < batch_size; ++ i){
-            // 在拼接序列的的起始位置
-            size_t offset = cut_idx[i];
-            // 在原序列的起点、终点坐标
-            size_t begin = pos_ids[cut_idx[i]];
-            size_t end = pos_ids[cut_idx[i + 1] - 1];
-            for(size_t j = begin; j <= end; j += token_num){
-                // 计算对应块该搬运的起点、终点索引
-                size_t b = j / token_num;
-                size_t l = std::max(begin, b * token_num);
-                size_t r = std::min(end, (b + 1) * token_num - 1);
-                // 查找块表
-                int block_id = block_ids[i * max_block_num + b];
-                if(block_id == -1) break;
-                // 找到对应块的位置
-                tensor_t k_block = k_layer->slice(0, block_id, block_id + 1)->reshape({token_num, nkvh, dh});
-                tensor_t v_block = v_layer->slice(0, block_id, block_id + 1)->reshape({token_num, nkvh, dh});
-                k_block = k_block->slice(0, l % token_num, r % token_num + 1)->reshape({r - l + 1, nkvh, dh});
-                v_block = v_block->slice(0, l % token_num, r % token_num + 1)->reshape({r - l + 1, nkvh, dh});
-                // 张量切分
-                tensor_t k_slice = k_rope->slice(0, offset + l - begin, offset + r - begin + 1);
-                tensor_t v_slice = v_view->slice(0, offset + l - begin, offset + r - begin + 1);
-                ops::rearrange(k_block, k_slice);
-                ops::rearrange(v_block, v_slice);
-            }
-        }
+        ops::kv_cache_move(k_layer, k_rope, dev_block_ids, dev_cut_idx, dev_pos_ids, max_seq_len);
+        ops::kv_cache_move(v_layer, v_view, dev_block_ids, dev_cut_idx, dev_pos_ids, max_seq_len);
 
         // 自注意力: paged_attention(flash v2)
         ops::paged_attention(attn_val, q_rope, k_layer, v_layer, dev_block_ids, dev_cut_idx, dev_tot_len, max_seq_len, scale);
@@ -451,21 +433,18 @@ std::vector<int64_t> Qwen2::forward(Qwen2Pack &pack, std::vector<int> &block_ids
         ops::add(x_mlp, x, down);
         std::swap(x, x_mlp);
     }
+    // 先去提取
+    tensor_t x_part = t._x_part->slice(0, 0, batch_size)->view({batch_size, hs});
+    ops::embedding(x_part, dev_cut_idx->slice(0, 1, batch_size + 1), x, -1);
 
     // RMS-norm 均方根归一化
-    ops::rms_norm(x_norm, x, to_tensor(w.out_norm_w), epsilon);
+    tensor_t x_part_norm = t._x_part_norm->slice(0, 0, batch_size)->view({batch_size, hs});
+    ops::rms_norm(x_part_norm, x_part, to_tensor(w.out_norm_w), epsilon);
 
     // 把隐藏向量映射到词表维度（voc）生成未归一化的打分（logits）
-    tensor_t logits = Tensor::create({tot_seq_len, voc}, dtype, device, device_id);
-    ops::linear(logits, x_norm, to_tensor(w.out_embed), nullptr);
+    tensor_t logits = t._logits->slice(0, 0, batch_size)->view({batch_size, voc});
+    ops::linear(logits, x_part_norm, to_tensor(w.out_embed), nullptr);
     
-    // 选出最后一个 token 的预测结果
-    tensor_t last = Tensor::create({batch_size, voc}, dtype, device, device_id);
-    for(size_t i = 0; i < batch_size; ++ i){
-        tensor_t target = logits->slice(0, cut_idx[i + 1] - 1, cut_idx[i + 1])->view({voc});
-        last->slice(0, i, i + 1)->reshape({voc})->load(target->data());
-    }
-
     // argmax
     // tensor_t max_idx = Tensor::create({batch_size, 1}, LLAISYS_DTYPE_I64, device, device_id);
     // tensor_t max_val = Tensor::create({batch_size, 1}, dtype, device, device_id);
@@ -477,9 +456,9 @@ std::vector<int64_t> Qwen2::forward(Qwen2Pack &pack, std::vector<int> &block_ids
 
     // top_k
     constexpr size_t K = TOP_K;
-    tensor_t top_idx = Tensor::create({batch_size, K}, LLAISYS_DTYPE_I64, device, device_id);
-    tensor_t top_val = Tensor::create({batch_size, K}, dtype, device, device_id);
-    ops::topk(top_idx, top_val, last, K);
+    tensor_t top_idx = t._top_idx->slice(0, 0, batch_size)->view({batch_size, TOP_K});
+    tensor_t top_val = t._top_val->slice(0, 0, batch_size)->view({batch_size, TOP_K});
+    ops::topk(top_idx, top_val, logits, K);
     // 搬到cpu
     if (device != LLAISYS_DEVICE_CPU) {
         top_idx = top_idx->to(LLAISYS_DEVICE_CPU, 0);

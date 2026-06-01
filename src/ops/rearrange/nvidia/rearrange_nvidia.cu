@@ -162,8 +162,6 @@ void rearrange(std::byte *out, const std::byte *in, llaisysDataType_t dtype,
     };
 
     launch_kernel(static_cast<int>(elem_size));
-
-    CUDA_CHECK(cudaGetLastError());
 }
 
 } // namespace llaisys::ops::nvidia

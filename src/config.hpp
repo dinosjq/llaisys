@@ -9,9 +9,9 @@
 #define TOP_P 0.9   // 采样累计概率前top_p
 
 // bacth limit
-#define BATCH_MAX_TOKEN_NUM 16386   // 批次最大并行token总数
+#define BATCH_MAX_TOKEN_NUM 8192   // 批次最大并行token总数
 #define BATCH_MAX_SEQ_NUM 64        // 批次最大并行seq总数
 
 // seq limit
-#define MAX_TOKEN_NUM 16386  // 序列最大长度上界
+#define MAX_TOKEN_NUM 8192  // 序列最大长度上界
 

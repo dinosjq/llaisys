@@ -6,7 +6,7 @@
 #include "nvidia/embedding_nvidia.cuh"
 
 namespace llaisys::ops {
-void embedding(tensor_t out, tensor_t index, tensor_t weight) {
+void embedding(tensor_t out, tensor_t index, tensor_t weight, int padding) {
     // 检查设备一致性
     CHECK_SAME_DEVICE(out, index, weight);
 
@@ -32,10 +32,10 @@ void embedding(tensor_t out, tensor_t index, tensor_t weight) {
     // 根据设备类型分发实现
     switch (weight->deviceType()) {
     case LLAISYS_DEVICE_CPU:
-        return cpu::embedding(out->data(), index->data(), weight->data(), dtype, numel, len);
+        return cpu::embedding(out->data(), index->data(), weight->data(), dtype, numel, len, padding);
 #ifdef ENABLE_NVIDIA_API
     case LLAISYS_DEVICE_NVIDIA:
-        return nvidia::embedding(out->data(), index->data(), weight->data(), dtype, numel, len);
+        return nvidia::embedding(out->data(), index->data(), weight->data(), dtype, numel, len, padding);
 #endif
     default:
         // 不支持的设备类型

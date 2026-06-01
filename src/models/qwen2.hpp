@@ -23,8 +23,8 @@ struct Qwen2Meta {
 struct Qwen2Pack {
     std::vector<int64_t> token_ids;
     std::vector<int64_t> pos_ids;
-    std::vector<int> cut_idx;
-    std::vector<int> tot_len;
+    std::vector<int64_t> cut_idx;
+    std::vector<int64_t> tot_len;
     size_t max_seq_len;
 };
 
@@ -46,6 +46,17 @@ struct Qwen2Tensors{
     tensor_t _swiglu;
     tensor_t _down;
     tensor_t _x_mlp;
+    tensor_t _dev_block_ids;
+    tensor_t _dev_cut_idx;
+    tensor_t _dev_tot_len;
+    tensor_t _dev_token_ids;
+    tensor_t _dev_pos_ids;
+    tensor_t _x;
+    tensor_t _x_part;
+    tensor_t _x_part_norm;
+    tensor_t _logits;
+    tensor_t _top_idx;
+    tensor_t _top_val;
 };
 
 class Qwen2{
@@ -88,14 +99,14 @@ public:
     int64_t request(int64_t *token_ids, size_t ntoken);
 
     // 填充块表
-    std::vector<int> prepare_block_table(const std::vector<seq_t> &seqs);
+    std::vector<int64_t> prepare_block_table(const std::vector<seq_t> &seqs);
 
     // 预处理
     Qwen2Pack prepare_prefill(const std::vector<seq_t> &seqs);
     Qwen2Pack prepare_decode(const std::vector<seq_t> &seqs);
 
     // 批次前向传播
-    std::vector<int64_t> forward(Qwen2Pack &pack, std::vector<int> &block_ids);    
+    std::vector<int64_t> forward(Qwen2Pack &pack, std::vector<int64_t> &block_ids);    
 
     // 模型权重
     Qwen2Weights &weights(){ return this->_weights; }

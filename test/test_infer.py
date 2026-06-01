@@ -99,7 +99,8 @@ S, 表示对着魔镜呼唤的名字. 请你编写一个程序, 模拟魔镜的�
 输出描述:
 输出仅包含一行一个字符串, 表示魔镜反馈的结果(Fantasy_Blue/awdec 或 other. 
 做一下这道题 使用 cpp""", type=str)
-    """Who are you?"""
+    # parser.add_argument("--prompt", default="""Who are you?""", type=str)
+    
     parser.add_argument("--max_steps", default=2048, type=int)
     parser.add_argument("--top_p", default=0.8, type=float)
     parser.add_argument("--top_k", default=50, type=int)

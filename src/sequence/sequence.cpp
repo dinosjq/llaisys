@@ -15,7 +15,7 @@ Sequence::Sequence(int64_t *token_ids, size_t ntoken):
                     _last_token(token_ids[ntoken - 1])
 {
     this->_token_ids = std::vector<int64_t>(token_ids, token_ids + ntoken);
-    this->_block_ids = std::vector<int>();
+    this->_block_ids = std::vector<int64_t>();
 }
 
 size_t Sequence::seq_id(){
@@ -73,7 +73,7 @@ std::vector<int64_t> &Sequence::token_ids(){
     return this->_token_ids;
 }
 
-std::vector<int> &Sequence::block_ids(){
+std::vector<int64_t> &Sequence::block_ids(){
     return this->_block_ids;
 }
 

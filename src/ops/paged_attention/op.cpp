@@ -13,7 +13,7 @@ void paged_attention(tensor_t attn_val, tensor_t q, tensor_t k_cache, tensor_t v
     CHECK_SAME_DEVICE(attn_val, q, k_cache, v_cache, block_ids, cut_idx, tot_len);
     // 检查数据类型一致性
     CHECK_SAME_DTYPE(attn_val->dtype(), q->dtype(), k_cache->dtype(), v_cache->dtype());
-    ASSERT(block_ids->dtype() == LLAISYS_DTYPE_I32, "paged_attention: block_ids must be i32.");
+    ASSERT(block_ids->dtype() == LLAISYS_DTYPE_I64, "paged_attention: block_ids must be i64.");
     // 检查内存连续性
     ASSERT(attn_val->isContiguous() && q->isContiguous() && k_cache->isContiguous() && v_cache->isContiguous() && block_ids->isContiguous(), "paged_attention: all tensors must be contiguous.");
     // 检查维度

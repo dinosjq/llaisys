@@ -6,6 +6,7 @@
 #include "../ops/add/op.hpp"
 #include "../ops/argmax/op.hpp"
 #include "../ops/embedding/op.hpp"
+#include "../ops/kv_cache_move/op.hpp"
 #include "../ops/linear/op.hpp"
 #include "../ops/paged_attention/op.hpp"
 #include "../ops/rearrange/op.hpp"
@@ -34,6 +35,20 @@ void llaisysEmbedding(llaisysTensor_t out, llaisysTensor_t index, llaisysTensor_
 
 void llaisysLinear(llaisysTensor_t out, llaisysTensor_t in, llaisysTensor_t weight, llaisysTensor_t bias) {
     llaisys::ops::linear(out->tensor, in->tensor, weight->tensor, bias ? bias->tensor : nullptr);
+}
+
+void llaisysKvCacheMove(llaisysTensor_t out,
+                        llaisysTensor_t in,
+                        llaisysTensor_t block_ids_tensor,
+                        llaisysTensor_t cut_idx_tensor,
+                        llaisysTensor_t pos_ids_tensor,
+                        size_t max_seq_len) {
+    llaisys::ops::kv_cache_move(out->tensor,
+                                in->tensor,
+                                block_ids_tensor->tensor,
+                                cut_idx_tensor->tensor,
+                                pos_ids_tensor->tensor,
+                                max_seq_len);
 }
 
 void llaisysRearrange(llaisysTensor_t out, llaisysTensor_t in) {
