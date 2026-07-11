@@ -1,4 +1,4 @@
-from typing import Sequence
+from typing import Callable, Sequence
 from pathlib import Path
 import json
 import numpy as np
@@ -190,12 +190,30 @@ class Qwen2:
         top_k: int = 1,
         top_p: float = 0.8,
         temperature: float = 0.8,
-    ):
+        callback: Callable[[int, int, tuple[int, ...]], bool] = None,
+    ) -> list[int]:
+        """Generate tokens autoregressively.
+
+        Parameters
+        ----------
+        callback : callable or None
+            Called after each token is produced:
+            ``callback(token, step, tokens_tuple) -> bool``.
+            *token* is the newly generated token id.  *step* is 0-based
+            (step 0 = first generated token).  *tokens_tuple* is a
+            read-only snapshot of the full token list (prompt + generated).
+            Return ``False`` to abort generation early; any other value
+            continues.
+
+            The callback fires synchronously after
+            ``llaisysQwen2ModelInfer`` returns; it is NOT true
+            asynchronous streaming.
+        """
         if max_new_tokens is None:
             max_new_tokens = 128
 
         tokens = list(int(t) for t in inputs)
-        for _ in range(max_new_tokens):
+        for step in range(max_new_tokens):
             arr = (c_int64 * len(tokens))(*tokens)
             next_token = int(
                 LIB_LLAISYS.llaisysQwen2ModelInfer(
@@ -205,6 +223,10 @@ class Qwen2:
                 )
             )
             tokens.append(next_token)
+            if callback is not None:
+                cont = callback(next_token, step, tuple(tokens))
+                if cont is False:
+                    break
             if next_token == int(self._meta.end_token):
                 break
         return tokens
