@@ -81,9 +81,9 @@ def main():
         "input_tok": ll_in_tok,
         "ll_out": ll_out_tok,
         "hf_out": hf_out_tok,
-        "ll_ms": (ll_elapsed_sum / args.repeat) * 1000.0,
+        "ll_ms": (ll_elapsed_sum / args.repeat) * 1_000_000.0,  # microseconds
     }]
-    hf_stats["per_prompt"] = [(hf_elapsed_sum / args.repeat) * 1e6]
+    hf_stats["per_prompt"] = [(hf_elapsed_sum / args.repeat) * 1_000_000.0]  # microseconds
     hf_stats["ttft_avg_ms"] = 0
     print(f"\n  Model: Qwen2-1.5B  |  GPU: {gpu}  |  Prompts: {args.num_prompts}  |  Mode: concurrent")
     print(format_table(results_list, hf_stats, ll_stats, "concurrent"))
