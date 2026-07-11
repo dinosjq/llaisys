@@ -360,11 +360,6 @@ def classify_bottleneck(kernel_data: list[dict]) -> dict:
         Keys: ``bottleneck``, ``sm_throughput_pct``, ``dram_throughput_pct``,
         ``occupancy_pct``.
     """
-    SM_KEY = "sm__throughput.avg.pct_of_peak_sustained_elapsed"
-    DRAM_KEY = "dram__throughput.avg.pct_of_peak_sustained_elapsed"
-    OCC_KEY = "sm__warps_active.avg.pct_of_peak_sustained_elapsed"
-    TIME_KEY = "gpu__time_duration.sum"
-
     if not kernel_data:
         return {
             "bottleneck": "unknown",
@@ -373,21 +368,39 @@ def classify_bottleneck(kernel_data: list[dict]) -> dict:
             "occupancy_pct": 0.0,
         }
 
+    # Dynamically find metric keys in the data
+    first = kernel_data[0]
+    def _find_key(*patterns: str) -> str:
+        for key in first:
+            for p in patterns:
+                if key.startswith(p):
+                    return key
+        return ""
+
+    time_key = _find_key("gpu__time_duration.sum")
+    sm_key   = _find_key("sm__throughput.")
+    dram_key = _find_key("dram__cycles_elapsed.", "dram__cycles_active.",
+                         "dram__throughput.")
+    occ_key  = _find_key("sm__warps_active.")
+
+    if not time_key:
+        return {"bottleneck": "unknown", "sm_throughput_pct": 0.0,
+                "dram_throughput_pct": 0.0, "occupancy_pct": 0.0}
+
     total_time = 0.0
     weighted_sm = 0.0
     weighted_dram = 0.0
     weighted_occ = 0.0
 
     for k in kernel_data:
-        duration = float(k.get(TIME_KEY, 0.0))
-        sm = float(k.get(SM_KEY, 0.0))
-        dram = float(k.get(DRAM_KEY, 0.0))
-        occ = float(k.get(OCC_KEY, 0.0))
-
-        weighted_sm += sm * duration
-        weighted_dram += dram * duration
-        weighted_occ += occ * duration
+        duration = float(k.get(time_key, 0.0))
         total_time += duration
+        if sm_key:
+            weighted_sm += float(k.get(sm_key, 0.0)) * duration
+        if dram_key:
+            weighted_dram += float(k.get(dram_key, 0.0)) * duration
+        if occ_key:
+            weighted_occ += float(k.get(occ_key, 0.0)) * duration
 
     if total_time > 0.0:
         sm_pct = weighted_sm / total_time
@@ -537,14 +550,89 @@ def profile_with_ncu(
 # high-level --use-ncu entry point
 # ---------------------------------------------------------------------------
 
-_NCU_METRICS = [
+# ---------------------------------------------------------------------------
+# dynamic metric discovery (prefix matching via ncu --list-metrics)
+# ---------------------------------------------------------------------------
+
+_CACHE_FILE = ".ncu_metrics_cache"
+
+_DESIRED_PATTERNS = [
     "gpu__time_duration.sum",
-    "dram__bytes_read.sum",
-    "dram__bytes_write.sum",
-    "sm__throughput.avg.pct_of_peak_sustained_elapsed",
-    "dram__throughput.avg.pct_of_peak_sustained_elapsed",
-    "sm__warps_active.avg.pct_of_peak_sustained_elapsed",
+    "sm__throughput.",
+    "sm__warps_active.",
+    "dram__cycles_elapsed.",
+    "dram__cycles_active.",
 ]
+
+
+def _gpu_model_name() -> str:
+    try:
+        import torch
+        return torch.cuda.get_device_name(0).replace(" ", "_")
+    except Exception:
+        return "unknown"
+
+
+def _get_available_metrics(ncu_binary: str, results_dir: str) -> list[str]:
+    """Return NCU metric names available on this GPU (cached, GPU-keyed)."""
+    import json as _json
+    gpu_name = _gpu_model_name()
+    cache_path = os.path.join(results_dir, _CACHE_FILE)
+    cache: dict = {}
+    try:
+        if os.path.isfile(cache_path):
+            with open(cache_path) as f:
+                cache = _json.load(f)
+    except Exception:
+        pass
+
+    if gpu_name in cache:
+        ts, metrics = cache[gpu_name]
+        if time.time() - ts < 86400:
+            return metrics
+
+    proc = subprocess.run(
+        [ncu_binary, "--list-metrics"],
+        capture_output=True, text=True, timeout=30
+    )
+    if proc.returncode != 0:
+        print(f"  WARNING: ncu --list-metrics failed, using empty metric list")
+        return []
+
+    metrics = []
+    for line in proc.stdout.splitlines():
+        line = line.strip()
+        if line and not line.startswith(("-", "=", "ID")):
+            parts = line.split()
+            if parts:
+                metrics.append(parts[0])
+
+    cache[gpu_name] = (time.time(), metrics)
+    os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+    with open(cache_path, "w") as f:
+        _json.dump(cache, f)
+
+    return metrics
+
+
+def _select_metrics(ncu_binary: str, results_dir: str) -> list[str]:
+    """Select performance metrics via prefix matching against available metrics."""
+    available = _get_available_metrics(ncu_binary, results_dir)
+    selected = []
+    for pat in _DESIRED_PATTERNS:
+        if pat.endswith("."):
+            matched = [m for m in available if m.startswith(pat)]
+            avg_variants = [m for m in matched if ".avg." in m]
+            if avg_variants:
+                selected.append(avg_variants[0])
+            elif matched:
+                selected.append(matched[0])
+        else:
+            if pat in available:
+                selected.append(pat)
+    if not selected:
+        print("  WARNING: no desired NCU metrics found on this GPU")
+    return selected
 
 
 def profile_benchmark(script: str, argv: list[str], op_name: str,
@@ -563,9 +651,6 @@ def profile_benchmark(script: str, argv: list[str], op_name: str,
     """
     import json as _json, time as _time
 
-    # --- strip NCU-only flags from argv ------------------------------------
-    stripped = _strip_ncu_flags(argv)
-
     # --- locate NCU --------------------------------------------------------
     ncu_binary = find_ncu()
 
@@ -577,10 +662,9 @@ def profile_benchmark(script: str, argv: list[str], op_name: str,
     ncu_results: list[dict] = []
 
     # --- determine indices -------------------------------------------------
-    if example_indices is None:
-        # auto-select: run once, pick worst speedup
-        idx = _auto_select_index(stripped, script, results_dir)
-        example_indices = [idx]
+    if not example_indices:
+        print("  NCU: no shapes to profile")
+        return
 
     for idx in example_indices:
         shape_args = _shape_args_for_index(idx, stripped, script)
@@ -592,6 +676,8 @@ def profile_benchmark(script: str, argv: list[str], op_name: str,
         ncu_cmd = [ncu_binary,
                    "--set", "full",
                    "--clock-control", "base",
+                   "--launch-skip", "20",
+                   "--launch-count", "5",
                    "--target-processes", "all",
                    "-o", rep_base,
                    "-f",
@@ -609,7 +695,8 @@ def profile_benchmark(script: str, argv: list[str], op_name: str,
             sys.exit(1)
 
         # --- parse & classify ----------------------------------------------
-        raw = extract_metrics_from_report(ncu_binary, rep_file, _NCU_METRICS)
+        metrics = _select_metrics(ncu_binary, results_dir)
+        raw = extract_metrics_from_report(ncu_binary, rep_file, metrics)
         classif = classify_bottleneck(raw)
 
         total_ns = sum(float(k.get("gpu__time_duration.sum", 0)) for k in raw)
@@ -641,53 +728,6 @@ def profile_benchmark(script: str, argv: list[str], op_name: str,
 # ---------------------------------------------------------------------------
 # internal helpers
 # ---------------------------------------------------------------------------
-
-def _strip_ncu_flags(argv: list[str]) -> list[str]:
-    """Remove --use-ncu and --example-index and its value from argv."""
-    out = []
-    skip = False
-    for a in argv:
-        if skip:
-            skip = False
-            continue
-        if a == "--use-ncu":
-            continue
-        if a in ("--example-index", "--example-index"):
-            skip = True
-            continue
-        if a.startswith("--example-index="):
-            continue
-        out.append(a)
-    return out
-
-
-def _auto_select_index(stripped_argv: list[str], script: str,
-                       results_dir: str) -> int:
-    """Run benchmark once, parse speedup data, return worst-performing index."""
-    import json as _json, tempfile
-
-    tmpdir = tempfile.mkdtemp(prefix="_ncu_auto_")
-    auto_cmd = [sys.executable, script] + stripped_argv + \
-               ["--output", tmpdir]
-    try:
-        subprocess.run(auto_cmd, capture_output=True, timeout=300)
-        latest = os.path.join(tmpdir, "latest.json")
-        if not os.path.isfile(latest):
-            return 0
-        with open(latest) as f:
-            data = _json.load(f)
-        results = data.get("results", [])
-        if not results:
-            return 0
-        speeds = [(i, r.get("speedup", 1.0)) for i, r in enumerate(results)]
-        below = [(i, s) for i, s in speeds if s < 1.0]
-        if below:
-            return min(below, key=lambda x: x[1])[0]
-        return min(speeds, key=lambda x: abs(x[1] - 1.0))[0]
-    finally:
-        import shutil
-        shutil.rmtree(tmpdir, ignore_errors=True)
-
 
 def _shape_args_for_index(index: int, stripped_argv: list[str],
                           script: str) -> list[str]:
