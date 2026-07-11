@@ -20,7 +20,6 @@ def main():
     parser.add_argument("--top_k", default=1, type=int)
     parser.add_argument("--temperature", default=1.0, type=float)
     parser.add_argument("--num_prompts", default=12, type=int)
-    parser.add_argument("--context_repeat", default=2, type=int)
     parser.add_argument("--warmup", default=3, type=int)
     parser.add_argument("--repeat", default=5, type=int)
     parser.add_argument("--test", action="store_true")
@@ -32,7 +31,7 @@ def main():
 
     torch.manual_seed(args.seed)
 
-    prompts = build_prompt_bank(args.num_prompts, args.context_repeat)
+    prompts = build_prompt_bank(args.num_prompts)
     max_steps, tp, tk, temp = args.max_steps, args.top_p, args.top_k, args.temperature
 
     # ── HF batch ─────────────────────────────────────
