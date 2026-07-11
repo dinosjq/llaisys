@@ -283,8 +283,8 @@ def format_results_table(results: list[BenchmarkResult]) -> str:
     bl_w  = max(len(bl_hdr_us), len(bl_hdr_tf), 10) if has_baseline else 0
     sp_w  = len(sp_hdr) if has_baseline else 0
 
-    # sample row for total width
-    sample = (_S + "x" * shape_w + _S + "x" * dtype_w +
+    # sample row for total width (includes #0  prefix)
+    sample = ("#0 " + _S + "x" * shape_w + _S + "x" * dtype_w +
               _S + "x" * val_w + _S + "x" * val_w)
     if has_baseline:
         sample += _S + "x" * bl_w + _S + "x" * bl_w + _S + "x" * sp_w
@@ -293,7 +293,7 @@ def format_results_table(results: list[BenchmarkResult]) -> str:
     lines = [f"\n  Operator: {results[0].operator}", f"  {'═' * W}"]
 
     # header
-    hdr = (f"  {'shape':<{shape_w}}{_S}{'dtype':<{dtype_w}}{_S}"
+    hdr = (f"  {'# ':<4s}{'shape':<{shape_w}}{_S}{'dtype':<{dtype_w}}{_S}"
            f"{ll_hdr:>{val_w}}{_S}{tf_hdr:>{val_w}}")
     if has_baseline:
         hdr += f"{_S}{bl_hdr_us:>{bl_w}}{_S}{bl_hdr_tf:>{bl_w}}{_S}{sp_hdr:>{sp_w}}"
@@ -302,9 +302,9 @@ def format_results_table(results: list[BenchmarkResult]) -> str:
 
     # data rows
     latencies = []
-    for r in results:
+    for i, r in enumerate(results):
         s = _shape_str(r)
-        row = (f"  {s:<{shape_w}}{_S}{r.dtype:<{dtype_w}}{_S}"
+        row = (f"  #{i:<3d} {s:<{shape_w}}{_S}{r.dtype:<{dtype_w}}{_S}"
                f"{r.latency_us:{val_w}.1f}{_S}{r.TFLOPS:{val_w}.1f}")
         if has_baseline:
             if r.baseline_latency_us > 0:
