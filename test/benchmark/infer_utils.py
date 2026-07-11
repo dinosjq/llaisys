@@ -352,26 +352,21 @@ def format_table(results_list, hf_stats, ll_stats, mode="single"):
 
     lines.append(f"\n  {'Metric':<{METRIC_W}} {'LLAISYS':>{LL_W}} {'HF':>{HF_W}}")
     lines.append(f"  {'─' * SW}")
-    lines.append(
-        f"  {'avg latency':<{METRIC_W}} "
-        f"{sum(ll_lats)/n:>{LL_W}.1f} ms {sum(hf_lats)/n:>{HF_W}.1f} ms")
-    lines.append(
-        f"  {'p50 latency':<{METRIC_W}} "
-        f"{sorted(ll_lats)[n//2]:>{LL_W}.1f} ms {sorted(hf_lats)[n//2]:>{HF_W}.1f} ms")
-    lines.append(
-        f"  {'p90 latency':<{METRIC_W}} "
-        f"{sorted(ll_lats)[max(int(n*0.9)-1,0)]:>{LL_W}.1f} ms "
-        f"{sorted(hf_lats)[max(int(n*0.9)-1,0)]:>{HF_W}.1f} ms")
+    _r  = lambda label, ll_v, hf_v, unit="ms": (
+        f"  {label:<{METRIC_W}} "
+        f"{f'{ll_v:.1f} {unit}':>{LL_W}} {f'{hf_v:.1f} {unit}':>{HF_W}}")
+    _r2 = lambda label, ll_v, hf_v, unit="ms": (
+        f"  {label:<{METRIC_W}} "
+        f"{f'{ll_v:.2f} {unit}':>{LL_W}} {f'{hf_v:.2f} {unit}':>{HF_W}}")
+    lines.append(_r("avg latency", sum(ll_lats)/n, sum(hf_lats)/n))
+    lines.append(_r("p50 latency", sorted(ll_lats)[n//2], sorted(hf_lats)[n//2]))
+    lines.append(_r("p90 latency", sorted(ll_lats)[max(int(n*0.9)-1,0)],
+                     sorted(hf_lats)[max(int(n*0.9)-1,0)]))
     lines.append(
         f"  {'TTFT(avg)':<{METRIC_W}} "
-        f"{'— ms':>{LL_W}} {hf_ttft:>{HF_W}.1f} ms")
-    lines.append(
-        f"  {'TPOT':<{METRIC_W}} "
-        f"{ll_stats['tpot_ms']:>{LL_W}.2f} ms {hf_stats['tpot_ms']:>{HF_W}.2f} ms")
-    lines.append(
-        f"  {'Throughput':<{METRIC_W}} "
-        f"{ll_stats['throughput']:>{LL_W}.1f} t/s "
-        f"{hf_stats['throughput']:>{HF_W}.1f} t/s")
+        f"{'— ms':>{LL_W}} {f'{hf_ttft:.1f} ms':>{HF_W}}")
+    lines.append(_r2("TPOT", ll_stats['tpot_ms'], hf_stats['tpot_ms']))
+    lines.append(_r("Throughput", ll_stats['throughput'], hf_stats['throughput'], "t/s"))
     return "\n".join(lines)
 
 

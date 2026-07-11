@@ -15,7 +15,7 @@ def main():
     parser.add_argument("--device", default="nvidia", choices=["nvidia"])
     parser.add_argument("--model", default=None, type=str)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--max_steps", default=1024, type=int)
+    parser.add_argument("--max_steps", default=10, type=int)
     parser.add_argument("--top_p", default=1.0, type=float)
     parser.add_argument("--top_k", default=1, type=int)
     parser.add_argument("--temperature", default=1.0, type=float)
