@@ -531,3 +531,179 @@ def profile_with_ncu(
         bottleneck=bottleneck_info["bottleneck"],
         raw_metrics=raw_metrics,
     )
+
+
+# ---------------------------------------------------------------------------
+# high-level --use-ncu entry point
+# ---------------------------------------------------------------------------
+
+_NCU_METRICS = [
+    "gpu__time_duration.sum",
+    "dram__bytes_read.sum",
+    "dram__bytes_write.sum",
+    "sm__throughput.avg.pct_of_peak_sustained_elapsed",
+    "dram__throughput.avg.pct_of_peak_sustained_elapsed",
+    "sm__warps_active.avg.pct_of_peak_sustained_elapsed",
+]
+
+
+def profile_benchmark(script: str, argv: list[str], op_name: str,
+                      example_indices: Optional[list[int]] = None) -> None:
+    """Profile one or more shapes under NCU.
+
+    1. Strips ``--use-ncu`` / ``--example-index`` from *argv*.
+    2. Runs the benchmark normally for each requested shape (limited via
+       ``--M`` / ``--variant`` or ``--example-index``).
+    3. Parses each ``.ncu-rep``, classifies the bottleneck, and writes
+       ``ncu_results.json`` into the script's results directory.
+
+    *example_indices* of ``None`` means auto-select: the benchmark is
+    run once to collect speedup data, then the worst-performing shape
+    (lowest speedup) is profiled.
+    """
+    import json as _json, time as _time
+
+    # --- strip NCU-only flags from argv ------------------------------------
+    stripped = _strip_ncu_flags(argv)
+
+    # --- locate NCU --------------------------------------------------------
+    ncu_binary = find_ncu()
+
+    script_dir = os.path.dirname(os.path.abspath(script))
+    out_dir = os.path.join(script_dir, "results", "ncu")
+    os.makedirs(out_dir, exist_ok=True)
+
+    results_dir = os.path.join(script_dir, "results")
+    ncu_results: list[dict] = []
+
+    # --- determine indices -------------------------------------------------
+    if example_indices is None:
+        # auto-select: run once, pick worst speedup
+        idx = _auto_select_index(stripped, script, results_dir)
+        example_indices = [idx]
+
+    for idx in example_indices:
+        shape_args = _shape_args_for_index(idx, stripped, script)
+        child_cmd = [sys.executable, script] + shape_args
+
+        rep_base = os.path.join(out_dir, f"{op_name}_idx{idx}")
+        rep_file = rep_base + ".ncu-rep"
+
+        ncu_cmd = [ncu_binary,
+                   "--set", "full",
+                   "--clock-control", "base",
+                   "--target-processes", "all",
+                   "-o", rep_base,
+                   "-f",
+                   "--"] + child_cmd
+
+        proc = subprocess.run(ncu_cmd, capture_output=True, text=True,
+                              timeout=600)
+
+        if proc.returncode != 0:
+            print(f"  NCU failed (exit {proc.returncode}):\n{proc.stderr}")
+            sys.exit(1)
+
+        if not os.path.isfile(rep_file):
+            print(f"  NCU report not generated: {rep_file}\n{proc.stderr}")
+            sys.exit(1)
+
+        # --- parse & classify ----------------------------------------------
+        raw = extract_metrics_from_report(ncu_binary, rep_file, _NCU_METRICS)
+        classif = classify_bottleneck(raw)
+
+        total_ns = sum(float(k.get("gpu__time_duration.sum", 0)) for k in raw)
+        entry = {
+            "operator": op_name,
+            "shape_index": idx,
+            "report_file": rep_file,
+            "kernel_count": len(raw),
+            "total_time_us": total_ns / 1000.0,
+            "bottleneck": classif["bottleneck"],
+            "sm_throughput_pct": classif["sm_throughput_pct"],
+            "dram_throughput_pct": classif["dram_throughput_pct"],
+            "occupancy_pct": classif["occupancy_pct"],
+            "timestamp": _time.strftime("%Y-%m-%dT%H:%M:%S"),
+        }
+        ncu_results.append(entry)
+        print(f"  NCU #{idx}: {classif['bottleneck']}  "
+              f"SM={classif['sm_throughput_pct']:.1f}%  "
+              f"DRAM={classif['dram_throughput_pct']:.1f}%  "
+              f"Occ={classif['occupancy_pct']:.1f}%")
+
+    # --- persist -----------------------------------------------------------
+    json_path = os.path.join(results_dir, "ncu_results.json")
+    with open(json_path, "w") as f:
+        _json.dump(ncu_results, f, indent=2)
+    print(f"  NCU results saved: {json_path}")
+
+
+# ---------------------------------------------------------------------------
+# internal helpers
+# ---------------------------------------------------------------------------
+
+def _strip_ncu_flags(argv: list[str]) -> list[str]:
+    """Remove --use-ncu and --example-index and its value from argv."""
+    out = []
+    skip = False
+    for a in argv:
+        if skip:
+            skip = False
+            continue
+        if a == "--use-ncu":
+            continue
+        if a in ("--example-index", "--example-index"):
+            skip = True
+            continue
+        if a.startswith("--example-index="):
+            continue
+        out.append(a)
+    return out
+
+
+def _auto_select_index(stripped_argv: list[str], script: str,
+                       results_dir: str) -> int:
+    """Run benchmark once, parse speedup data, return worst-performing index."""
+    import json as _json, tempfile
+
+    tmpdir = tempfile.mkdtemp(prefix="_ncu_auto_")
+    auto_cmd = [sys.executable, script] + stripped_argv + \
+               ["--output", tmpdir]
+    try:
+        subprocess.run(auto_cmd, capture_output=True, timeout=300)
+        latest = os.path.join(tmpdir, "latest.json")
+        if not os.path.isfile(latest):
+            return 0
+        with open(latest) as f:
+            data = _json.load(f)
+        results = data.get("results", [])
+        if not results:
+            return 0
+        speeds = [(i, r.get("speedup", 1.0)) for i, r in enumerate(results)]
+        below = [(i, s) for i, s in speeds if s < 1.0]
+        if below:
+            return min(below, key=lambda x: x[1])[0]
+        return min(speeds, key=lambda x: abs(x[1] - 1.0))[0]
+    finally:
+        import shutil
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def _shape_args_for_index(index: int, stripped_argv: list[str],
+                          script: str) -> list[str]:
+    """Build CLI args to limit the benchmark to a single shape by index."""
+    script_name = os.path.basename(script)
+
+    if script_name == "benchmark_linear.py":
+        M_VALUES = [1, 16, 64, 128, 512, 2048]
+        VARIANTS = ["q_proj", "gate_proj", "down_proj"]
+        total = len(VARIANTS) * len(M_VALUES)
+        if index < 0 or index >= total:
+            raise ValueError(f"Index {index} out of range (0-{total - 1})")
+        vi = index // len(M_VALUES)
+        mi = index % len(M_VALUES)
+        return ["--variant", VARIANTS[vi], "--M", str(M_VALUES[mi])]
+
+    # non-linear scripts: pass --example-index to select shape
+    return ["--example-index", str(index)]
+
