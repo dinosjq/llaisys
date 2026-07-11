@@ -15,7 +15,7 @@ def main():
     parser.add_argument("--device", default="nvidia", choices=["nvidia"])
     parser.add_argument("--model", default=None, type=str)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--max_steps", default=32, type=int)
+    parser.add_argument("--max_steps", default=1024, type=int)
     parser.add_argument("--top_p", default=1.0, type=float)
     parser.add_argument("--top_k", default=1, type=int)
     parser.add_argument("--temperature", default=1.0, type=float)
@@ -95,9 +95,10 @@ def main():
     for i, p in enumerate(prompts):
         tier = tiers[i % len(tiers)]
         results_list.append({
-            "label": f"{tier:<6s} #{i//len(tiers)}",
+            "label": f"{tier}_{i//len(tiers)}",
             "input_tok": prompt_input_lens[i],
-            "output_tok": len(ll_results[i][0]) - prompt_input_lens[i],
+            "ll_out": len(ll_results[i][0]) - prompt_input_lens[i],
+            "hf_out": len(hf_results[i][0]) - prompt_input_lens[i],
             "ll_ms": ll_lat_us[i],
         })
 

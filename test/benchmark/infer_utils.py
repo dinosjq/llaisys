@@ -317,11 +317,12 @@ def print_speedup(hf_stats, ll_stats):
 
 
 def format_table(results_list, hf_stats, ll_stats, mode="single"):
-    """Per-prompt rows + footer with TTFT/TPOT/Throughput."""
-    W = 68
+    """Per-prompt rows + footer with system names as side labels."""
+    W = 95
     lines = [f"\n  {'═' * W}"]
-    hdr = (f"  {'prompt':<13s} {'input':>6s} {'output':>7s}  "
-           f"{'LLAISYS(ms)':>12s}  {'HF(ms)':>12s}  {'speedup':>8s}")
+    hdr = (f"  {'prompt':<10s} {'input(token)':>13s} {'LLAISYS_output(token)':>22s} "
+           f"{'HF_output(token)':>18s} {'LLAISYS_latency(ms)':>20s} "
+           f"{'HF_latency(ms)':>16s} {'speedup':>8s}")
     lines.append(hdr)
     lines.append(f"  {'─' * W}")
 
@@ -330,32 +331,28 @@ def format_table(results_list, hf_stats, ll_stats, mode="single"):
         hf_ms = hf_stats["per_prompt"][i] / 1000.0 if i < len(hf_stats["per_prompt"]) else 0
         sp = hf_ms / ll_ms if ll_ms > 0 else 0
         lines.append(
-            f"  {r['label']:<13s} {r['input_tok']:>6d} {r['output_tok']:>7d}  "
-            f"{ll_ms:>12.1f}  {hf_ms:>12.1f}  {sp:>7.2f}x"
+            f"  {r['label']:<10s} {r['input_tok']:>13d} {r['ll_out']:>22d} "
+            f"{r['hf_out']:>18d} {ll_ms:>20.1f} {hf_ms:>16.1f} {sp:>7.2f}x"
         )
 
-    lines.append(f"  {'─' * W}")
-    ll_lats = [r["ll_ms"] / 1000.0 for r in results_list]
-    hf_lats = [hf_stats["per_prompt"][i] / 1000.0
-               for i in range(len(results_list))]
-    lines.append(
-        f"  {'summary':<13s} {ll_stats['input_tokens']:>6d} {ll_stats['output_tokens']:>7d}  "
-        f"avg {sum(ll_lats)/len(ll_lats):.1f}  avg {sum(hf_lats)/len(hf_lats):.1f}  "
-        f"{hf_stats['elapsed_s'] / ll_stats['elapsed_s']:.2f}x"
-    )
-    lines.append(
-        f"  {'':>13s} {'tok':>6s} {'tok':>7s}  "
-        f"p50 {sorted(ll_lats)[len(ll_lats)//2]:.1f}  "
-        f"p50 {sorted(hf_lats)[len(hf_lats)//2]:.1f}"
-    )
-
     lines.append(f"  {'═' * W}")
+    ll_lats = [r["ll_ms"] / 1000.0 for r in results_list]
+    hf_lats = [hf_stats["per_prompt"][i] / 1000.0 for i in range(len(results_list))]
     hf_ttft = hf_stats.get("ttft_avg_ms", 0)
-    lines.append(f"  TTFT(avg):   LLAISYS {'—':>8s}     HF {hf_ttft:.1f} ms")
-    lines.append(f"  TPOT:        LLAISYS {ll_stats['tpot_ms']:.2f} ms   "
-                 f"HF {hf_stats['tpot_ms']:.2f} ms")
-    lines.append(f"  Throughput:  LLAISYS {ll_stats['throughput']:.1f} t/s  "
-                 f"HF {hf_stats['throughput']:.1f} t/s")
+    footer = [
+        f"  {'avg latency':>38s} {sum(ll_lats)/len(ll_lats):>20.1f} ms "
+        f"{sum(hf_lats)/len(hf_lats):>16.1f} ms",
+        f"  {'p50 latency':>38s} {sorted(ll_lats)[len(ll_lats)//2]:>20.1f} ms "
+        f"{sorted(hf_lats)[len(hf_lats)//2]:>16.1f} ms",
+        f"  {'p90 latency':>38s} {sorted(ll_lats)[max(int(len(ll_lats)*0.9)-1,0)]:>20.1f} ms "
+        f"{sorted(hf_lats)[max(int(len(hf_lats)*0.9)-1,0)]:>16.1f} ms",
+        f"  {'TTFT(avg)':>38s} {'—':>20s} {hf_ttft:>16.1f} ms",
+        f"  {'TPOT':>38s} {ll_stats['tpot_ms']:>19.2f} ms {hf_stats['tpot_ms']:>16.2f} ms",
+        f"  {'Throughput':>38s} {ll_stats['throughput']:>19.1f} t/s "
+        f"{hf_stats['throughput']:>16.1f} t/s",
+    ]
+    for line in footer:
+        lines.append(line)
     return "\n".join(lines)
 
 
