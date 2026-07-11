@@ -14,6 +14,7 @@ from benchmark_harness import (
 )
 
 OP_NAME = "self_attention"
+SHAPE_LABEL = "shape:[seqlen x totlen x nh x nkvh x hd]"
 SCALE = 1.0 / (128 ** 0.5)
 QWEN2_SHAPES = [
     {"seqlen": 1,    "total_len": 64,   "nh": 28, "nkvh": 4, "hd": 128},
@@ -168,7 +169,7 @@ def main():
             assert ok, "Self-attention correctness check failed!"
 
 
-    save_results(results, args.output)
+    save_results(results, args.output, SHAPE_LABEL)
 
     if args.use_ncu:
         indices = target_indices

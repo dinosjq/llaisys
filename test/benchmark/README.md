@@ -18,7 +18,7 @@ test/benchmark/
 ├── ops/
 │   ├── benchmark_harness.py     ← CUDA Event 计时 + 表格输出
 │   ├── ncu_profiler.py          ← NCU 集成 + 动态指标发现 + 瓶颈分类
-│   ├── benchmark_*.py           ← 12 个算子 benchmark
+│   ├── benchmark_*.py           ← 10 个算子 benchmark
 │   ├── run_all_benchmarks.py    ← 批量运行
 │   └── results/                 ← JSON + .ncu-rep 输出
 ```
@@ -37,8 +37,6 @@ test/benchmark/
 | `benchmark_swiglu.py` | SwiGLU 激活 | PyTorch |
 | `benchmark_self_attention.py` | 自注意力 | Flash-Attention |
 | `benchmark_topk.py` | Top-K 选择 | PyTorch CUDA |
-| `benchmark_paged_attention.py` | 分页注意力 | 无 |
-| `benchmark_kv_cache_move.py` | KV Cache 搬运 | 无 |
 
 ## CLI 参数
 
@@ -63,7 +61,7 @@ test/benchmark/
 ### `--warmup` 与 `--repeat`
 
 ```
-python benchmark_linear.py --warmup 10 --repeat 10
+python test/benchmark/ops/benchmark_linear.py --warmup 10 --repeat 10
 ```
 
 - warmup：跑 N 次完整算子调用 + sync。不计时。目的：稳定 GPU 频率，预热 cache
@@ -73,9 +71,9 @@ python benchmark_linear.py --warmup 10 --repeat 10
 ### `--use-ncu`
 
 ```bash
-python benchmark_linear.py --use-ncu                        # 自动选最差 shape
-python benchmark_linear.py --use-ncu --example-index "3"    # 只 profile #3
-python benchmark_linear.py --use-ncu --example-index "0,7"  # profile #0 #7
+python test/benchmark/ops/benchmark_linear.py --use-ncu                        # 自动选最差 shape
+python test/benchmark/ops/benchmark_linear.py --use-ncu --example-index "3"    # 只 profile #3
+python test/benchmark/ops/benchmark_linear.py --use-ncu --example-index "0,7"  # profile #0 #7
 ```
 
 - **流程**：先正常跑 benchmark → 输出表格 → 自动选 shape（speedup < 1.0 选最小，全 >= 1.0 选最接近 1.0）→ NCU `--set full` profile 子进程 → 输出瓶颈
@@ -175,5 +173,3 @@ python test/benchmark/ops/run_all_benchmarks.py --dtype f16 --op linear,rope,rms
 | swiglu | 1..2048 | ×18944 |
 | self_attention | 1..512 | total_len: 64..1024 |
 | topk | (3584,)..(128,32000) | k=10 |
-| paged_attention | 16..512 | token_num=64 |
-| kv_cache_move | batch: 1..8 | max_seq_len: 64..512 |

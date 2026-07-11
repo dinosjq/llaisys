@@ -14,6 +14,7 @@ from benchmark_harness import (
 )
 
 OP_NAME = "swiglu"
+SHAPE_LABEL = "shape:[rows x cols]"
 QWEN2_SHAPES = [
     {"shape": (1, 18944)},
     {"shape": (16, 18944)},
@@ -116,7 +117,7 @@ def main():
             assert ok, "SwiGLU correctness check failed!"
 
 
-    save_results(results, args.output)
+    save_results(results, args.output, SHAPE_LABEL)
 
     if args.use_ncu:
         indices = target_indices

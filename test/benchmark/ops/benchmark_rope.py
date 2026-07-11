@@ -13,6 +13,7 @@ from benchmark_harness import (
 )
 
 OP_NAME = "rope"
+SHAPE_LABEL = "shape:[seqlen x nhead x hd]"
 THETA = 10000.0
 QWEN2_SHAPES = [
     {"seqlen": 1,    "nhead": 28, "hd": 128},
@@ -163,7 +164,7 @@ def main():
             assert ok, "RoPE correctness check failed!"
 
 
-    save_results(results, args.output)
+    save_results(results, args.output, SHAPE_LABEL)
 
     if args.use_ncu:
         indices = target_indices

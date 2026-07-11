@@ -14,6 +14,7 @@ from benchmark_harness import (
 )
 
 OP_NAME = "linear"
+SHAPE_LABEL = "shape:[M x N x K x variant]"
 QWEN2_VARIANTS = {
     "q_proj":    (3584, 3584),   # N, K  (Q/K/V/O proj)
     "gate_proj": (18944, 3584),  # N, K  (Gate/Up proj)
@@ -148,7 +149,7 @@ def main():
                 print(f"  Correctness: {'PASS' if ok else 'FAIL'}")
                 assert ok, "Linear correctness check failed!"
 
-    save_results(results, args.output)
+    save_results(results, args.output, SHAPE_LABEL)
 
     if args.use_ncu:
         indices = target_indices  # may be None (auto-select) or a list

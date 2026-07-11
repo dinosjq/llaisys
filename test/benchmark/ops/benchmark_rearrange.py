@@ -13,6 +13,7 @@ from benchmark_harness import (
 )
 
 OP_NAME = "rearrange"
+SHAPE_LABEL = "shape:[rows x cols]"
 QWEN2_SHAPES = [
     {"shape": (1, 3584)},
     {"shape": (16, 3584)},
@@ -93,7 +94,7 @@ def main():
             assert ok, "Rearrange correctness check failed!"
 
 
-    save_results(results, args.output)
+    save_results(results, args.output, SHAPE_LABEL)
 
     if args.use_ncu:
         indices = target_indices

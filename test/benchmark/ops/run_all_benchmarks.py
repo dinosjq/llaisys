@@ -5,8 +5,7 @@ import json, os, subprocess, sys, time
 
 BENCHMARK_DIR = os.path.dirname(os.path.abspath(__file__))
 OPERATORS = ["add", "argmax", "embedding", "rearrange", "linear",
-             "rms_norm", "rope", "swiglu", "self_attention", "topk",
-             "paged_attention", "kv_cache_move"]
+             "rms_norm", "rope", "swiglu", "self_attention", "topk"]
 
 def main():
     import argparse

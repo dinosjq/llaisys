@@ -13,6 +13,7 @@ from benchmark_harness import (
 )
 
 OP_NAME = "top_k"
+SHAPE_LABEL = "shape:[dims x k]"
 QWEN2_SHAPES = [
     {"shape": (3584,),      "k": 10},
     {"shape": (18944,),     "k": 10},
@@ -159,7 +160,7 @@ def main():
             assert ok, "TopK correctness check failed!"
 
 
-    save_results(results, args.output)
+    save_results(results, args.output, SHAPE_LABEL)
 
     if args.use_ncu:
         indices = target_indices

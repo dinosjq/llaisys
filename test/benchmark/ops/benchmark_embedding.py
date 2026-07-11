@@ -13,6 +13,7 @@ from benchmark_harness import (
 )
 
 OP_NAME = "embedding"
+SHAPE_LABEL = "shape:[seqlen x dim]"
 QWEN2_SHAPES = [
     {"seqlen": 1, "vocab": 151936, "dim": 3584},
     {"seqlen": 16, "vocab": 151936, "dim": 3584},
@@ -99,7 +100,7 @@ def main():
             assert ok, "Embedding correctness check failed!"
 
 
-    save_results(results, args.output)
+    save_results(results, args.output, SHAPE_LABEL)
 
     if args.use_ncu:
         indices = target_indices

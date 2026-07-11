@@ -257,7 +257,8 @@ def format_summary(result: BenchmarkResult) -> str:
     """Silent during benchmark loop — table printed by format_results_table()."""
     return ""
 
-def format_results_table(results: list[BenchmarkResult]) -> str:
+def format_results_table(results: list[BenchmarkResult],
+                          shape_label: str = "shape") -> str:
     """Aligned table output for a batch of results."""
     if not results:
         return "(no results)"
@@ -293,7 +294,7 @@ def format_results_table(results: list[BenchmarkResult]) -> str:
     lines = [f"\n  Operator: {results[0].operator}", f"  {'═' * W}"]
 
     # header
-    hdr = (f"  {'  ':<3s}{'shape':<{shape_w}}{_S}{'dtype':<{dtype_w}}{_S}"
+    hdr = (f"  {'  ':<3s}{shape_label:<{shape_w}}{_S}{'dtype':<{dtype_w}}{_S}"
            f"{ll_hdr:>{val_w}}{_S}{tf_hdr:>{val_w}}")
     if has_baseline:
         hdr += f"{_S}{bl_hdr_us:>{bl_w}}{_S}{bl_hdr_tf:>{bl_w}}{_S}{sp_hdr:>{sp_w}}"
@@ -336,21 +337,10 @@ def format_results_table(results: list[BenchmarkResult]) -> str:
 # JSON persistence
 # ---------------------------------------------------------------------------
 
-def save_results(results: list[BenchmarkResult], output_dir: str) -> str:
+def save_results(results: list[BenchmarkResult], output_dir: str,
+                  shape_label: str = "shape") -> str:
     """Write results to a timestamped JSON file, symlink latest.json, and
-    print a terminal summary.
-
-    Parameters
-    ----------
-    results : list[BenchmarkResult]
-    output_dir : str
-        Directory that will contain the timestamped subdirectory and JSON.
-
-    Returns
-    -------
-    str
-        Path to the written JSON file.
-    """
+    print a terminal summary."""
     os.makedirs(output_dir, exist_ok=True)
 
     timestamp = time.strftime("%Y%m%d_%H%M%S")
@@ -396,6 +386,6 @@ def save_results(results: list[BenchmarkResult], output_dir: str) -> str:
 
     # terminal summary
     print(f"\n  GPU: {gpu_model}  |  CUDA: {cuda_version}  |  Saved: {os.path.relpath(json_path)}")
-    print(format_results_table(results))
+    print(format_results_table(results, shape_label))
 
     return json_path
