@@ -23,6 +23,7 @@ Usage::
 import csv
 import io
 import os
+import time
 import shutil
 import subprocess
 import sys
@@ -560,8 +561,7 @@ _DESIRED_PATTERNS = [
     "gpu__time_duration.sum",
     "sm__throughput.",
     "sm__warps_active.",
-    "dram__cycles_elapsed.",
-    "dram__cycles_active.",
+    "gpu__dram_throughput.",
 ]
 
 
@@ -622,8 +622,12 @@ def _select_metrics(ncu_binary: str, results_dir: str) -> list[str]:
     for pat in _DESIRED_PATTERNS:
         if pat.endswith("."):
             matched = [m for m in available if m.startswith(pat)]
+            # Prefer .avg. variants, then .pct_of_peak, then first available
             avg_variants = [m for m in matched if ".avg." in m]
-            if avg_variants:
+            pct_variants = [m for m in (avg_variants or matched) if "pct_of_peak" in m]
+            if pct_variants:
+                selected.append(pct_variants[0])
+            elif avg_variants:
                 selected.append(avg_variants[0])
             elif matched:
                 selected.append(matched[0])
