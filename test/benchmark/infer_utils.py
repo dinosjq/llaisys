@@ -313,12 +313,9 @@ def summarize_run(name, elapsed_s, num_prompts,
 
 
 def print_speedup(hf_stats, ll_stats):
-    if ll_stats["elapsed_s"] <= 0:
-        return
-    s_wall = hf_stats["elapsed_s"] / ll_stats["elapsed_s"]
-    s_tpot = hf_stats["tpot_ms"] / ll_stats["tpot_ms"] if ll_stats["tpot_ms"] > 0 else 0
-    print(f"\n  Wall-clock speedup: {s_wall:.2f}x")
-    print(f"  TPOT improvement:   {s_tpot:.2f}x")
+    s_tput = (ll_stats["throughput"] / hf_stats["throughput"]
+              if hf_stats["throughput"] > 0 else 0)
+    print(f"\n  Throughput speedup: {s_tput:.2f}x")
 
 
 def format_table(results_list, hf_stats, ll_stats, mode="single"):
@@ -332,7 +329,10 @@ def format_table(results_list, hf_stats, ll_stats, mode="single"):
     for i, r in enumerate(results_list):
         ll_ms = r["ll_ms"] / 1000.0
         hf_ms = hf_stats["per_prompt"][i] / 1000.0 if i < len(hf_stats["per_prompt"]) else 0
-        sp = hf_ms / ll_ms if ll_ms > 0 else 0
+        # speedup based on throughput (accounts for different output lengths)
+        ll_tp = (r["ll_out"] / ll_ms * 1000) if ll_ms > 0 and r.get("ll_out", 0) > 0 else 0
+        hf_tp = (r["hf_out"] / hf_ms * 1000) if hf_ms > 0 and r.get("hf_out", 0) > 0 else 0
+        sp = ll_tp / hf_tp if hf_tp > 0 else 0
         lines.append(
             f"  {r['label']:<10s} {r['input_tok']:>13d} {r['ll_out']:>22d} "
             f"{r['hf_out']:>18d} {ll_ms:>20.1f} {hf_ms:>16.1f} {sp:>7.2f}x"
