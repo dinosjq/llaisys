@@ -53,35 +53,85 @@ def load_llaisys_model(model_path, device_name):
 
 # ── Prompt Construction ──────────────────────────────────────────
 
-def build_prompt_bank(num_prompts, context_repeat):
-    base_prompts = [
-        "Explain what batch inference is and why it matters for serving large language models.",
-        "Write a concise comparison between prefill and decode phases in autoregressive generation.",
-        "Summarize the tradeoffs between latency, throughput, and batch size in inference systems.",
-        "Give a step-by-step explanation of how KV cache helps speed up transformer decoding.",
-        "Describe three common bottlenecks in GPU inference pipelines and how to measure them.",
-        "Draft a short checklist for validating a new model backend before releasing it to users.",
-        "What are the risks of measuring performance with too few prompts or too few generated tokens?",
-        "Produce a short technical note about concurrency, scheduling, and tail latency in model serving.",
-    ]
-    extra_contexts = [
-        "Use concrete terms and keep the answer focused on engineering tradeoffs.",
-        "Include at least one practical example or metric in the response.",
-        "Mention how the answer would change under CPU and GPU execution.",
-        "Keep the output dense enough to exercise generation cost, not just a one-line response.",
-    ]
+# ── Prompt Bank (short / medium / long tiers) ────────────────────
+
+_PROMPT_BANK = {
+    "short": [
+        "What is the capital of France?",
+        "Define backpropagation in one sentence.",
+        "Write a haiku about GPU computing.",
+        "Explain what 2+2 equals.",
+        "What does GPU stand for?",
+        "Name three primary colors.",
+        "Convert 100 Celsius to Fahrenheit.",
+        "What year did World War II end?",
+        "Define 'algorithm' briefly.",
+        "What is the speed of light?",
+    ],
+    "medium": [
+        "Explain how the transformer attention mechanism works. Cover Q, K, V matrices, "
+        "scaled dot-product attention, and why multi-head attention matters.",
+        "Compare and contrast gradient descent, stochastic gradient descent, and Adam optimizer. "
+        "Include their update rules and when to use each.",
+        "Describe the key differences between RNNs, LSTMs, and Transformers for sequence modeling. "
+        "Focus on vanishing gradients, parallelization, and long-range dependencies.",
+        "Walk through the steps of batch normalization during training. Explain why it helps "
+        "with internal covariate shift and how it affects gradient flow.",
+        "Explain the concept of KV caching in autoregressive language model inference. "
+        "Why does it speed up decoding, and how does memory usage scale with batch size "
+        "and sequence length?",
+        "Describe how PyTorch's autograd engine tracks operations and computes gradients. "
+        "Include the role of the computational graph, backward hooks, and why certain "
+        "operations are non-differentiable.",
+        "Explain speculative decoding for LLM inference. How does a draft model help the "
+        "target model generate tokens faster? What are typical speedups?",
+        "Compare Flash Attention v1, v2, and v3. How does each version improve over the "
+        "previous? Focus on tiling strategies and IO complexity.",
+        "Describe the complete pipeline of loading a HuggingFace model, converting it to "
+        "ONNX, and deploying it with TensorRT. Include common pitfalls.",
+        "Explain RoPE (Rotary Position Embedding) in detail. How does it encode relative "
+        "position? Why is it preferred over learned absolute position embeddings?",
+    ],
+    "long": [
+        """You are designing a GPU inference serving system for large language models.
+The system must handle concurrent requests with varying prompt lengths (10 to 4096 tokens)
+and generate responses up to 2048 tokens each. Key constraints: 80 GB GPU memory,
+peak throughput requirement of 1000 requests per second, and P99 latency under 500ms.
+
+Please analyze the following aspects:
+1. Memory planning: how would you allocate KV cache blocks? What block size and total count?
+2. Batching strategy: continuous batching vs static batching. How does chunked prefill help?
+3. Scheduling: what policy would you use to maximize throughput while meeting latency SLOs?
+4. Quantization: would FP8 or INT8 KV cache help? What are the accuracy tradeoffs?
+
+Provide concrete numbers and reasoning for each design choice.""",
+        """You are evaluating three different GPU architectures for LLM inference deployment:
+NVIDIA A100 (80GB), H100 (80GB), and B200. A single model instance serves 7B-parameter
+models with FP16 weights and FP8 KV cache. The workload mix is 40% short prompts
+(<50 tokens) and 60% long prompts (500-2000 tokens), with output lengths averaging
+200 tokens.
+
+For each GPU architecture, analyze:
+1. Peak throughput in tokens/second under continuous batching with batch size 64.
+2. Memory utilization: weight memory, KV cache memory, and activation memory breakdown.
+3. Prefill vs decode bottlenecks: at what sequence length does each become the bottleneck?
+4. Cost per million tokens: assume A100=$1.20/hr, H100=$2.50/hr, B200=$4.00/hr.
+5. If you could only deploy on ONE architecture, which would you choose and why?
+
+Support your analysis with computed TFLOPS, memory bandwidth numbers, and arithmetic
+intensity calculations where applicable.""",
+    ],
+}
+
+
+def build_prompt_bank(num_prompts):
+    """Sample evenly from short/medium/long tiers to ensure input-length diversity."""
+    tiers = ["short", "medium", "long"]
     prompts = []
-    for idx in range(num_prompts):
-        topic = base_prompts[idx % len(base_prompts)]
-        extra = extra_contexts[idx % len(extra_contexts)]
-        context_lines = [
-            f"Context line {ri + 1}: this benchmark should stress input handling, decoding, and batching behavior."
-            for ri in range(context_repeat)
-        ]
-        prompt = f"{topic}\n\n{extra}"
-        if context_lines:
-            prompt += "\n\n" + "\n".join(context_lines)
-        prompts.append(prompt)
+    for i in range(num_prompts):
+        tier = tiers[i % len(tiers)]
+        pool = _PROMPT_BANK[tier]
+        prompts.append(pool[i // len(tiers) % len(pool)])
     return prompts
 
 
@@ -97,18 +147,58 @@ def _apply_chat(tokenizer, prompt):
 
 def hf_infer(prompt, tokenizer, model, max_new_tokens=128,
              top_p=0.8, top_k=50, temperature=0.8):
+    """Single-prompt HF inference with TTFT via token-by-token loop."""
     input_ids = _apply_chat(tokenizer, prompt)
     inputs = torch.tensor([input_ids], device=model.device)
+    past_key_values = None
+    generated = []
+    ttft_us = 0.0
+    next_token = None
+
     start = time.perf_counter()
     with torch.no_grad():
-        outputs = model.generate(
-            inputs, max_new_tokens=max_new_tokens, top_k=top_k,
-            top_p=top_p, temperature=temperature, use_cache=True,
-        )
-    torch.cuda.synchronize()
+        for step in range(max_new_tokens):
+            if past_key_values is None:
+                outputs = model(input_ids=inputs, use_cache=True)
+            else:
+                outputs = model(
+                    input_ids=next_token,
+                    past_key_values=past_key_values, use_cache=True,
+                )
+            past_key_values = outputs.past_key_values
+            logits = outputs.logits[:, -1, :]
+
+            if temperature > 0 and (top_p < 1.0 or top_k > 1):
+                logits = logits / max(temperature, 1e-6)
+                if top_k > 1:
+                    topk_vals, topk_idx = torch.topk(logits, min(top_k, logits.shape[-1]), dim=-1)
+                    logits = logits.masked_fill(
+                        logits < topk_vals[:, -1:], float("-inf"))
+                if top_p < 1.0:
+                    sorted_logits, sorted_idx = logits.sort(dim=-1, descending=True)
+                    cum_probs = sorted_logits.softmax(dim=-1).cumsum(dim=-1)
+                    mask = cum_probs > top_p
+                    mask[:, 1:] = mask[:, :-1].clone()
+                    mask[:, 0] = False
+                    logits = logits.masked_fill(
+                        mask.scatter(1, sorted_idx, mask), float("-inf"))
+                probs = logits.softmax(dim=-1)
+                next_token_id = torch.multinomial(probs, 1)
+            else:
+                next_token_id = logits.argmax(dim=-1, keepdim=True)
+
+            if step == 0:
+                ttft_us = (time.perf_counter() - start) * 1e6
+
+            token_id = next_token_id.item()
+            generated.append(token_id)
+            if token_id == tokenizer.eos_token_id:
+                break
+            next_token = next_token_id
+
     elapsed_us = (time.perf_counter() - start) * 1e6
-    tokens = outputs[0].tolist()
-    return tokens, elapsed_us
+    tokens = input_ids + generated
+    return tokens, elapsed_us, ttft_us
 
 
 def llaisys_infer(prompt, tokenizer, model, max_new_tokens=128,
@@ -120,7 +210,7 @@ def llaisys_infer(prompt, tokenizer, model, max_new_tokens=128,
         top_k=top_k, top_p=top_p, temperature=temperature,
     )
     elapsed_us = (time.perf_counter() - start) * 1e6
-    return result, elapsed_us
+    return result, elapsed_us, None  # ttft_us=None (future streaming)
 
 
 # ── Batch / Concurrent Inference ─────────────────────────────────
@@ -226,34 +316,46 @@ def print_speedup(hf_stats, ll_stats):
     print(f"  TPOT improvement:   {s_tpot:.2f}x")
 
 
-def format_table(hf_stats, ll_stats, mode="single"):
-    """Unified terminal table output."""
-    def _fmt(v, unit):
-        return f"{v:.1f} {unit}"
+def format_table(results_list, hf_stats, ll_stats, mode="single"):
+    """Per-prompt rows + footer with TTFT/TPOT/Throughput."""
+    W = 68
+    lines = [f"\n  {'═' * W}"]
+    hdr = (f"  {'prompt':<13s} {'input':>6s} {'output':>7s}  "
+           f"{'LLAISYS(ms)':>12s}  {'HF(ms)':>12s}  {'speedup':>8s}")
+    lines.append(hdr)
+    lines.append(f"  {'─' * W}")
 
-    lines = [f"\n  ┌{'─' * 66}┐"]
-
-    rows = [("TPOT", "ms", hf_stats["tpot_ms"], ll_stats["tpot_ms"]),
-            ("Throughput", "tok/s", hf_stats["throughput"], ll_stats["throughput"])]
-    # Latencies stored in microseconds — display as ms
-    if "lat_avg" in hf_stats and "lat_avg" in ll_stats:
-        rows.insert(0, ("Latency(p50)", "ms",
-                        hf_stats["lat_p50"] / 1000, ll_stats["lat_p50"] / 1000))
-        rows.insert(0, ("Latency(p90)", "ms",
-                        hf_stats["lat_p90"] / 1000, ll_stats["lat_p90"] / 1000))
-        rows.insert(0, ("Latency(avg)", "ms",
-                        hf_stats["lat_avg"] / 1000, ll_stats["lat_avg"] / 1000))
-    if mode == "concurrent":
-        rows.insert(0, ("Total elapsed", "s",
-                        hf_stats["elapsed_s"], ll_stats["elapsed_s"]))
-
-    for metric, unit, hf_v, ll_v in rows:
-        sp = hf_v / ll_v if ll_v > 0 else 0
+    for i, r in enumerate(results_list):
+        ll_ms = r["ll_ms"] / 1000.0
+        hf_ms = hf_stats["per_prompt"][i] / 1000.0 if i < len(hf_stats["per_prompt"]) else 0
+        sp = hf_ms / ll_ms if ll_ms > 0 else 0
         lines.append(
-            f"  │ {metric:<18s} {_fmt(hf_v, unit):>12s}  {_fmt(ll_v, unit):>12s}  "
-            f"{sp:5.2f}x │"
+            f"  {r['label']:<13s} {r['input_tok']:>6d} {r['output_tok']:>7d}  "
+            f"{ll_ms:>12.1f}  {hf_ms:>12.1f}  {sp:>7.2f}x"
         )
-    lines.append(f"  └{'─' * 66}┘")
+
+    lines.append(f"  {'─' * W}")
+    ll_lats = [r["ll_ms"] / 1000.0 for r in results_list]
+    hf_lats = [hf_stats["per_prompt"][i] / 1000.0
+               for i in range(len(results_list))]
+    lines.append(
+        f"  {'summary':<13s} {ll_stats['input_tokens']:>6d} {ll_stats['output_tokens']:>7d}  "
+        f"avg {sum(ll_lats)/len(ll_lats):.1f}  avg {sum(hf_lats)/len(hf_lats):.1f}  "
+        f"{hf_stats['elapsed_s'] / ll_stats['elapsed_s']:.2f}x"
+    )
+    lines.append(
+        f"  {'':>13s} {'tok':>6s} {'tok':>7s}  "
+        f"p50 {sorted(ll_lats)[len(ll_lats)//2]:.1f}  "
+        f"p50 {sorted(hf_lats)[len(hf_lats)//2]:.1f}"
+    )
+
+    lines.append(f"  {'═' * W}")
+    hf_ttft = hf_stats.get("ttft_avg_ms", 0)
+    lines.append(f"  TTFT(avg):   LLAISYS {'—':>8s}     HF {hf_ttft:.1f} ms")
+    lines.append(f"  TPOT:        LLAISYS {ll_stats['tpot_ms']:.2f} ms   "
+                 f"HF {hf_stats['tpot_ms']:.2f} ms")
+    lines.append(f"  Throughput:  LLAISYS {ll_stats['throughput']:.1f} t/s  "
+                 f"HF {hf_stats['throughput']:.1f} t/s")
     return "\n".join(lines)
 
 
