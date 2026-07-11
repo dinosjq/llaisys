@@ -169,14 +169,13 @@ python test/benchmark/ops/benchmark_linear.py --use-ncu --example-index "0,7"  #
 | `--device` | `nvidia` | `nvidia` | CUDA 仅用 |
 | `--model` | path | — | 模型路径（本地或自动下载 HF） |
 | `--seed` | int | `42` | 随机种子 |
-| `--max_steps` | int | `32` | 每请求最大生成 token 数 |
+| `--max_steps` | int | `10` | 每请求最大生成 token 数 |
 | `--top_p` | float | `1.0` | 采样参数 |
 | `--top_k` | int | `1` | 采样参数 |
 | `--temperature` | float | `1.0` | 采样参数 |
-| `--num_prompts` | int | `12` | 测试 prompt 数量 |
-| `--context_repeat` | int | `2` | 每个 prompt 的上下文填充行数 |
-| `--warmup` | int | `3` | warmup 迭代数 |
-| `--repeat` | int | `5` | 计时迭代数 |
+| `--num_prompts` | int | `12` | 测试 prompt 数量（从 short/medium/long 三层均匀采样） |
+| `--warmup` | int | `3` | warmup 迭代数（LLAISYS 用 disposable prompt 避免 KV cache 污染） |
+| `--repeat` | int | `5` | 计时迭代数（对 LLAISYS 无意义：同 prompt 二次调用命中 KV cache） |
 | `--test` | flag | — | greedy 解码 + token 级正确性验证 |
 | `--output` | path | `test/benchmark/results` | JSON 输出目录 |
 
@@ -187,19 +186,31 @@ python test/benchmark/benchmark_infer.py --model <path>
 python test/benchmark/benchmark_infer.py --model <path> --test   # 正确性验证
 ```
 
-逐 prompt 串行调用 `model.generate()`，测量每个请求的 CUDA Event 延迟。输出：
+逐 prompt 串行调用 `model.generate()`，测量每个请求的延迟。输出：
 
 ```
-  Model: Qwen2-1.5B  |  GPU: RTX 4060  |  Prompts: 12  |  Mode: single
+  Model: Qwen2-1.5B  |  GPU: RTX 4060  |  Prompts: 6  |  Mode: single
 
-  ┌──────────────────────────────────────────────────────────────────┐
-  │ Latency(avg)          245.3 ms        198.7 ms    1.23x │
-  │ Latency(p50)          230.1 ms        185.2 ms    1.24x │
-  │ Latency(p90)          312.4 ms        245.1 ms    1.27x │
-  │ TPOT                   12.5 ms         10.1 ms    1.24x │
-  │ Throughput            80.0 tok/s      99.0 tok/s   1.24x │
-  └──────────────────────────────────────────────────────────────────┘
+  ═══════════════════════════════════════════════════════════════════════════
+  prompt    input(token)  LLAISYS_output(token)  HF_output(token)  LLAISYS_latency(ms)  HF_latency(ms)  speedup
+  ───────────────────────────────────────────────────────────────────────────
+  short_0            13                    10                10               205.4            221.9    1.08x
+  medium_0           35                    10                10               202.6            224.7    1.11x
+  long_0            186                    10                10               249.3            236.3    0.95x
+  ═══════════════════════════════════════════════════════════════════════════
+
+  Metric          LLAISYS           HF
+  ─────────────────────────────────────
+  avg latency      235.5 ms     224.7 ms
+  p50 latency      239.3 ms     224.7 ms
+  p90 latency      249.3 ms     235.9 ms
+  TTFT(avg)              —       19.9 ms
+  TPOT            23.61 ms     22.53 ms
+  Throughput       42.4 t/s     44.4 t/s
 ```
+
+- speedup 基于 **throughput**（tokens/s），考虑输出长度差异
+- prompt 从 short/medium/long 三层采样，`{tier}_{index}` 标签
 
 ### 并发多请求
 
@@ -210,13 +221,14 @@ python test/benchmark/benchmark_batch_infer.py --model <path>
 N 个线程同时调用 `model.generate()`，LLAISYS scheduler 内部自动组 batch。HF 用 padded batch 对比。
 
 ```
-  Model: Qwen2-1.5B  |  GPU: RTX 4060  |  Prompts: 12  |  Mode: concurrent
+  Model: Qwen2-1.5B  |  GPU: RTX 4060  |  Prompts: 6  |  Mode: concurrent
 
-  ┌──────────────────────────────────────────────────────────────────┐
-  │ Total elapsed          1.23 s          0.98 s    1.26x │
-  │ TPOT                   8.2 ms          6.5 ms    1.26x │
-  │ Throughput            450 tok/s       565 tok/s    1.26x │
-  └──────────────────────────────────────────────────────────────────┘
+  ═══════════════════════════════════════════════════════════════════════════
+  prompt    input(token)  LLAISYS_output(token)  HF_output(token)  LLAISYS_latency(ms)  HF_latency(ms)  speedup
+  ───────────────────────────────────────────────────────────────────────────
+  (6 prompts)    532              60                  60               450.2            580.3    1.29x
+  ═══════════════════════════════════════════════════════════════════════════
+  Throughput:  LLAISYS 133.2 t/s  HF 103.4 t/s
 ```
 
 并发表不显示 per-request 延迟分位数（`time.perf_counter()` 无法拆分到单请求）。
