@@ -1,4 +1,4 @@
-# Benchmark Format Fix & NCU Dynamic Metrics — Design Spec
+# Benchmark Format Fix & NCU Dynamic Metrics — Design Spec (v2)
 
 Date: 2026-07-11
 
@@ -11,61 +11,67 @@ Date: 2026-07-11
 
 ## Fix 1: 去掉表格前的空白行
 
-**根因**：每个 shape 的 benchmark 循环结束后调用 `print(format_summary(result))`，而 `format_summary` 返回 `""`。`print("")` 输出换行 → 18 行空白。
-
 **修复**：删除所有 12 个 benchmark 脚本循环里的 `print(format_summary(result))`。最终表格仅由 `save_results()` 输出。
 
 ## Fix 2: 去掉行编号的 "#" 前缀
 
-**当前**：`#0  128 x 3584 x 3584 x q_proj`
-
-**修复**：` 0  128 x 3584 x 3584 x q_proj`
+**修复**：`#0 ` → ` 0 `
 
 ## Fix 3: NCU 动态指标发现
 
-**根因**：硬编码的指标名 `dram__throughput.avg.pct_of_peak_sustained_elapsed`、`dram__bytes_read.sum`、`sm__warps_active.avg.pct_of_peak_sustained_elapsed` 在 RTX 4060 上不存在或名称不同。
+**根因**：硬编码的指标名在不同 GPU 架构上不可移植。RTX 4060 (Ada Lovelace) 经过实验验证：
 
-**经实验验证（RTX 4060）**：
-| 期望 | 实际存在 |
+| 我的硬编码 | RTX 4060 实际 |
 |---|---|
 | `gpu__time_duration.sum` | ✅ |
 | `sm__throughput.avg.pct_of_peak_sustained_elapsed` | ✅ |
-| `sm__warps_active.avg.pct_of_peak_sustained_elapsed` | ❌ 应为 `sm__warps_active.avg.pct_of_peak_sustained_active` |
+| `sm__warps_active.avg.pct_of_peak_sustained_elapsed` | ❌ 应为 `_sustained_active` |
 | `dram__throughput.*` | ❌ 不存在 |
 | `dram__bytes_*` | ❌ 不存在 |
 | `dram__cycles_elapsed.*` | ✅ |
 
-**修复**：`profile_benchmark()` 启动时调用 `ncu --list-metrics`，用期望指标名的**前缀**匹配实际可用指标。缓存到 `results/ncu/.metrics_cache` 避免每次调用。
+**修复策略**：
 
-**期望前缀列表**：
+1. 用 `ncu --list-metrics` 查询本机可用指标名，缓存到 `results/.ncu_metrics_cache`（带 GPU 型号 key，24h TTL）
+2. **前缀匹配**：`m.startswith(prefix)` 选择指标，`prefix` 以 `.` 结尾表示"取该前缀下的所有指标"
+3. 期望前缀：
+
 ```python
 DESIRED_PREFIXES = [
-    "gpu__time_duration.sum",
-    "sm__throughput.",
-    "sm__warps_active.",
-    "dram__cycles_elapsed.",
-    "dram__cycles_active.",
+    "gpu__time_duration.sum",       # 精确，不以 . 结尾
+    "sm__throughput.",               # 前缀：取所有后缀变体
+    "sm__warps_active.",             # 前缀：取所有后缀变体（_elapsed 或 _active）
+    "dram__cycles_elapsed.",         # 前缀：取所有后缀变体
+    "dram__cycles_active.",          # 前缀：取所有后缀变体
 ]
 ```
 
-## Fix 4: --use-ncu 不丢失表格
+4. `classify_bottleneck()` **不硬编码指标名**——从传入的 `kernel_data` dict 的 keys 中动态查找匹配的指标列。
 
-**当前**：`if use_ncu: profile+return` → 表格没了
+## Fix 4: --use-ncu 不丢失表格 + 子进程正确限制 shape
 
-**修复**：`--use-ncu` 先正常跑 benchmark → 输出表格 → 然后 profile：
+**当前问题**：
+- `if use_ncu: profile+return` → 表格没了
+- 非 linear 脚本的子进程忽略 `--example-index`，跑全部 shape
 
-```
-for shape: run_benchmark()  → 收集 results
-save_results(results)        → 输出表格 + JSON
-if use_ncu: profile(results) → NCU → 瓶颈输出
-```
+**修复**：
+
+1. `--use-ncu` 分支移到 `save_results()` **之后**
+2. 所有 12 个脚本的 main loop 支持 `--example-index`：如果指定，只跑那些 shape
+3. `_shape_args_for_index` 对非 linear 脚本传递 `--example-index <idx>`，子进程正确限制
+4. `profile_benchmark` 接收 `example_indices`（已经过 auto-select 或用户指定），不自己重新跑 benchmark
+5. NCU 命令包含 `--launch-skip`（跳过 tensor 创建期的 memcpy kernel）
+6. Benchmark 跑两次是 NCU 的固有设计（第一次出表格，第二次 NCU 采集硬件计数器），在 README 中说明
+
+**auto-select 逻辑**：在 benchmark 脚本的 `if use_ncu:` 分支中。如果用户未指定 `--example-index`，从 `results` 中自动选择：
+- speedup < 1.0 → 选最小 speedup（差距最大）
+- 全部 >= 1.0 → 选最接近 1.0 的
 
 ## Files
 
-- `benchmark_harness.py`: 行编号 "#" → 数字
-- 12 个 benchmark 脚本: 删除 `print(format_summary(result))`
-- `ncu_profiler.py`: 添加 `_get_available_metrics()` 动态指标发现, 使用前缀匹配
-- `benchmark_linear.py`: `--use-ncu` 改为跑完表格后再 profile
+- `benchmark_harness.py`: 行编号 "#" → 纯数字
+- 12 个 benchmark 脚本: 删除 `print(format_summary(result))`，main loop 支持 `--example-index`
+- `ncu_profiler.py`: 添加动态指标发现（前缀匹配 + 缓存 + 动态 classify_bottleneck）
 
 ## Verification
 
