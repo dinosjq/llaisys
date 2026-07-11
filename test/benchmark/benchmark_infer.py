@@ -104,7 +104,7 @@ def main():
 
     # ── Output ───────────────────────────────────────
     gpu = torch.cuda.get_device_name(0)
-    mode = "concurrent" if args.num_prompts > 1 and args.num_prompts == len(prompts) else "single"
+    mode = "single"
     print(f"\n  Model: Qwen2-1.5B  |  GPU: {gpu}  |  Prompts: {args.num_prompts}  |  Mode: {mode}")
     print(format_table(results_list, hf_stats, ll_stats, mode))
     print_speedup(hf_stats, ll_stats)
