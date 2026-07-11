@@ -60,7 +60,7 @@ DESIRED_PREFIXES = [
 2. 所有 12 个脚本的 main loop 支持 `--example-index`：如果指定，只跑那些 shape
 3. `_shape_args_for_index` 对非 linear 脚本传递 `--example-index <idx>`，子进程正确限制
 4. `profile_benchmark` 接收 `example_indices`（已经过 auto-select 或用户指定），不自己重新跑 benchmark
-5. NCU 命令包含 `--launch-skip`（跳过 tensor 创建期的 memcpy kernel）
+5. NCU 命令包含 `--launch-skip`（子进程跑完整 benchmark，需跳过 warmup + tensor 创建期的 kernel，确保只采集 timed iterations 的稳态 kernel）
 6. Benchmark 跑两次是 NCU 的固有设计（第一次出表格，第二次 NCU 采集硬件计数器），在 README 中说明
 
 **auto-select 逻辑**：在 benchmark 脚本的 `if use_ncu:` 分支中。如果用户未指定 `--example-index`，从 `results` 中自动选择：

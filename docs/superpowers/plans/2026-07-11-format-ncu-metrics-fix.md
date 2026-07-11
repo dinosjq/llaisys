@@ -71,7 +71,9 @@ git commit -m "fix: remove # prefix from table row numbering"
 - [ ] **Step 1: Delete `print(format_summary(result))` from all scripts**
 
 ```bash
-sed -i '/print(format_summary(result))/d' test/benchmark/ops/benchmark_*.py
+for f in test/benchmark/ops/benchmark_{add,argmax,embedding,rearrange,linear,rms_norm,rope,swiglu,self_attention,topk,kv_cache_move,paged_attention}.py; do
+  sed -i '/print(format_summary(result))/d' "$f"
+done
 ```
 
 - [ ] **Step 2: Verify**
@@ -169,13 +171,19 @@ def _select_metrics(ncu_binary: str, results_dir: str) -> list[str]:
     selected = []
     for pat in _DESIRED_PREFIXES:
         if pat.endswith("."):
-            # prefix match: all metrics starting with this prefix
+            # prefix match: prefer .avg. variant for consistency
             matched = [m for m in available if m.startswith(pat)]
-            selected.extend(matched)
+            avg_variants = [m for m in matched if ".avg." in m]
+            if avg_variants:
+                selected.append(avg_variants[0])
+            elif matched:
+                selected.append(matched[0])
         else:
             # exact match
             if pat in available:
                 selected.append(pat)
+    if not selected:
+        print("  WARNING: no desired NCU metrics found on this GPU")
     return selected
 
 
@@ -260,13 +268,14 @@ In `profile_benchmark()`, replace the hardcoded `_NCU_METRICS` reference:
     metrics = _select_metrics(ncu_binary, results_dir)
 ```
 
-Add `--launch-skip` to the NCU command (skip tensor-creation memcpy kernels):
+Add `--launch-skip` to the NCU command. The child process runs a full benchmark (not a stripped-down `--ncu-child` mode), so warmup iterations + tensor creation generate many kernel launches. Set skip high enough to reach the timed iterations:
 
 ```python
     ncu_cmd = [ncu_binary,
                "--set", "full",
                "--clock-control", "base",
-               "--launch-skip", "5",
+               "--launch-skip", "20",
+               "--launch-count", "5",
                "--target-processes", "all",
                "-o", rep_base,
                "-f",
@@ -389,11 +398,13 @@ For the other 11 scripts: same pattern but `indices` derivation from `results`:
                           example_indices=indices)
 ```
 
-- [ ] **Step 3: Update profile_benchmark signature to remove results param**
+- [ ] **Step 3: Update profile_benchmark — remove results param, handle None indices**
 
-Remove the `results` parameter from `profile_benchmark()`. The function receives only `script`, `argv`, `op_name`, and `example_indices`. Auto-select is done in the benchmark script (Task 4 Step 2).
-
-Also remove `_auto_select_index()` — no longer needed.
+In `profile_benchmark()`:
+- Remove the `results` parameter. Function receives `script`, `argv`, `op_name`, `example_indices`.
+- Remove `_auto_select_index()` — no longer needed (auto-select is done in benchmark scripts).
+- If `example_indices` is None or empty, print a message and return (nothing to profile).
+- The child process runs as a normal benchmark (no `--ncu-child` flag). This means it goes through warmup + repeat cycles + correctness checks. The `--launch-skip 20` accounts for the setup/warmup kernels. This is documented in the Global Constraints.
 
 - [ ] **Step 4: Verify syntax for all scripts**
 
