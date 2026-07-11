@@ -98,9 +98,27 @@ def main():
     parser.add_argument("--repeat", type=int, default=100)
     parser.add_argument("--ncu", nargs="?", const="detailed",
                         choices=["quick", "detailed", "full"])
-    parser.add_argument("--ncu-child", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--use-ncu", action="store_true", help="Profile with NCU (--set full)")
+    parser.add_argument("--example-index", type=str, default=None, help="Comma-separated shape indices to profile (0-based)")
     parser.add_argument("--output", default="test/benchmark/ops/results")
     args = parser.parse_args()
+
+    if args.use_ncu:
+        indices = None
+        if args.example_index is not None:
+            indices = sorted(set(int(p.strip()) for p in args.example_index.split(",") if p.strip()))
+            total = len(QWEN2_SHAPES)
+            for idx in indices:
+                if idx < 0 or idx >= total:
+                    print(f"  ERROR: index {idx} out of range (0-{total - 1})")
+                    sys.exit(1)
+        from ncu_profiler import profile_benchmark
+        profile_benchmark(script=__file__, argv=sys.argv, op_name=OP_NAME, example_indices=indices)
+        return
+
+    if args.repeat > 20:
+        print(f"  WARNING: --repeat capped at 20 (requested {args.repeat})")
+        args.repeat = 20
 
     dtype_name = args.dtype
     results = []
@@ -142,24 +160,6 @@ def main():
             assert ok, "RoPE correctness check failed!"
         print(format_summary(result))
 
-    if args.ncu and not args.ncu_child:
-        from ncu_profiler import NCUConfig, profile_with_ncu
-        set_map = {"quick": "default", "detailed": "detailed", "full": "full"}
-        ncu_config = NCUConfig(set=set_map[args.ncu])
-        report = profile_with_ncu(__file__,
-            ["--dtype", dtype_name, "--warmup", "5", "--repeat", "1"],
-            ncu_config, _os.path.join(args.output, "ncu"))
-        results[0].ncu_set = report.ncu_set
-        results[0].ncu_report_file = report.report_file
-        results[0].ncu_bottleneck = report.bottleneck
-        results[0].ncu_sm_throughput_pct = report.sm_throughput_pct
-        results[0].ncu_dram_throughput_pct = report.dram_throughput_pct
-        results[0].ncu_occupancy_pct = report.occupancy_pct
-
-    if args.ncu_child:
-        buf = setup_rope(QWEN2_SHAPES[0]["seqlen"], QWEN2_SHAPES[0]["nhead"],
-                         QWEN2_SHAPES[0]["hd"], dtype_name)
-        llaisys_rope(buf); torch.cuda.synchronize(); return
 
     save_results(results, args.output)
 
