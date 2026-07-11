@@ -268,25 +268,35 @@ def format_results_table(results: list[BenchmarkResult]) -> str:
     # dynamic widths
     shape_w = max(len(_shape_str(r)) for r in results)
     dtype_w = max(len(r.dtype) for r in results)
-    val_w = 10
     _S = "  "
+
+    # column headers
+    ll_hdr = "latency(us)"
+    tf_hdr = "TFLOPS"
+    LLA_COLS = [ll_hdr, tf_hdr]
+    bl_hdr_us = "baseline(us)"
+    bl_hdr_tf = "baseline(TF)"
+    sp_hdr = "speedup"
+    BL_COLS = [bl_hdr_us, bl_hdr_tf, sp_hdr]
+
+    val_w = max(len(ll_hdr), len(tf_hdr), 10)
+    bl_w  = max(len(bl_hdr_us), len(bl_hdr_tf), 10) if has_baseline else 0
+    sp_w  = len(sp_hdr) if has_baseline else 0
 
     # sample row for total width
     sample = (_S + "x" * shape_w + _S + "x" * dtype_w +
               _S + "x" * val_w + _S + "x" * val_w)
     if has_baseline:
-        sample += _S + "x" * val_w + _S + "x" * val_w + _S + "x" * 7
+        sample += _S + "x" * bl_w + _S + "x" * bl_w + _S + "x" * sp_w
     W = len(sample)
 
     lines = [f"\n  Operator: {results[0].operator}", f"  {'═' * W}"]
 
     # header
     hdr = (f"  {'shape':<{shape_w}}{_S}{'dtype':<{dtype_w}}{_S}"
-           f"{'LLA us':>{val_w}}{_S}{'LLA TF':>{val_w}}")
+           f"{ll_hdr:>{val_w}}{_S}{tf_hdr:>{val_w}}")
     if has_baseline:
-        bus = bl_name + " us"
-        btf = bl_name + " TF"
-        hdr += f"{_S}{bus:>{val_w}}{_S}{btf:>{val_w}}{_S}{'sp':>7s}"
+        hdr += f"{_S}{bl_hdr_us:>{bl_w}}{_S}{bl_hdr_tf:>{bl_w}}{_S}{sp_hdr:>{sp_w}}"
     lines.append(hdr)
     lines.append(f"  {'─' * W}")
 
@@ -298,10 +308,12 @@ def format_results_table(results: list[BenchmarkResult]) -> str:
                f"{r.latency_us:{val_w}.1f}{_S}{r.TFLOPS:{val_w}.1f}")
         if has_baseline:
             if r.baseline_latency_us > 0:
-                row += (f"{_S}{r.baseline_latency_us:{val_w}.1f}{_S}"
-                        f"{r.baseline_TFLOPS:{val_w}.1f}{_S}{r.speedup:6.2f}x")
+                row += (f"{_S}{r.baseline_latency_us:{bl_w}.1f}{_S}"
+                        f"{r.baseline_TFLOPS:{bl_w}.1f}{_S}"
+                        f"{r.speedup:{sp_w}.2f}x")
             else:
-                row += f"{_S}{'—':>{val_w}}{_S}{'—':>{val_w}}{_S}{'—':>7s}"
+                row += (f"{_S}{'—':>{bl_w}}{_S}{'—':>{bl_w}}{_S}"
+                        f"{'—':>{sp_w}}")
         lines.append(row)
         latencies.append(r.latency_us)
 
