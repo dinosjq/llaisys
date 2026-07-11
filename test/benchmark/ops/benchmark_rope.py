@@ -103,18 +103,16 @@ def main():
     parser.add_argument("--output", default="test/benchmark/ops/results")
     args = parser.parse_args()
 
-    if args.use_ncu:
-        indices = None
-        if args.example_index is not None:
-            indices = sorted(set(int(p.strip()) for p in args.example_index.split(",") if p.strip()))
-            total = len(QWEN2_SHAPES)
-            for idx in indices:
-                if idx < 0 or idx >= total:
-                    print(f"  ERROR: index {idx} out of range (0-{total - 1})")
-                    sys.exit(1)
-        from ncu_profiler import profile_benchmark
-        profile_benchmark(script=__file__, argv=sys.argv, op_name=OP_NAME, example_indices=indices)
-        return
+    target_indices = None
+    if args.example_index is not None:
+        target_indices = sorted(set(
+            int(p.strip()) for p in args.example_index.split(",") if p.strip()))
+        total = len(QWEN2_SHAPES)
+        for idx in target_indices:
+            if idx < 0 or idx >= total:
+                print(f"  ERROR: index {idx} out of range (0-{total - 1})")
+                sys.exit(1)
+
 
     if args.repeat > 20:
         print(f"  WARNING: --repeat capped at 20 (requested {args.repeat})")
@@ -122,7 +120,12 @@ def main():
 
     dtype_name = args.dtype
     results = []
+    _idx = 0
     for shape_info in QWEN2_SHAPES:
+        this_idx = _idx
+        _idx += 1
+        if target_indices is not None and this_idx not in target_indices:
+            continue
         seqlen = shape_info["seqlen"]
         nhead = shape_info["nhead"]
         hd = shape_info["hd"]
@@ -161,6 +164,19 @@ def main():
 
 
     save_results(results, args.output)
+
+    if args.use_ncu:
+        indices = target_indices
+        if indices is None:
+            speeds = [(i, r.speedup) for i, r in enumerate(results)]
+            below = [(i, s) for i, s in speeds if s < 1.0]
+            if below:
+                indices = [min(below, key=lambda x: x[1])[0]]
+            else:
+                indices = [min(speeds, key=lambda x: abs(x[1] - 1.0))[0]]
+        from ncu_profiler import profile_benchmark
+        profile_benchmark(script=__file__, argv=sys.argv, op_name=OP_NAME,
+                          example_indices=indices)
 
 
 if __name__ == "__main__":
