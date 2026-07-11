@@ -99,17 +99,14 @@ def hf_infer(prompt, tokenizer, model, max_new_tokens=128,
              top_p=0.8, top_k=50, temperature=0.8):
     input_ids = _apply_chat(tokenizer, prompt)
     inputs = torch.tensor([input_ids], device=model.device)
-    start = torch.cuda.Event(enable_timing=True)
-    end   = torch.cuda.Event(enable_timing=True)
-    start.record()
+    start = time.perf_counter()
     with torch.no_grad():
         outputs = model.generate(
             inputs, max_new_tokens=max_new_tokens, top_k=top_k,
             top_p=top_p, temperature=temperature, use_cache=True,
         )
-    end.record()
     torch.cuda.synchronize()
-    elapsed_us = start.elapsed_time(end) * 1000.0
+    elapsed_us = (time.perf_counter() - start) * 1e6
     tokens = outputs[0].tolist()
     return tokens, elapsed_us
 
@@ -117,16 +114,12 @@ def hf_infer(prompt, tokenizer, model, max_new_tokens=128,
 def llaisys_infer(prompt, tokenizer, model, max_new_tokens=128,
                   top_p=0.8, top_k=50, temperature=0.8):
     input_ids = _apply_chat(tokenizer, prompt)
-    start = torch.cuda.Event(enable_timing=True)
-    end   = torch.cuda.Event(enable_timing=True)
-    start.record()
+    start = time.perf_counter()
     result = model.generate(
         input_ids, max_new_tokens=max_new_tokens,
         top_k=top_k, top_p=top_p, temperature=temperature,
     )
-    end.record()
-    torch.cuda.synchronize()
-    elapsed_us = start.elapsed_time(end) * 1000.0
+    elapsed_us = (time.perf_counter() - start) * 1e6
     return result, elapsed_us
 
 
@@ -235,23 +228,21 @@ def print_speedup(hf_stats, ll_stats):
 
 def format_table(hf_stats, ll_stats, mode="single"):
     """Unified terminal table output."""
-    def _ms(v):
-        return v * 1000.0 if mode == "concurrent" else v
-    def _fmt(v, unit="ms"):
+    def _fmt(v, unit):
         return f"{v:.1f} {unit}"
 
-    lines = [
-        f"\n  ┌{'─' * 66}┐",
-    ]
-    label = "HF(batch)" if mode == "concurrent" else "HF"
-    ll_label = "LLAISYS(concurrent)" if mode == "concurrent" else "LLAISYS"
+    lines = [f"\n  ┌{'─' * 66}┐"]
 
     rows = [("TPOT", "ms", hf_stats["tpot_ms"], ll_stats["tpot_ms"]),
             ("Throughput", "tok/s", hf_stats["throughput"], ll_stats["throughput"])]
+    # Latencies stored in microseconds — display as ms
     if "lat_avg" in hf_stats and "lat_avg" in ll_stats:
-        rows.insert(0, ("Latency(p50)", "ms", hf_stats["lat_p50"], ll_stats["lat_p50"]))
-        rows.insert(0, ("Latency(p90)", "ms", hf_stats["lat_p90"], ll_stats["lat_p90"]))
-        rows.insert(0, ("Latency(avg)", "ms", hf_stats["lat_avg"], ll_stats["lat_avg"]))
+        rows.insert(0, ("Latency(p50)", "ms",
+                        hf_stats["lat_p50"] / 1000, ll_stats["lat_p50"] / 1000))
+        rows.insert(0, ("Latency(p90)", "ms",
+                        hf_stats["lat_p90"] / 1000, ll_stats["lat_p90"] / 1000))
+        rows.insert(0, ("Latency(avg)", "ms",
+                        hf_stats["lat_avg"] / 1000, ll_stats["lat_avg"] / 1000))
     if mode == "concurrent":
         rows.insert(0, ("Total elapsed", "s",
                         hf_stats["elapsed_s"], ll_stats["elapsed_s"]))
