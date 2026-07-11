@@ -269,13 +269,21 @@ def llaisys_concurrent_infer(prompts, tokenizer, model, max_new_tokens=128,
     results = [None] * len(prompts)
 
     def _worker(idx, inp_ids):
+        ttft_us = 0.0
+        first = True
+        def _cb(token, step, tokens_tuple):
+            nonlocal ttft_us, first
+            if first:
+                ttft_us = (time.perf_counter() - start) * 1e6
+                first = False
         start = time.perf_counter()
         result = model.generate(
             inp_ids, max_new_tokens=max_new_tokens,
             top_k=top_k, top_p=top_p, temperature=temperature,
+            callback=_cb,
         )
         elapsed_us = (time.perf_counter() - start) * 1e6
-        results[idx] = (result, elapsed_us)
+        results[idx] = (result, elapsed_us, ttft_us)
 
     threads = []
     start = time.perf_counter()

@@ -71,8 +71,10 @@ def main():
     ll_in_lens = [len(_apply_chat(tokenizer, p)) for p in prompts]
     ll_in_tok  = sum(ll_in_lens)
     ll_out_tok = sum(len(r[0]) - ll_in_lens[i] for i, r in enumerate(ll_last))
+    ll_ttft_us = [r[2] for r in ll_last] if ll_last and len(ll_last[0]) > 2 else []
     ll_stats = summarize_run("LLAISYS", ll_elapsed_sum / args.repeat, len(prompts),
                               ll_in_tok, ll_out_tok, latencies_us=None)
+    ll_stats["ttft_avg_ms"] = (sum(ll_ttft_us) / len(ll_ttft_us) / 1000.0) if ll_ttft_us else 0
 
     # ── Output ───────────────────────────────────────
     gpu = torch.cuda.get_device_name(0)
