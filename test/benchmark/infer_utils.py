@@ -204,13 +204,23 @@ def hf_infer(prompt, tokenizer, model, max_new_tokens=128,
 def llaisys_infer(prompt, tokenizer, model, max_new_tokens=128,
                   top_p=0.8, top_k=50, temperature=0.8):
     input_ids = _apply_chat(tokenizer, prompt)
+    ttft_us = 0.0
+    first = True
+
+    def _cb(token, step, tokens_tuple):
+        nonlocal ttft_us, first
+        if first:
+            ttft_us = (time.perf_counter() - start) * 1e6
+            first = False
+
     start = time.perf_counter()
     result = model.generate(
         input_ids, max_new_tokens=max_new_tokens,
         top_k=top_k, top_p=top_p, temperature=temperature,
+        callback=_cb,
     )
     elapsed_us = (time.perf_counter() - start) * 1e6
-    return result, elapsed_us, None  # ttft_us=None (future streaming)
+    return result, elapsed_us, ttft_us
 
 
 # ── Batch / Concurrent Inference ─────────────────────────────────
@@ -347,7 +357,6 @@ def format_table(results_list, hf_stats, ll_stats, mode="single"):
     SW = METRIC_W + LL_W + HF_W + 5
     ll_lats = [r["ll_ms"] / 1000.0 for r in results_list]
     hf_lats = [hf_stats["per_prompt"][i] / 1000.0 for i in range(len(results_list))]
-    hf_ttft = hf_stats.get("ttft_avg_ms", 0)
     n = len(ll_lats)
 
     lines.append(f"\n  {'Metric':<{METRIC_W}} {'LLAISYS':>{LL_W}} {'HF':>{HF_W}}")
@@ -362,9 +371,11 @@ def format_table(results_list, hf_stats, ll_stats, mode="single"):
     lines.append(_r("p50 latency", sorted(ll_lats)[n//2], sorted(hf_lats)[n//2]))
     lines.append(_r("p90 latency", sorted(ll_lats)[max(int(n*0.9)-1,0)],
                      sorted(hf_lats)[max(int(n*0.9)-1,0)]))
+    ll_ttft = ll_stats.get("ttft_avg_ms", 0)
+    hf_ttft = hf_stats.get("ttft_avg_ms", 0)
     lines.append(
         f"  {'TTFT(avg)':<{METRIC_W}} "
-        f"{'— ms':>{LL_W}} {f'{hf_ttft:.1f} ms':>{HF_W}}")
+        f"{f'{ll_ttft:.1f} ms':>{LL_W}} {f'{hf_ttft:.1f} ms':>{HF_W}}")
     lines.append(_r2("TPOT", ll_stats['tpot_ms'], hf_stats['tpot_ms']))
     lines.append(_r("Throughput", ll_stats['throughput'], hf_stats['throughput'], "t/s"))
     return "\n".join(lines)

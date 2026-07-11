@@ -74,20 +74,23 @@ def main():
         llaisys_infer(WARMUP_PROMPT, tokenizer, ll_model, max_steps, tp, tk, temp)
 
     ll_results = []
+    ll_ttfts = []
     ll_elapsed_sum = 0.0
     for _ in range(args.repeat):
-        rep_results = []
+        rep_results, rep_ttfts = [], []
         rep_start = time.perf_counter()
         for i, p in enumerate(prompts):
-            tokens, e_us, _ = llaisys_infer(p, tokenizer, ll_model, max_steps, tp, tk, temp)
+            tokens, e_us, ttft_us = llaisys_infer(p, tokenizer, ll_model, max_steps, tp, tk, temp)
             rep_results.append((tokens, e_us))
+            rep_ttfts.append(ttft_us)
         ll_elapsed_sum += time.perf_counter() - rep_start
-        ll_results = rep_results
+        ll_results, ll_ttfts = rep_results, rep_ttfts
 
     ll_out_tok = sum(len(r[0]) - prompt_input_lens[i] for i, r in enumerate(ll_results))
     ll_lat_us  = [r[1] for r in ll_results]
     ll_stats = summarize_run("LLAISYS", ll_elapsed_sum / args.repeat, len(prompts),
                               hf_in_tok, ll_out_tok, ll_lat_us)
+    ll_stats["ttft_avg_ms"] = (sum(ll_ttfts) / len(ll_ttfts) / 1000.0) if ll_ttfts else 0
 
     # ── Per-prompt results list ──────────────────────
     results_list = []
