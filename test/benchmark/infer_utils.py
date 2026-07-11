@@ -340,32 +340,38 @@ def format_table(results_list, hf_stats, ll_stats, mode="single"):
 
     lines.append(f"  {'═' * W}")
 
-    # sub-table: summary metrics, aligned under main table
-    METRIC_W = 18
-    LL_W = 16
-    HF_W = 16
+    # sub-table: summary metrics, independent width
+    METRIC_W = 16
+    LL_W = 14
+    HF_W = 14
     SW = METRIC_W + LL_W + HF_W + 5
     ll_lats = [r["ll_ms"] / 1000.0 for r in results_list]
     hf_lats = [hf_stats["per_prompt"][i] / 1000.0 for i in range(len(results_list))]
     hf_ttft = hf_stats.get("ttft_avg_ms", 0)
     n = len(ll_lats)
-    # pad sub-table to match main table width
-    pad = " " * (W - SW - 2)
-    lines.append(f"  {'Metric':<{METRIC_W}} {'LLAISYS':>{LL_W}} {'HF':>{HF_W}}{pad}")
-    lines.append(f"  {'─' * (W - 2)}")
-    _r = lambda label, ll_v, hf_v, unit="ms": (
-        f"  {label:<{METRIC_W}} {ll_v:>{LL_W}.1f} {unit} {hf_v:>{HF_W}.1f} {unit}{pad}")
-    _rt = lambda label, ll_v, hf_v: (
-        f"  {label:<{METRIC_W}} {ll_v:>{LL_W}.2f} ms {hf_v:>{HF_W}.2f} ms{pad}")
-    lines.append(_r("avg latency", sum(ll_lats)/n, sum(hf_lats)/n))
-    lines.append(_r("p50 latency", sorted(ll_lats)[n//2], sorted(hf_lats)[n//2]))
-    lines.append(_r("p90 latency", sorted(ll_lats)[max(int(n*0.9)-1,0)], sorted(hf_lats)[max(int(n*0.9)-1,0)]))
+
+    lines.append(f"\n  {'Metric':<{METRIC_W}} {'LLAISYS':>{LL_W}} {'HF':>{HF_W}}")
+    lines.append(f"  {'─' * SW}")
     lines.append(
-        f"  {'TTFT(avg)':<{METRIC_W}} {'—':>{LL_W}} {hf_ttft:>{HF_W}.1f} ms{pad}")
-    lines.append(_rt("TPOT", ll_stats['tpot_ms'], hf_stats['tpot_ms']))
+        f"  {'avg latency':<{METRIC_W}} "
+        f"{sum(ll_lats)/n:>{LL_W}.1f} ms {sum(hf_lats)/n:>{HF_W}.1f} ms")
     lines.append(
-        f"  {'Throughput':<{METRIC_W}} {ll_stats['throughput']:>{LL_W}.1f} t/s "
-        f"{hf_stats['throughput']:>{HF_W}.1f} t/s{pad}")
+        f"  {'p50 latency':<{METRIC_W}} "
+        f"{sorted(ll_lats)[n//2]:>{LL_W}.1f} ms {sorted(hf_lats)[n//2]:>{HF_W}.1f} ms")
+    lines.append(
+        f"  {'p90 latency':<{METRIC_W}} "
+        f"{sorted(ll_lats)[max(int(n*0.9)-1,0)]:>{LL_W}.1f} ms "
+        f"{sorted(hf_lats)[max(int(n*0.9)-1,0)]:>{HF_W}.1f} ms")
+    lines.append(
+        f"  {'TTFT(avg)':<{METRIC_W}} "
+        f"{'— ms':>{LL_W}} {hf_ttft:>{HF_W}.1f} ms")
+    lines.append(
+        f"  {'TPOT':<{METRIC_W}} "
+        f"{ll_stats['tpot_ms']:>{LL_W}.2f} ms {hf_stats['tpot_ms']:>{HF_W}.2f} ms")
+    lines.append(
+        f"  {'Throughput':<{METRIC_W}} "
+        f"{ll_stats['throughput']:>{LL_W}.1f} t/s "
+        f"{hf_stats['throughput']:>{HF_W}.1f} t/s")
     return "\n".join(lines)
 
 
