@@ -251,7 +251,7 @@ def main():
     if args.ncu and not args.ncu_child:
         from ncu_profiler import NCUConfig, profile_with_ncu
         set_map = {"quick": "default", "detailed": "detailed", "full": "full"}
-        ncu_config = NCUConfig(set=set_map[args.ncu], kernel_name=f".*{OP_NAME}.*")
+        ncu_config = NCUConfig(set=set_map[args.ncu])
         report = profile_with_ncu(__file__,
             ["--dtype", dtype_name, "--warmup", "5", "--repeat", "1"],
             ncu_config, _os.path.join(args.output, "ncu"))

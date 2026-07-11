@@ -250,44 +250,74 @@ def run_benchmark(
 # terminal output
 # ---------------------------------------------------------------------------
 
+def _shape_str(r: BenchmarkResult) -> str:
+    return " x ".join(str(v) for v in r.shape.values())
+
 def format_summary(result: BenchmarkResult) -> str:
-    """Format a single BenchmarkResult as a human-readable terminal string."""
-    shape_repr = "x".join(str(v) for v in result.shape.values())
-    lines = [
-        f"{'=' * 68}",
-        f"  Operator  : {result.operator}",
-        f"  Dtype     : {result.dtype}",
-        f"  Shape     : {shape_repr}",
-        f"  {'-' * 48}",
-        f"  LLAISYS   : {result.latency_us:8.2f} us  |  "
-        f"{result.TFLOPS:7.2f} TFLOPS  |  {result.bandwidth_GBs:7.2f} GB/s",
-    ]
+    """Silent during benchmark loop — table printed by format_results_table()."""
+    return ""
 
-    if result.baseline_name:
-        tag = "faster" if result.speedup >= 1.0 else "slower"
-        lines.append(
-            f"  {result.baseline_name:9s} : {result.baseline_latency_us:8.2f} us  |  "
-            f"{result.baseline_TFLOPS:7.2f} TFLOPS  |  "
-            f"{result.speedup:5.2f}x {tag}"
-        )
+def format_results_table(results: list[BenchmarkResult]) -> str:
+    """Aligned table output for a batch of results."""
+    if not results:
+        return "(no results)"
 
-    stats = result.latency_stats
-    lines.append(f"  {'-' * 48}")
-    lines.append(
-        f"  Stats     : min={stats['min']:.2f}  median={stats['median']:.2f}  "
-        f"mean={stats['mean']:.2f}  std={stats['stddev']:.2f}  "
-        f"p99={stats['p99']:.2f} us"
-    )
+    has_baseline = any(r.baseline_name for r in results)
+    bl_name = next((r.baseline_name for r in results if r.baseline_name), "")
 
-    if result.ncu_bottleneck:
-        lines.append(f"  {'-' * 48}")
-        lines.append(f"  NCU       : bottleneck={result.ncu_bottleneck}  "
-                     f"SM={result.ncu_sm_throughput_pct:.1f}%  "
-                     f"DRAM={result.ncu_dram_throughput_pct:.1f}%  "
-                     f"occupancy={result.ncu_occupancy_pct:.1f}%")
+    # dynamic widths
+    shape_w = max(len(_shape_str(r)) for r in results)
+    dtype_w = max(len(r.dtype) for r in results)
+    val_w = 10
+    _S = "  "
 
-    lines.append(f"{'=' * 68}")
-    return "\n".join(lines)
+    # sample row for total width
+    sample = (_S + "x" * shape_w + _S + "x" * dtype_w +
+              _S + "x" * val_w + _S + "x" * val_w)
+    if has_baseline:
+        sample += _S + "x" * val_w + _S + "x" * val_w + _S + "x" * 7
+    W = len(sample)
+
+    lines = [f"\n  Operator: {results[0].operator}", f"  {'═' * W}"]
+
+    # header
+    hdr = (f"  {'shape':<{shape_w}}{_S}{'dtype':<{dtype_w}}{_S}"
+           f"{'LLA us':>{val_w}}{_S}{'LLA TF':>{val_w}}")
+    if has_baseline:
+        bus = bl_name + " us"
+        btf = bl_name + " TF"
+        hdr += f"{_S}{bus:>{val_w}}{_S}{btf:>{val_w}}{_S}{'sp':>7s}"
+    lines.append(hdr)
+    lines.append(f"  {'─' * W}")
+
+    # data rows
+    latencies = []
+    for r in results:
+        s = _shape_str(r)
+        row = (f"  {s:<{shape_w}}{_S}{r.dtype:<{dtype_w}}{_S}"
+               f"{r.latency_us:{val_w}.1f}{_S}{r.TFLOPS:{val_w}.1f}")
+        if has_baseline:
+            if r.baseline_latency_us > 0:
+                row += (f"{_S}{r.baseline_latency_us:{val_w}.1f}{_S}"
+                        f"{r.baseline_TFLOPS:{val_w}.1f}{_S}{r.speedup:6.2f}x")
+            else:
+                row += f"{_S}{'—':>{val_w}}{_S}{'—':>{val_w}}{_S}{'—':>7s}"
+        lines.append(row)
+        latencies.append(r.latency_us)
+
+    # footer
+    if latencies:
+        lines.append(f"  {'─' * W}")
+        foot = (f"  {results[0].dtype}"
+                f"  │ range: {min(latencies):.1f} — {max(latencies):.1f} us"
+                f"  │ mean: {sum(latencies)/len(latencies):.1f} us")
+        if has_baseline:
+            sp = [r.speedup for r in results if r.baseline_latency_us > 0]
+            if sp:
+                foot += f"  │ speedup: {min(sp):.2f}x — {max(sp):.2f}x"
+        lines.append(foot)
+
+    return "\n".join(lines) + "\n"
 
 
 # ---------------------------------------------------------------------------
@@ -353,12 +383,7 @@ def save_results(results: list[BenchmarkResult], output_dir: str) -> str:
         shutil.copy2(json_path, latest_link)
 
     # terminal summary
-    print(f"\nBenchmark results saved to: {json_path}")
-    print(f"  GPU      : {gpu_model}")
-    print(f"  CUDA     : {cuda_version}")
-    print(f"  Entries  : {len(results)}")
-    print()
-    for r in results:
-        print(format_summary(r))
+    print(f"\n  GPU: {gpu_model}  |  CUDA: {cuda_version}  |  Saved: {os.path.relpath(json_path)}")
+    print(format_results_table(results))
 
     return json_path
