@@ -205,9 +205,6 @@ class Qwen2:
             Return ``False`` to abort generation early; any other value
             continues.
 
-            The callback fires synchronously after
-            ``llaisysQwen2ModelInfer`` returns; it is NOT true
-            asynchronous streaming.
         """
         if max_new_tokens is None:
             max_new_tokens = 128
