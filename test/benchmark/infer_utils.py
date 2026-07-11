@@ -3,9 +3,13 @@
 import gc
 import json
 import os
+import sys
 import threading
 import time
 import warnings
+
+# Allow import from test/ directory
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
 import torch
 from huggingface_hub import snapshot_download
@@ -13,7 +17,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from transformers import logging as hf_logging
 
 import llaisys
-from test_utils import torch_device, llaisys_device
+from test.test_utils import torch_device, llaisys_device
 
 hf_logging.set_verbosity_error()
 warnings.filterwarnings("ignore", category=UserWarning, module="transformers")
