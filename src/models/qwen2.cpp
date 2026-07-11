@@ -219,18 +219,25 @@ int64_t Qwen2::request(int64_t *token_ids, size_t ntoken){
     long long hash = 0;
     std::shared_ptr<Sequence> seq;
     {
-        std::lock_guard<std::mutex> lk(this->_hash_lock);
+        // 优先读锁——常见路径是前缀命中，读共享全并行
+        std::shared_lock<std::shared_mutex> read_lk(this->_hash_lock);
         for(size_t i = 0; i < ntoken; ++ i){
             hash = (hash * Prime + token_ids[i]) % mod;
             if(_hash_2_seq.count(hash)){
                 seq = _hash_2_seq[hash];
             }
         }
-        // 匹配失败 就新建一个 seq 对象加入调度器 并更新查询 hash 表
+        // 匹配失败 升级为写锁新建 seq
         if(seq == nullptr){
-            seq = std::make_shared<Sequence>(token_ids, ntoken);
-            _hash_2_seq[seq->prompt_hash()] = seq;
-            this->_scheduler->add(seq);
+            read_lk.unlock();
+            std::unique_lock<std::shared_mutex> write_lk(this->_hash_lock);
+            // double-check: 可能其他线程已创建
+            seq = _hash_2_seq.count(hash) ? _hash_2_seq[hash] : nullptr;
+            if(seq == nullptr){
+                seq = std::make_shared<Sequence>(token_ids, ntoken);
+                _hash_2_seq[seq->prompt_hash()] = seq;
+                this->_scheduler->add(seq);
+            }
         }
     }
 
@@ -243,7 +250,7 @@ int64_t Qwen2::request(int64_t *token_ids, size_t ntoken){
     int64_t token = seq->token_ids()[ntoken];
     // 当请求完成 就从查询表中进行清除
     if(token == this->_meta.end_token){
-        std::lock_guard<std::mutex> lk(this->_hash_lock);
+        std::unique_lock<std::shared_mutex> write_lk(this->_hash_lock);
         this->_hash_2_seq.erase(seq->prompt_hash());
     }
     return token;

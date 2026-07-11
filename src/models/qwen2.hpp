@@ -5,6 +5,7 @@
 #include "../kv_cache/block_manager.hpp"
 #include "../scheduler/scheduler.hpp"
 #include <mutex>
+#include <shared_mutex>
 #include <thread>
 
 namespace llaisys{
@@ -72,7 +73,7 @@ private:
     std::vector<tensor_t> _k_cache;
     std::vector<tensor_t> _v_cache;
     std::unordered_map<long long, std::shared_ptr<Sequence>> _hash_2_seq;
-    std::mutex _hash_lock;
+    std::shared_mutex _hash_lock;
     // 事件循环
     bool _running;
     std::thread _worker;
