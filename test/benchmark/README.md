@@ -5,36 +5,27 @@
 ## 快速开始
 
 ```bash
-# 编译 C++ 后端（如未编译）
 xmake f --nv-gpu=y -cv && xmake && xmake install
-
-# 安装 Python 包
 pip install -e ./python/
-
-# 运行单个算子 benchmark
-python test/benchmark/ops/benchmark_linear.py --dtype f16
-
-# 批量运行全部算子
-python test/benchmark/ops/run_all_benchmarks.py --dtype f16 --op all
+python test/benchmark/ops/benchmark_add.py --dtype f16
 ```
 
 ## 目录结构
 
 ```
 test/benchmark/
-├── README.md                    ← 本文档
-├── IMPLEMENTATION_REPORT.md     ← 实现报告
-└── ops/
-    ├── benchmark_harness.py     ← 共享计时框架
-    ├── ncu_profiler.py          ← NCU 集成模块
-    ├── benchmark_linear.py      ← 各算子 benchmark（12 个）
-    ├── run_all_benchmarks.py    ← 批量运行入口
-        └── results/                 ← 输出目录
+├── README.md
+├── ops/
+│   ├── benchmark_harness.py     ← CUDA Event 计时 + 表格输出
+│   ├── ncu_profiler.py          ← NCU 集成 + 动态指标发现 + 瓶颈分类
+│   ├── benchmark_*.py           ← 12 个算子 benchmark
+│   ├── run_all_benchmarks.py    ← 批量运行
+│   └── results/                 ← JSON + .ncu-rep 输出
 ```
 
 ## 运算符子
 
-| 脚本 | 算子 | 基准对比 |
+| 脚本 | 算子 | 基准 |
 |---|---|---|
 | `benchmark_add.py` | 逐元素加法 | PyTorch CUDA |
 | `benchmark_argmax.py` | 最大值归约 | PyTorch CUDA |
@@ -46,182 +37,143 @@ test/benchmark/
 | `benchmark_swiglu.py` | SwiGLU 激活 | PyTorch |
 | `benchmark_self_attention.py` | 自注意力 | Flash-Attention |
 | `benchmark_topk.py` | Top-K 选择 | PyTorch CUDA |
-| `benchmark_paged_attention.py` | 分页注意力 | 无（自定义算子） |
-| `benchmark_kv_cache_move.py` | KV Cache 搬运 | 无（自定义算子） |
+| `benchmark_paged_attention.py` | 分页注意力 | 无 |
+| `benchmark_kv_cache_move.py` | KV Cache 搬运 | 无 |
 
 ## CLI 参数
 
-### 所有 benchmark 脚本通用参数
+### 通用参数
 
 | 参数 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
-| `--dtype` | `f16` `bf16` `f32` | `f16` | 张量数据类型 |
-| `--warmup` | int | `10` | 计时前的 warmup 迭代数。不计时，用于稳定 GPU 频率和预热缓存 |
-| `--repeat` | int | `10`（上限 20）| 正式计时迭代数 |
-| `--use-ncu` | flag | — | 启用 NCU profiling。跑完 benchmark 后自动选最差 shape，用 NCU 采集 GPU 硬件计数器，输出瓶颈分析 |
-| `--example-index` | str | — | 逗号分隔的 shape 编号（如 `"0,3,7"`）。配合 `--use-ncu` 指定要 profile 的具体 shape |
-| `--output` | path | `test/benchmark/ops/results` | JSON 结果输出目录 |
+| `--dtype` | `f16` `bf16` `f32` | `f16` | 数据类型 |
+| `--warmup` | int | `10` | 计时前 warmup 次数 |
+| `--repeat` | int | `10` (上限 20) | 计时迭代数 |
+| `--use-ncu` | flag | — | NCU profiling（`--set full`），表格后自动 profile |
+| `--example-index` | str | — | 指定 profile 的 shape 编号，逗号分隔如 `"0,3,7"` |
+| `--output` | path | `results/` | JSON 输出目录 |
 
-### 指定 shape 范围（仅 benchmark_linear.py）
+### benchmark_linear.py 独有
 
 | 参数 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
-| `--variant` | `all` `q_proj` `gate_proj` `down_proj` | `all` | 限制测试的 Qwen2 投影层类型 |
-| `--M` | int | `0`（全部 6 个 M） | 限制序列长度。`0` = 扫全部 M ∈ {1, 16, 64, 128, 512, 2048} |
+| `--variant` | `all` `q_proj` `gate_proj` `down_proj` | `all` | 限制 Qwen2 投影层 |
+| `--M` | int | `0` (全部) | 限制序列长度。`0` = M ∈ {1, 16, 64, 128, 512, 2048} |
 
-### 参数说明详解
-
-**`--warmup` 与 `--repeat`**
+### `--warmup` 与 `--repeat`
 
 ```
 python benchmark_linear.py --warmup 10 --repeat 10
 ```
 
-- warmup：跑 10 次完整的算子调用 + CUDA 同步。不计时，不收集数据。目的：稳定 GPU 时钟频率，预热 L1/L2 cache
-- repeat：跑 10 次（上限 20）。每次：分配新 tensor → record CUDA Event start → 执行算子 → record CUDA Event end → sync。收集 10 个 GPU 时间样本
-- 报告值：**min** 作为主值（CUTLASS 规范——噪声只增不减，min 最接近硬件极限）
+- warmup：跑 N 次完整算子调用 + sync。不计时。目的：稳定 GPU 频率，预热 cache
+- repeat：跑 N 次（上限 20）。每次：分配新 tensor → CUDA Event start → 算子 → CUDA Event end → sync
+- 报告值：**min** 为主值（CUTLASS 规范——噪声只增不减）
 
-**`--use-ncu`**
+### `--use-ncu`
 
 ```bash
-python benchmark_linear.py --use-ncu                           # 自动选最差 shape，NCU --set full
-python benchmark_linear.py --use-ncu --example-index "3"       # 只 profile #3
-python benchmark_linear.py --use-ncu --example-index "0,7,14"  # profile #0 #7 #14
+python benchmark_linear.py --use-ncu                        # 自动选最差 shape
+python benchmark_linear.py --use-ncu --example-index "3"    # 只 profile #3
+python benchmark_linear.py --use-ncu --example-index "0,7"  # profile #0 #7
 ```
 
-- 启用后：先正常跑 benchmark 并输出表格 → 从 speedup 数据中自动选 shape（speedup < 1.0 时选最小，全部 >= 1.0 时选最接近 1.0 的）。如果指定了 `--example-index`，则跳过自动选择，直接用指定编号
-- NCU 子进程跑单个 shape（`--set full`），采集 GPU 硬件计数器
-- 结果写入 `results/ncu_results.json`，`.ncu-rep` 文件保存在 `results/ncu/`
-- **注意**：benchmark 会跑两次（第一次出表格，第二次 NCU 采集）。这是 NCU 的进程包装架构所决定的，两次之间的延迟数据来自不同运行
+- **流程**：先正常跑 benchmark → 输出表格 → 自动选 shape（speedup < 1.0 选最小，全 >= 1.0 选最接近 1.0）→ NCU `--set full` profile 子进程 → 输出瓶颈
+- **结果**：`results/ncu_results.json` + `results/ncu/<op>_idx<N>.ncu-rep`
+- **注意**：benchmark 跑两次（第一次表格，第二次 NCU 采集），NCU 固有限制
 
 ## 输出格式
 
-### 终端输出
+### 终端（正常 benchmark）
 
 ```
-  Operator: linear
-  ═══════════════════════════════════════════════════════════════════════════
-      shape                       dtype  latency(us)  TFLOPS  baseline(us)  baseline(TF)  speedup
-  ───────────────────────────────────────────────────────────────────────────
-   0  1 x 3584 x 3584 x q_proj    f16         234.5     0.1         91.1           0.3    2.57x
-   1  16 x 3584 x 3584 x q_proj   f16          65.5     6.3        106.5           3.9    1.62x
+  Correctness: PASS
+
+  GPU: NVIDIA GeForce RTX 4060 Laptop GPU  |  CUDA: 12.8  |  Saved: results/run_.../results.json
+
+  Operator: add
+  ════════════════════════════════════════════════════════════════════════════
+     shape        dtype  latency(us)  TFLOPS  baseline(us)  baseline(TF)  speedup
+  ────────────────────────────────────────────────────────────────────────────
+  0   1 x 3584     f16         16.3     0.0          28.5           0.0    1.75x
+  1   16 x 3584    f16         43.0     0.0          12.3           0.0    0.29x
   ...
-  ───────────────────────────────────────────────────────────────────────────
-    f16  │ range: 65.5 — 2124.8 us  │ mean: 765.2 us  │ speedup: 0.59x — 2.57x
+  ────────────────────────────────────────────────────────────────────────────
+    f16  │ range: 9.4 — 136.0 us  │ mean: 44.6 us  │ speedup: 0.21x — 1.75x
 ```
 
-- 表头：shape / dtype / latency(us) / TFLOPS / baseline(us) / baseline(TF) / speedup
-- speedup = baseline / LLAISYS。> 1.0 = LLAISYS 更快，< 1.0 = baseline 更快
-- footer：汇总所有 shape 的 range / mean / speedup range
+- 左起第一列为 shape 编号，可直接用于 `--example-index`
+- speedup = baseline / LLAISYS。> 1.0 = LLAISYS 更快
 
-### JSON 输出
+### 终端（`--use-ncu`）
 
-每次运行在 `results/run_YYYYmmdd_HHMMSS/results.json`：
+```
+  [表格输出同上]
+  ────────────────────────────────────────────────────────────────────────────
+    f16  │ range: 154.6 — 154.6 us  │ mean: 154.6 us  │ speedup: 1.01x — 1.01x
+
+  NCU #3: latency_bound  SM=43.8%  DRAM=0.0%  Occ=23.7%
+  NCU results saved: /home/.../results/ncu_results.json
+```
+
+### JSON
+
+**基准结果**：`results/run_YYYYmmdd_HHMMSS/results.json`（软链接 `results/latest.json`）
+
+**NCU 结果**：`results/ncu_results.json`
 
 ```json
-{
-  "environment": {
-    "cuda_version": "12.8",
-    "gpu_model": "NVIDIA GeForce RTX 4060 Laptop GPU",
-    "timestamp": "20260711_200627"
-  },
-  "results": [{
-    "operator": "linear",
-    "dtype": "f16",
-    "shape": {"M": 128, "N": 3584, "K": 3584, "variant": "q_proj"},
-    "latency_us": 151.6,
-    "latency_stats": {"min": 151.6, "median": 152.1, "mean": 153.2, "stddev": 1.8, "p99": 158.4},
-    "bandwidth_GBs": 89.3,
-    "TFLOPS": 21.7,
-    "baseline_name": "cuBLAS",
-    "baseline_latency_us": 143.4,
-    "baseline_TFLOPS": 22.9,
-    "speedup": 0.95,
-    "ncu_set": "detailed",
-    "ncu_report_file": "results/ncu/linear_detailed.ncu-rep",
-    "ncu_bottleneck": "compute_bound",
-    "ncu_sm_throughput_pct": 62.3,
-    "ncu_dram_throughput_pct": 38.1,
-    "ncu_occupancy_pct": 45.2
-  }]
-}
+[{
+  "operator": "linear",
+  "shape_index": 3,
+  "report_file": "results/ncu/linear_idx3.ncu-rep",
+  "kernel_count": 2,
+  "total_time_us": 154.6,
+  "bottleneck": "latency_bound",
+  "sm_throughput_pct": 43.8,
+  "dram_throughput_pct": 0.0,
+  "occupancy_pct": 23.7,
+  "timestamp": "2026-07-11T23:35:14"
+}]
 ```
-
-最新的运行通过 `results/latest.json` 软链接访问。
 
 ## NCU Profiling
 
-```bash
-# 自动选最差 shape profile
-python test/benchmark/ops/benchmark_linear.py --use-ncu
-
-# 指定特定 shape（编号来自表格 # 列）
-python test/benchmark/ops/benchmark_linear.py --use-ncu --example-index "3"
-
-# profile 多个 shape
-python test/benchmark/ops/benchmark_add.py --use-ncu --example-index "0,2,5"
-```
-
-`--use-ncu` 始终使用 `--set full`，采集最完整的硬件计数器。
-
-指标通过 `ncu --list-metrics` 动态发现（GPU 型号缓存，24h TTL），使用前缀匹配自动适配不同 GPU 架构（Ampere / Ada Lovelace / Hopper 等）。
+指标通过 `ncu --list-metrics` 动态发现（GPU 型号缓存，24h TTL），使用前缀匹配自动适配不同 GPU 架构。
 
 瓶颈分类规则：
 
 | 条件 | 分类 |
 |---|---|
-| HBM > 60% 且 SM < 20% | `memory_bound` |
-| SM > 60% 且 HBM < 20% | `compute_bound` |
+| DRAM > 60% 且 SM < 20% | `memory_bound` |
+| SM > 60% 且 DRAM < 20% | `compute_bound` |
 | 两者 < 30% | `launch_occupancy_bound` |
 | 其他 | `latency_bound` |
+
+**注意**：部分 GPU（如 RTX 4060 Ada Lovelace）不提供 `dram__throughput` 百分比指标，此时 DRAM 为 0.0% 且瓶颈偏向 `latency_bound`。这是该 GPU 的硬件计数器限制，不影响 SM 和 Occupancy 数据的准确性。
 
 ## 批量运行
 
 ```bash
-# 全部算子
 python test/benchmark/ops/run_all_benchmarks.py --dtype f16 --op all
-
-# 指定算子
 python test/benchmark/ops/run_all_benchmarks.py --dtype f16 --op linear,rope,rms_norm
-
 ```
-
 
 ## Shape 覆盖
 
-基于 Qwen2-7B 模型实际维度（`hidden_size=3584`, `intermediate_size=18944`, `num_heads=28`, `num_kv_heads=4`, `head_dim=128`, `vocab_size=151936`）：
+基于 Qwen2-7B 模型维度（hs=3584, di=18944, nh=28, nkvh=4, dh=128, vocab=151936）：
 
-| 算子 | M 范围 | N/K 范围 |
+| 算子 | M | N/K |
 |---|---|---|
-| add / argmax / rearrange | 1, 16, 64, 128, 512, 2048 | ×3584 |
-| argmax 额外 | — | ×18944 |
-| embedding | seqlen: 1..2048 | vocab=151936, dim=3584 |
+| add / argmax / rearrange | 1..2048 | ×3584 |
+| embedding | 1..2048 | vocab=151936 |
 | linear q_proj | 1..2048 | N=3584, K=3584 |
-| linear gate_proj | 1..2048 | N=18944, K=3584 |
-| linear down_proj | 1..2048 | N=3584, K=18944 |
+| linear gate/up | 1..2048 | N=18944, K=3584 |
+| linear down | 1..2048 | N=3584, K=18944 |
 | rms_norm | 1..2048 | ×3584 |
-| rope | seqlen: 1..2048 | nh=28/4, hd=128 |
+| rope | 1..2048 | nh=28/4, hd=128 |
 | swiglu | 1..2048 | ×18944 |
-| self_attention | seqlen: 1..512 | total_len: 64..1024 |
+| self_attention | 1..512 | total_len: 64..1024 |
 | topk | (3584,)..(128,32000) | k=10 |
-| paged_attention | seqlen: 16..512 | token_num=64 |
+| paged_attention | 16..512 | token_num=64 |
 | kv_cache_move | batch: 1..8 | max_seq_len: 64..512 |
-
-## 常见用例
-
-```bash
-# 查看 linear 算子在 q_proj 上 M=128 的性能
-python test/benchmark/ops/benchmark_linear.py --dtype f16 --M 128 --variant q_proj
-
-# 看全部 18 个 shape 组合（默认行为）
-python test/benchmark/ops/benchmark_linear.py --dtype f16
-
-# NCU profile 自动选最差 shape
-python test/benchmark/ops/benchmark_linear.py --use-ncu
-
-# NCU profile 指定 shape（#3 = q_proj, M=128）
-python test/benchmark/ops/benchmark_linear.py --use-ncu --example-index "3"
-
-# 查看单个 shape 的性能
-python test/benchmark/ops/benchmark_linear.py --dtype f16 --M 512
-```
