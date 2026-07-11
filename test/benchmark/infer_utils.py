@@ -336,23 +336,40 @@ def format_table(results_list, hf_stats, ll_stats, mode="single"):
         )
 
     lines.append(f"  {'═' * W}")
+
+    # sub-table: summary metrics
+    METRIC_W = 18
+    LL_W = 16
+    HF_W = 16
+    SW = METRIC_W + LL_W + HF_W + 5
     ll_lats = [r["ll_ms"] / 1000.0 for r in results_list]
     hf_lats = [hf_stats["per_prompt"][i] / 1000.0 for i in range(len(results_list))]
     hf_ttft = hf_stats.get("ttft_avg_ms", 0)
-    footer = [
-        f"  {'avg latency':>38s} {sum(ll_lats)/len(ll_lats):>20.1f} ms "
-        f"{sum(hf_lats)/len(hf_lats):>16.1f} ms",
-        f"  {'p50 latency':>38s} {sorted(ll_lats)[len(ll_lats)//2]:>20.1f} ms "
-        f"{sorted(hf_lats)[len(hf_lats)//2]:>16.1f} ms",
-        f"  {'p90 latency':>38s} {sorted(ll_lats)[max(int(len(ll_lats)*0.9)-1,0)]:>20.1f} ms "
-        f"{sorted(hf_lats)[max(int(len(hf_lats)*0.9)-1,0)]:>16.1f} ms",
-        f"  {'TTFT(avg)':>38s} {'—':>20s} {hf_ttft:>16.1f} ms",
-        f"  {'TPOT':>38s} {ll_stats['tpot_ms']:>19.2f} ms {hf_stats['tpot_ms']:>16.2f} ms",
-        f"  {'Throughput':>38s} {ll_stats['throughput']:>19.1f} t/s "
-        f"{hf_stats['throughput']:>16.1f} t/s",
-    ]
-    for line in footer:
-        lines.append(line)
+    n = len(ll_lats)
+    lines.append(f"  {'Metric':<{METRIC_W}} {'LLAISYS':>{LL_W}} {'HF':>{HF_W}}")
+    lines.append(f"  {'─' * SW}")
+    lines.append(
+        f"  {'avg latency':<{METRIC_W}} "
+        f"{sum(ll_lats)/n:>{LL_W}.1f} ms {sum(hf_lats)/n:>{HF_W}.1f} ms")
+    lines.append(
+        f"  {'p50 latency':<{METRIC_W}} "
+        f"{sorted(ll_lats)[n//2]:>{LL_W}.1f} ms "
+        f"{sorted(hf_lats)[n//2]:>{HF_W}.1f} ms")
+    lines.append(
+        f"  {'p90 latency':<{METRIC_W}} "
+        f"{sorted(ll_lats)[max(int(n*0.9)-1,0)]:>{LL_W}.1f} ms "
+        f"{sorted(hf_lats)[max(int(n*0.9)-1,0)]:>{HF_W}.1f} ms")
+    lines.append(
+        f"  {'TTFT(avg)':<{METRIC_W}} "
+        f"{'—':>{LL_W}} {hf_ttft:>{HF_W}.1f} ms")
+    lines.append(
+        f"  {'TPOT':<{METRIC_W}} "
+        f"{ll_stats['tpot_ms']:>{LL_W}.2f} ms "
+        f"{hf_stats['tpot_ms']:>{HF_W}.2f} ms")
+    lines.append(
+        f"  {'Throughput':<{METRIC_W}} "
+        f"{ll_stats['throughput']:>{LL_W}.1f} t/s "
+        f"{hf_stats['throughput']:>{HF_W}.1f} t/s")
     return "\n".join(lines)
 
 
