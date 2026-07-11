@@ -66,16 +66,37 @@ def main():
     parser = argparse.ArgumentParser(description=f"Benchmark {OP_NAME} operator")
     parser.add_argument("--dtype", default="f16", choices=["f16", "bf16", "f32"])
     parser.add_argument("--warmup", type=int, default=10)
-    parser.add_argument("--repeat", type=int, default=100)
+    parser.add_argument("--repeat", type=int, default=10,
+                        help="Timed iterations per shape (max 20)")
     parser.add_argument("--variant", default="all",
                         choices=["all", "q_proj", "gate_proj", "down_proj"])
     parser.add_argument("--M", type=int, default=0,
                         help="M dimension (0 = all M_VALUES)")
-    parser.add_argument("--ncu", nargs="?", const="detailed",
-                        choices=["quick", "detailed", "full"])
-    parser.add_argument("--ncu-child", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--use-ncu", action="store_true",
+                        help="Profile with NCU (--set full)")
+    parser.add_argument("--example-index", type=str, default=None,
+                        help="Comma-separated shape indices to profile (0-based)")
     parser.add_argument("--output", default="test/benchmark/ops/results")
     args = parser.parse_args()
+
+    if args.use_ncu:
+        indices = None
+        if args.example_index is not None:
+            indices = sorted(set(
+                int(p.strip()) for p in args.example_index.split(",") if p.strip()))
+            total = len(QWEN2_VARIANTS) * len(M_VALUES)
+            for idx in indices:
+                if idx < 0 or idx >= total:
+                    print(f"  ERROR: index {idx} out of range (0-{total - 1})")
+                    sys.exit(1)
+        from ncu_profiler import profile_benchmark
+        profile_benchmark(script=__file__, argv=sys.argv, op_name=OP_NAME,
+                          example_indices=indices)
+        return
+
+    if args.repeat > 20:
+        print(f"  WARNING: --repeat capped at 20 (requested {args.repeat})")
+        args.repeat = 20
 
     dtype_name = args.dtype
 
@@ -124,26 +145,6 @@ def main():
                 print(f"  Correctness: {'PASS' if ok else 'FAIL'}")
                 assert ok, "Linear correctness check failed!"
             print(format_summary(result))
-
-    if args.ncu and not args.ncu_child:
-        from ncu_profiler import NCUConfig, profile_with_ncu
-        set_map = {"quick": "default", "detailed": "detailed", "full": "full"}
-        ncu_config = NCUConfig(set=set_map[args.ncu])
-        report = profile_with_ncu(__file__,
-            ["--dtype", dtype_name, "--warmup", "5", "--repeat", "1",
-             "--variant", "q_proj", "--M", "128"],
-            ncu_config, _os.path.join(args.output, "ncu"))
-        results[0].ncu_set = report.ncu_set
-        results[0].ncu_report_file = report.report_file
-        results[0].ncu_bottleneck = report.bottleneck
-        results[0].ncu_sm_throughput_pct = report.sm_throughput_pct
-        results[0].ncu_dram_throughput_pct = report.dram_throughput_pct
-        results[0].ncu_occupancy_pct = report.occupancy_pct
-
-    if args.ncu_child:
-        # NCU profiles q_proj M=128
-        buf = setup_linear(M=128, N=3584, K=3584, dtype_name=dtype_name)
-        llaisys_linear(buf); torch.cuda.synchronize(); return
 
     save_results(results, args.output)
 
