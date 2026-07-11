@@ -89,7 +89,6 @@ def main():
             ok = check_equal(buf["out"], torch_ref, atol=1e-2, rtol=1e-2)
             print(f"  Correctness: {'PASS' if ok else 'FAIL'}")
             assert ok, "Add correctness check failed!"
-        print(format_summary(result))
 
 
     save_results(results, args.output)

@@ -148,7 +148,6 @@ def main():
             ok = ok_val and ok_idx
             print(f"  Correctness: {'PASS' if ok else 'FAIL'}")
             assert ok, "TopK correctness check failed!"
-        print(format_summary(result))
 
 
     save_results(results, args.output)

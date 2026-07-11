@@ -264,7 +264,6 @@ def main():
             ok = check_correctness(buf, dtype_name)
             print(f"  Correctness: {'PASS' if ok else 'FAIL'}")
             assert ok, "Paged-attention correctness check failed!"
-        print(format_summary(result))
 
 
     save_results(results, args.output)
