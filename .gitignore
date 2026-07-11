@@ -6,6 +6,7 @@ build/
 任务书.md
 CLAUDE.md
 LLAISYS框架描述.md
+MEMORY.md
 
 # Binaries
 bin/
@@ -14,6 +15,8 @@ lib/
 *.dll
 *.dylib
 *.pyd
+
+/test/benchmark/ops/result/*
 
 # MacOS Cache
 .DS_Store
