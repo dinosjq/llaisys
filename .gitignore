@@ -92,4 +92,5 @@ htmlcov/
 # Windows
 Thumbs.db
 ehthumbs.db
-desktop.ini
+desktop.ini.superpowers/sdd/*.diff
+.superpowers/sdd/task-*.md
