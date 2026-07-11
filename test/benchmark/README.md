@@ -58,8 +58,9 @@ test/benchmark/
 |---|---|---|---|
 | `--dtype` | `f16` `bf16` `f32` | `f16` | 张量数据类型 |
 | `--warmup` | int | `10` | 计时前的 warmup 迭代数。不计时，用于稳定 GPU 频率和预热缓存 |
-| `--repeat` | int | `100` | 正式计时迭代数。每次迭代重新分配 tensor 以击败 L2 cache，用 CUDA Event 记录 GPU 执行时间 |
-| `--ncu` | `quick` `detailed` `full` | — | 启用 NCU profiling 模式。不传值默认 `detailed` |
+| `--repeat` | int | `10`（上限 20）| 正式计时迭代数 |
+| `--use-ncu` | flag | — | 启用 NCU profiling。跑完 benchmark 后自动选最差 shape，用 NCU 采集 GPU 硬件计数器，输出瓶颈分析 |
+| `--example-index` | str | — | 逗号分隔的 shape 编号（如 `"0,3,7"`）。配合 `--use-ncu` 指定要 profile 的具体 shape |
 | `--output` | path | `test/benchmark/ops/results` | JSON 结果输出目录 |
 
 ### 指定 shape 范围（仅 benchmark_linear.py）
@@ -81,16 +82,17 @@ python benchmark_linear.py --warmup 10 --repeat 100
 - repeat：跑 100 次。每次：分配新 tensor → record CUDA Event start → 执行算子 → record CUDA Event end → sync。收集 100 个 GPU 时间样本
 - 报告值：**min** 作为主值（CUTLASS 规范——噪声只增不减，min 最接近硬件极限）
 
-**`--ncu`**
+**`--use-ncu`**
 
-```
-python benchmark_linear.py --ncu           # 等价于 --ncu detailed
-python benchmark_linear.py --ncu quick     # SpeedOfLight 快速诊断
-python benchmark_linear.py --ncu full      # 全量指标
+```bash
+python benchmark_linear.py --use-ncu                           # 自动选最差 shape，NCU --set full
+python benchmark_linear.py --use-ncu --example-index "3"       # 只 profile #3
+python benchmark_linear.py --use-ncu --example-index "0,7,14"  # profile #0 #7 #14
 ```
 
-- 启用后：benchmark 先跑完整循环 → 输出表格 → 然后用 subprocess 启动 NCU → NCU 再次启动同一个脚本作为子进程 → 采集 GPU 硬件计数器 → 解析结果 → 在表格中加入瓶颈分类
-- NCU 的 `--launch-skip` 和 `--launch-count` 由 `ncu_profiler.py` 的 `NCUConfig` 管理，用户不可见
+- 启用后：先正常跑 benchmark → 从 speedup 数据中自动选最优（由 `_auto_select_index` 决定：当有 speedup < 1.0 时选最小 speedup，全部 speedup >= 1.0 时选最接近 1.0 的）。如果指定了 `--example-index`，则跳过自动选择，直接用指定编号的 shape
+- NCU 子进程是正常的 benchmark 运行（限制为单个 shape），采集 GPU 硬件计数器
+- 结果写入 `results/ncu_results.json`，`.ncu-rep` 文件保存在 `results/ncu/`
 
 ## 输出格式
 
@@ -98,13 +100,13 @@ python benchmark_linear.py --ncu full      # 全量指标
 
 ```
   Operator: linear
-  ══════════════════════════════════════════════════════════════════════
-    shape                       dtype  latency(us)  TFLOPS  baseline(us)  baseline(TF)  speedup
-  ────────────────────────────────────────────────────────────────────────
-    1 x 3584 x 3584 x q_proj    f16         234.5     0.1         91.1           0.3    2.57x
-    16 x 3584 x 3584 x q_proj   f16          65.5     6.3        106.5           3.9    1.62x
-    ...
-  ────────────────────────────────────────────────────────────────────────
+  ═══════════════════════════════════════════════════════════════════════════
+  #   shape                       dtype  latency(us)  TFLOPS  baseline(us)  baseline(TF)  speedup
+  ───────────────────────────────────────────────────────────────────────────
+  #0  1 x 3584 x 3584 x q_proj    f16         234.5     0.1         91.1           0.3    2.57x
+  #1  16 x 3584 x 3584 x q_proj   f16          65.5     6.3        106.5           3.9    1.62x
+  ...
+  ───────────────────────────────────────────────────────────────────────────
     f16  │ range: 65.5 — 2124.8 us  │ mean: 765.2 us  │ speedup: 0.59x — 2.57x
 ```
 
@@ -149,20 +151,18 @@ python benchmark_linear.py --ncu full      # 全量指标
 
 ## NCU Profiling
 
-### Shell 包装（推荐）
-
 ```bash
-bash test/benchmark/ops/ncu_profile.sh --op linear --set default
-bash test/benchmark/ops/ncu_profile.sh --op rope --set detailed
+# 自动选最差 shape profile
+python test/benchmark/ops/benchmark_linear.py --use-ncu
+
+# 指定特定 shape（编号来自表格 # 列）
+python test/benchmark/ops/benchmark_linear.py --use-ncu --example-index "3"
+
+# profile 多个 shape
+python test/benchmark/ops/benchmark_add.py --use-ncu --example-index "0,2,5"
 ```
 
-参数：`--op` 算子名、`--set` NCU 章节集（`default`/`detailed`/`full`）、`--dtype` 数据类型。
-
-### Python CLI
-
-```bash
-python test/benchmark/ops/benchmark_linear.py --ncu quick --M 128 --variant q_proj
-```
+`--use-ncu` 始终使用 `--set full`，采集最完整的硬件计数器。
 
 NCU 采集的硬件计数器：
 
@@ -193,9 +193,8 @@ python test/benchmark/ops/run_all_benchmarks.py --dtype f16 --op all
 # 指定算子
 python test/benchmark/ops/run_all_benchmarks.py --dtype f16 --op linear,rope,rms_norm
 
-# 带 NCU
-python test/benchmark/ops/run_all_benchmarks.py --dtype f16 --op all --ncu quick
 ```
+
 
 ## Shape 覆盖
 
@@ -226,12 +225,12 @@ python test/benchmark/ops/benchmark_linear.py --dtype f16 --M 128 --variant q_pr
 # 看全部 18 个 shape 组合（默认行为）
 python test/benchmark/ops/benchmark_linear.py --dtype f16
 
-# 快速 NCU 诊断（仅一个 shape）
-python test/benchmark/ops/benchmark_linear.py --ncu quick --M 128 --variant q_proj --warmup 5 --repeat 5
+# NCU profile 自动选最差 shape
+python test/benchmark/ops/benchmark_linear.py --use-ncu
 
-# 生成 .ncu-rep 用于 GUI 深度分析
-bash test/benchmark/ops/ncu_profile.sh --op linear --set detailed
+# NCU profile 指定 shape（#3 = q_proj, M=128）
+python test/benchmark/ops/benchmark_linear.py --use-ncu --example-index "3"
 
-# 只看结果不跑 NCU
+# 查看单个 shape 的性能
 python test/benchmark/ops/benchmark_linear.py --dtype f16 --M 512
 ```
