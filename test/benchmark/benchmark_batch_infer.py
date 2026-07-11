@@ -54,11 +54,11 @@ def main():
     torch.cuda.empty_cache(); torch.cuda.synchronize()
 
     # ── LLAISYS concurrent ───────────────────────────
+    WARMUP_PROMPT = "Hello, this is a dedicated warmup prompt for GPU initialization."
     print("Loading LLAISYS model...")
     ll_model = load_llaisys_model(model_path, args.device)
-
     for _ in range(args.warmup):
-        llaisys_concurrent_infer(prompts, tokenizer, ll_model, max_steps, tp, tk, temp)
+        llaisys_concurrent_infer([WARMUP_PROMPT], tokenizer, ll_model, max_steps, tp, tk, temp)
 
     ll_elapsed_sum = 0.0
     ll_last = None

@@ -254,18 +254,23 @@ def hf_batch_infer(prompts, tokenizer, model, max_new_tokens=128,
 def llaisys_concurrent_infer(prompts, tokenizer, model, max_new_tokens=128,
                              top_p=0.8, top_k=50, temperature=0.8):
     """Threaded concurrent requests. Returns (results, elapsed_s)."""
+    # Pre-compute input_ids on main thread (fast tokenizer is NOT thread-safe)
+    input_ids_list = [_apply_chat(tokenizer, p) for p in prompts]
     results = [None] * len(prompts)
 
-    def _worker(idx, prompt):
-        results[idx] = llaisys_infer(
-            prompt, tokenizer, model, max_new_tokens=max_new_tokens,
-            top_p=top_p, top_k=top_k, temperature=temperature,
+    def _worker(idx, inp_ids):
+        start = time.perf_counter()
+        result = model.generate(
+            inp_ids, max_new_tokens=max_new_tokens,
+            top_k=top_k, top_p=top_p, temperature=temperature,
         )
+        elapsed_us = (time.perf_counter() - start) * 1e6
+        results[idx] = (result, elapsed_us)
 
     threads = []
     start = time.perf_counter()
-    for i, p in enumerate(prompts):
-        t = threading.Thread(target=_worker, args=(i, p))
+    for i, inp_ids in enumerate(input_ids_list):
+        t = threading.Thread(target=_worker, args=(i, inp_ids))
         t.start()
         threads.append(t)
     for t in threads:
