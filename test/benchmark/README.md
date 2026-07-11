@@ -1,13 +1,18 @@
 # Operator Performance Benchmark
 
-基于 CUDA Event 的算子性能测试系统，集成 NCU (NVIDIA Nsight Compute) profiling。
+CUDA 算子性能测试 + 端到端推理性能对比（HF vs LLAISYS）。
 
 ## 快速开始
 
 ```bash
 xmake f --nv-gpu=y -cv && xmake && xmake install
 pip install -e ./python/
+
+# 算子 benchmark
 python test/benchmark/ops/benchmark_add.py --dtype f16
+
+# 推理 benchmark
+python test/benchmark/benchmark_infer.py --model <path> --warmup 1 --repeat 1
 ```
 
 ## 目录结构
@@ -15,6 +20,9 @@ python test/benchmark/ops/benchmark_add.py --dtype f16
 ```
 test/benchmark/
 ├── README.md
+├── infer_utils.py               ← 推理 benchmark 共享模块
+├── benchmark_infer.py           ← 单请求串行推理 benchmark
+├── benchmark_batch_infer.py     ← 并发请求推理 benchmark
 ├── ops/
 │   ├── benchmark_harness.py     ← CUDA Event 计时 + 表格输出
 │   ├── ncu_profiler.py          ← NCU 集成 + 动态指标发现 + 瓶颈分类
@@ -149,6 +157,85 @@ python test/benchmark/ops/benchmark_linear.py --use-ncu --example-index "0,7"  #
 | 其他 | `latency_bound` |
 
 **注意**：部分 GPU（如 RTX 4060 Ada Lovelace）不提供 `dram__throughput` 百分比指标，此时 DRAM 为 0.0% 且瓶颈偏向 `latency_bound`。这是该 GPU 的硬件计数器限制，不影响 SM 和 Occupancy 数据的准确性。
+
+## 推理 Benchmark
+
+端到端推理性能对比（HuggingFace vs LLAISYS），支持单请求串行和并发多请求两种模式。
+
+### CLI
+
+| 参数 | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `--device` | `nvidia` | `nvidia` | CUDA 仅用 |
+| `--model` | path | — | 模型路径（本地或自动下载 HF） |
+| `--seed` | int | `42` | 随机种子 |
+| `--max_steps` | int | `32` | 每请求最大生成 token 数 |
+| `--top_p` | float | `1.0` | 采样参数 |
+| `--top_k` | int | `1` | 采样参数 |
+| `--temperature` | float | `1.0` | 采样参数 |
+| `--num_prompts` | int | `12` | 测试 prompt 数量 |
+| `--context_repeat` | int | `2` | 每个 prompt 的上下文填充行数 |
+| `--warmup` | int | `3` | warmup 迭代数 |
+| `--repeat` | int | `5` | 计时迭代数 |
+| `--test` | flag | — | greedy 解码 + token 级正确性验证 |
+| `--output` | path | `test/benchmark/results` | JSON 输出目录 |
+
+### 单请求串行
+
+```bash
+python test/benchmark/benchmark_infer.py --model <path>
+python test/benchmark/benchmark_infer.py --model <path> --test   # 正确性验证
+```
+
+逐 prompt 串行调用 `model.generate()`，测量每个请求的 CUDA Event 延迟。输出：
+
+```
+  Model: Qwen2-1.5B  |  GPU: RTX 4060  |  Prompts: 12  |  Mode: single
+
+  ┌──────────────────────────────────────────────────────────────────┐
+  │ Latency(avg)          245.3 ms        198.7 ms    1.23x │
+  │ Latency(p50)          230.1 ms        185.2 ms    1.24x │
+  │ Latency(p90)          312.4 ms        245.1 ms    1.27x │
+  │ TPOT                   12.5 ms         10.1 ms    1.24x │
+  │ Throughput            80.0 tok/s      99.0 tok/s   1.24x │
+  └──────────────────────────────────────────────────────────────────┘
+```
+
+### 并发多请求
+
+```bash
+python test/benchmark/benchmark_batch_infer.py --model <path>
+```
+
+N 个线程同时调用 `model.generate()`，LLAISYS scheduler 内部自动组 batch。HF 用 padded batch 对比。
+
+```
+  Model: Qwen2-1.5B  |  GPU: RTX 4060  |  Prompts: 12  |  Mode: concurrent
+
+  ┌──────────────────────────────────────────────────────────────────┐
+  │ Total elapsed          1.23 s          0.98 s    1.26x │
+  │ TPOT                   8.2 ms          6.5 ms    1.26x │
+  │ Throughput            450 tok/s       565 tok/s    1.26x │
+  └──────────────────────────────────────────────────────────────────┘
+```
+
+并发表不显示 per-request 延迟分位数（`time.perf_counter()` 无法拆分到单请求）。
+
+### JSON 输出
+
+`results/run_YYYYmmdd_HHMMSS/results.json`：
+
+```json
+{
+  "environment": {"gpu": "RTX 4060", "cuda": "12.8", "timestamp": "..."},
+  "config": {"mode": "single", "num_prompts": 12, "seed": 42, ...},
+  "results": {
+    "hf": {"elapsed_s": ..., "tpot_ms": ..., "throughput": ..., "lat_avg": ..., "lat_p50": ..., "lat_p90": ...},
+    "llaisys": {...},
+    "speedup": {"wall_clock": 1.23, "tpot": 1.24}
+  }
+}
+```
 
 ## 批量运行
 
