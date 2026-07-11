@@ -12,6 +12,9 @@ lib/
 
 # Benchmark outputs
 test/benchmark/ops/results/
+test/benchmark/results/
+*.ncu-rep
+.ncu_metrics_cache
 
 # Superpowers scratch
 .superpowers/sdd/*.diff
