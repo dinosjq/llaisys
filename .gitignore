@@ -1,12 +1,6 @@
 # Xmake cache
 .xmake/
 build/
-.gitignore
-
-任务书.md
-CLAUDE.md
-LLAISYS框架描述.md
-MEMORY.md
 
 # Binaries
 bin/
@@ -16,37 +10,25 @@ lib/
 *.dylib
 *.pyd
 
-/test/benchmark/ops/result/*
+# Benchmark outputs
+test/benchmark/ops/results/
 
-# MacOS Cache
+# Superpowers scratch
+.superpowers/sdd/*.diff
+.superpowers/sdd/task-*.md
+
+# MacOS
 .DS_Store
 
-# Vscode
+# VSCode
 .vscode/
 
 # Python
-__pycache__/
-
-# Log
-*.log
-
-# Cache
-cache/
-
-# JSON
-*.json
-
-#GGUF
-*.gguf
-
-
-# Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
 *$py.class
 
 # Distribution / packaging
-build/
 dist/
 *.egg-info/
 .eggs/
@@ -67,7 +49,7 @@ ENV/
 pip-log.txt
 pip-delete-this-directory.txt
 
-# MyPy and other type checking
+# Type checking
 .mypy_cache/
 .dmypy.json
 .pyre/
@@ -80,20 +62,24 @@ htmlcov/
 .cache/
 .pytest_cache/
 
-# Jupyter Notebook checkpoints
+# Jupyter Notebook
 .ipynb_checkpoints
 
-# IDE and editor settings
-.vscode/
+# IDE
 .idea/
 *.swp
 *~
 
-# macOS
-.DS_Store
-
 # Windows
 Thumbs.db
 ehthumbs.db
-desktop.ini.superpowers/sdd/*.diff
-.superpowers/sdd/task-*.md
+desktop.ini
+
+# Logs
+*.log
+
+# Cache
+cache/
+
+# Models
+*.gguf
