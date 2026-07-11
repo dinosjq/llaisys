@@ -84,6 +84,11 @@ def main():
     if args.example_index is not None:
         target_indices = sorted(set(
             int(p.strip()) for p in args.example_index.split(",") if p.strip()))
+        total = len(QWEN2_VARIANTS) * len(M_VALUES)
+        for idx in target_indices:
+            if idx < 0 or idx >= total:
+                print(f"  ERROR: index {idx} out of range (0-{total - 1})")
+                sys.exit(1)
 
     if args.repeat > 20:
         print(f"  WARNING: --repeat capped at 20 (requested {args.repeat})")

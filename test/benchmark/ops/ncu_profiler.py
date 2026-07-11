@@ -667,7 +667,7 @@ def profile_benchmark(script: str, argv: list[str], op_name: str,
         return
 
     for idx in example_indices:
-        shape_args = _shape_args_for_index(idx, stripped, script)
+        shape_args = _shape_args_for_index(idx, script)
         child_cmd = [sys.executable, script] + shape_args
 
         rep_base = os.path.join(out_dir, f"{op_name}_idx{idx}")
@@ -729,8 +729,7 @@ def profile_benchmark(script: str, argv: list[str], op_name: str,
 # internal helpers
 # ---------------------------------------------------------------------------
 
-def _shape_args_for_index(index: int, stripped_argv: list[str],
-                          script: str) -> list[str]:
+def _shape_args_for_index(index: int, script: str) -> list[str]:
     """Build CLI args to limit the benchmark to a single shape by index."""
     script_name = os.path.basename(script)
 
