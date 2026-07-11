@@ -29,8 +29,7 @@ test/benchmark/
     ├── ncu_profiler.py          ← NCU 集成模块
     ├── benchmark_linear.py      ← 各算子 benchmark（12 个）
     ├── run_all_benchmarks.py    ← 批量运行入口
-    ├── ncu_profile.sh           ← NCU Shell 包装
-    └── results/                 ← 输出目录
+        └── results/                 ← 输出目录
 ```
 
 ## 运算符子
@@ -75,11 +74,11 @@ test/benchmark/
 **`--warmup` 与 `--repeat`**
 
 ```
-python benchmark_linear.py --warmup 10 --repeat 100
+python benchmark_linear.py --warmup 10 --repeat 10
 ```
 
 - warmup：跑 10 次完整的算子调用 + CUDA 同步。不计时，不收集数据。目的：稳定 GPU 时钟频率，预热 L1/L2 cache
-- repeat：跑 100 次。每次：分配新 tensor → record CUDA Event start → 执行算子 → record CUDA Event end → sync。收集 100 个 GPU 时间样本
+- repeat：跑 10 次（上限 20）。每次：分配新 tensor → record CUDA Event start → 执行算子 → record CUDA Event end → sync。收集 10 个 GPU 时间样本
 - 报告值：**min** 作为主值（CUTLASS 规范——噪声只增不减，min 最接近硬件极限）
 
 **`--use-ncu`**
@@ -90,9 +89,10 @@ python benchmark_linear.py --use-ncu --example-index "3"       # 只 profile #3
 python benchmark_linear.py --use-ncu --example-index "0,7,14"  # profile #0 #7 #14
 ```
 
-- 启用后：先正常跑 benchmark → 从 speedup 数据中自动选最优（由 `_auto_select_index` 决定：当有 speedup < 1.0 时选最小 speedup，全部 speedup >= 1.0 时选最接近 1.0 的）。如果指定了 `--example-index`，则跳过自动选择，直接用指定编号的 shape
-- NCU 子进程是正常的 benchmark 运行（限制为单个 shape），采集 GPU 硬件计数器
+- 启用后：先正常跑 benchmark 并输出表格 → 从 speedup 数据中自动选 shape（speedup < 1.0 时选最小，全部 >= 1.0 时选最接近 1.0 的）。如果指定了 `--example-index`，则跳过自动选择，直接用指定编号
+- NCU 子进程跑单个 shape（`--set full`），采集 GPU 硬件计数器
 - 结果写入 `results/ncu_results.json`，`.ncu-rep` 文件保存在 `results/ncu/`
+- **注意**：benchmark 会跑两次（第一次出表格，第二次 NCU 采集）。这是 NCU 的进程包装架构所决定的，两次之间的延迟数据来自不同运行
 
 ## 输出格式
 
@@ -101,10 +101,10 @@ python benchmark_linear.py --use-ncu --example-index "0,7,14"  # profile #0 #7 #
 ```
   Operator: linear
   ═══════════════════════════════════════════════════════════════════════════
-  #   shape                       dtype  latency(us)  TFLOPS  baseline(us)  baseline(TF)  speedup
+      shape                       dtype  latency(us)  TFLOPS  baseline(us)  baseline(TF)  speedup
   ───────────────────────────────────────────────────────────────────────────
-  #0  1 x 3584 x 3584 x q_proj    f16         234.5     0.1         91.1           0.3    2.57x
-  #1  16 x 3584 x 3584 x q_proj   f16          65.5     6.3        106.5           3.9    1.62x
+   0  1 x 3584 x 3584 x q_proj    f16         234.5     0.1         91.1           0.3    2.57x
+   1  16 x 3584 x 3584 x q_proj   f16          65.5     6.3        106.5           3.9    1.62x
   ...
   ───────────────────────────────────────────────────────────────────────────
     f16  │ range: 65.5 — 2124.8 us  │ mean: 765.2 us  │ speedup: 0.59x — 2.57x
@@ -164,16 +164,7 @@ python test/benchmark/ops/benchmark_add.py --use-ncu --example-index "0,2,5"
 
 `--use-ncu` 始终使用 `--set full`，采集最完整的硬件计数器。
 
-NCU 采集的硬件计数器：
-
-| 指标 | 含义 |
-|---|---|
-| `gpu__time_duration.sum` | GPU 执行时间 (ns) |
-| `dram__bytes_read.sum` | HBM 读取字节 |
-| `dram__bytes_write.sum` | HBM 写入字节 |
-| `sm__throughput.avg.pct_of_peak_sustained_elapsed` | SM 吞吐率（%峰值） |
-| `dram__throughput.avg.pct_of_peak_sustained_elapsed` | HBM 吞吐率（%峰值） |
-| `sm__warps_active.avg.pct_of_peak_sustained_elapsed` | Warp 占用率（%峰值） |
+指标通过 `ncu --list-metrics` 动态发现（GPU 型号缓存，24h TTL），使用前缀匹配自动适配不同 GPU 架构（Ampere / Ada Lovelace / Hopper 等）。
 
 瓶颈分类规则：
 
