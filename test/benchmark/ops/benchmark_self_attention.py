@@ -47,18 +47,19 @@ def setup_self_attention(seqlen: int, total_len: int, nh: int, nkvh: int, hd: in
 
 
 def torch_self_attention(buf: dict) -> None:
-    """Reference: F.scaled_dot_product_attention with GQA (repeat KV heads).
+    """Reference: manual attention with causal mask for prefix support.
 
-    Transposes to (head, seq, d) for torch's batch-first convention then back.
-    is_causal=True correctly extends to rectangular masks when K/V is longer
-    than Q (prefix case).
+    LLAISYS self_attention uses (seqlen, nh, hd) layout with causal masking
+    that allows the first (total_len - seqlen) key positions as a visible
+    prefix, then applies causal masking for the remaining seqlen positions.
     """
     q = buf["q_torch"]                     # (seqlen, nh, hd)
     k = buf["k_torch"]                     # (total_len, nkvh, hd)
     v = buf["v_torch"]                     # (total_len, nkvh, hd)
     out = buf["out_torch"]                 # (seqlen, nh, hd)
 
-    nh = q.shape[1]
+    seqlen, nh, hd = q.shape
+    total_len = k.shape[0]
     nkvh = k.shape[1]
 
     if nh != nkvh:
@@ -66,15 +67,23 @@ def torch_self_attention(buf: dict) -> None:
         k = k.repeat_interleave(repeat, dim=1)   # (total_len, nh, hd)
         v = v.repeat_interleave(repeat, dim=1)
 
-    # torch expects (batch, head, seq, d) — use (head, seq, d) with no batch
-    q_t = q.transpose(0, 1)                # (nh, seqlen, hd)
-    k_t = k.transpose(0, 1)                # (nh, total_len, hd)
-    v_t = v.transpose(0, 1)                # (nh, total_len, hd)
+    # (nh, seqlen, hd) @ (nh, hd, total_len) -> (nh, seqlen, total_len)
+    q_t = q.transpose(0, 1).float()
+    k_t = k.transpose(0, 1).float()
+    v_t = v.transpose(0, 1).float()
 
-    attn_out = F.scaled_dot_product_attention(
-        q_t, k_t, v_t, is_causal=True, scale=SCALE,
-    )                                      # (nh, seqlen, hd)
-    out.copy_(attn_out.transpose(0, 1))    # (seqlen, nh, hd)
+    attn_weight = (q_t @ k_t.transpose(-2, -1)) * SCALE
+
+    # causal mask: query i attends to key [0, prefix_len + i]
+    prefix_len = total_len - seqlen
+    key_ids = torch.arange(total_len, device=q.device).unsqueeze(0)
+    query_ids = torch.arange(seqlen, device=q.device).unsqueeze(1)
+    mask = key_ids <= (prefix_len + query_ids)
+    attn_weight = attn_weight.masked_fill(~mask.unsqueeze(0), float("-inf"))
+
+    attn_weight = torch.softmax(attn_weight, dim=-1)
+    attn_out = (attn_weight @ v_t).to(q.dtype)  # (nh, seqlen, hd)
+    out.copy_(attn_out.transpose(0, 1))           # (seqlen, nh, hd)
 
 
 def llaisys_self_attention(buf: dict) -> None:
