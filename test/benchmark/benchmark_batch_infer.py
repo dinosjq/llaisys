@@ -47,8 +47,10 @@ def main():
         hf_last, e_us = hf_batch_infer(prompts, tokenizer, hf_model, max_steps, tp, tk, temp)
         hf_elapsed_sum += e_us / 1e6  # us → s
 
-    hf_stats = summarize_run("HF", hf_elapsed_sum / args.repeat,
-                              [(r[0], r[1], 0) for r in hf_last])
+    hf_in_tok  = sum(len(r[0]) for r in hf_last)
+    hf_out_tok = sum(len(r[1]) - len(r[0]) for r in hf_last)
+    hf_stats = summarize_run("HF", hf_elapsed_sum / args.repeat, len(prompts),
+                              hf_in_tok, hf_out_tok, latencies_us=None)
     del hf_model; gc.collect()
     torch.cuda.empty_cache(); torch.cuda.synchronize()
 
@@ -65,8 +67,13 @@ def main():
         ll_last, e_s = llaisys_concurrent_infer(prompts, tokenizer, ll_model, max_steps, tp, tk, temp)
         ll_elapsed_sum += e_s
 
-    ll_stats = summarize_run("LLAISYS", ll_elapsed_sum / args.repeat,
-                              [(r[0], r[0], 0) for r in ll_last])
+    # llaisys_infer returns full output tokens (includes input), need prompt-level input lengths
+    from infer_utils import _apply_chat
+    ll_in_lens = [len(_apply_chat(tokenizer, p)) for p in prompts]
+    ll_in_tok  = sum(ll_in_lens)
+    ll_out_tok = sum(len(r[0]) - ll_in_lens[i] for i, r in enumerate(ll_last))
+    ll_stats = summarize_run("LLAISYS", ll_elapsed_sum / args.repeat, len(prompts),
+                              ll_in_tok, ll_out_tok, latencies_us=None)
 
     # ── Output ───────────────────────────────────────
     gpu = torch.cuda.get_device_name(0)

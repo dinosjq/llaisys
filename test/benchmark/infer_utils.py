@@ -190,29 +190,34 @@ def llaisys_concurrent_infer(prompts, tokenizer, model, max_new_tokens=128,
 
 # ── Metrics ──────────────────────────────────────────────────────
 
-def summarize_run(name, elapsed_s, results):
-    """Compute aggregate metrics from a list of (tokens, elapsed) tuples."""
-    input_tokens  = sum(len(r[0]) for r in results)
-    output_tokens = sum(len(r[1]) - len(r[0]) if len(r) > 1 and isinstance(r[1], list)
-                        else 0 for r in results)
-    latencies = [r[2] if len(r) > 2 else elapsed_s for r in results]  # us or s
-    if output_tokens == 0:
-        output_tokens = 1
-    tpot_ms = (elapsed_s * 1000.0 / output_tokens) if isinstance(elapsed_s, float) else 0
-    throughput = output_tokens / elapsed_s if elapsed_s > 0 else 0
-    sorted_lat = sorted(latencies)
-    n = len(sorted_lat)
-    return {
+def summarize_run(name, elapsed_s, num_prompts,
+                  total_input_tokens, total_output_tokens,
+                  latencies_us=None):
+    """Compute aggregate metrics from pre-computed scalars.
+
+    *latencies_us* is optional — when provided (single-request mode with
+    CUDA Event timing), P50/P90 are computed.  When None (concurrent
+    mode), latency percentiles are omitted.
+    """
+    if total_output_tokens == 0:
+        total_output_tokens = 1
+    tpot_ms = (elapsed_s * 1000.0 / total_output_tokens)
+    throughput = total_output_tokens / elapsed_s if elapsed_s > 0 else 0
+    result = {
         "name": name,
         "elapsed_s": elapsed_s,
-        "input_tokens": input_tokens,
-        "output_tokens": output_tokens,
+        "input_tokens": total_input_tokens,
+        "output_tokens": total_output_tokens,
         "tpot_ms": tpot_ms,
         "throughput": throughput,
-        "lat_avg": sum(latencies) / n if n else 0,
-        "lat_p50": sorted_lat[n // 2] if n else 0,
-        "lat_p90": sorted_lat[max(int(n * 0.9) - 1, 0)] if n else 0,
     }
+    if latencies_us:
+        sorted_lat = sorted(latencies_us)
+        n = len(sorted_lat)
+        result["lat_avg"] = sum(latencies_us) / n
+        result["lat_p50"] = sorted_lat[n // 2]
+        result["lat_p90"] = sorted_lat[max(int(n * 0.9) - 1, 0)]
+    return result
 
 
 def print_speedup(hf_stats, ll_stats):
@@ -237,16 +242,12 @@ def format_table(hf_stats, ll_stats, mode="single"):
     label = "HF(batch)" if mode == "concurrent" else "HF"
     ll_label = "LLAISYS(concurrent)" if mode == "concurrent" else "LLAISYS"
 
-    rows = [
-        ("Latency(avg)", "ms", hf_stats.get("lat_avg", 0),
-         ll_stats.get("lat_avg", 0)),
-        ("Latency(p50)", "ms",
-         hf_stats.get("lat_p50", 0), ll_stats.get("lat_p50", 0)),
-        ("Latency(p90)", "ms",
-         hf_stats.get("lat_p90", 0), ll_stats.get("lat_p90", 0)),
-        ("TPOT", "ms", hf_stats["tpot_ms"], ll_stats["tpot_ms"]),
-        ("Throughput", "tok/s", hf_stats["throughput"], ll_stats["throughput"]),
-    ]
+    rows = [("TPOT", "ms", hf_stats["tpot_ms"], ll_stats["tpot_ms"]),
+            ("Throughput", "tok/s", hf_stats["throughput"], ll_stats["throughput"])]
+    if "lat_avg" in hf_stats and "lat_avg" in ll_stats:
+        rows.insert(0, ("Latency(p50)", "ms", hf_stats["lat_p50"], ll_stats["lat_p50"]))
+        rows.insert(0, ("Latency(p90)", "ms", hf_stats["lat_p90"], ll_stats["lat_p90"]))
+        rows.insert(0, ("Latency(avg)", "ms", hf_stats["lat_avg"], ll_stats["lat_avg"]))
     if mode == "concurrent":
         rows.insert(0, ("Total elapsed", "s",
                         hf_stats["elapsed_s"], ll_stats["elapsed_s"]))

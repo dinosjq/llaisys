@@ -42,18 +42,26 @@ def main():
         for p in prompts:
             hf_infer(p, tokenizer, hf_model, max_steps, tp, tk, temp)
 
+    # Pre-compute prompt input lengths
+    from infer_utils import _apply_chat
+    prompt_input_lens = [len(_apply_chat(tokenizer, p)) for p in prompts]
+
     hf_results = []
     hf_elapsed_sum = 0.0
     for _ in range(args.repeat):
         rep_results = []
         rep_start = time.perf_counter()
-        for p in prompts:
+        for i, p in enumerate(prompts):
             tokens, e_us = hf_infer(p, tokenizer, hf_model, max_steps, tp, tk, temp)
-            rep_results.append((tokens, tokens, e_us))
+            rep_results.append((tokens, e_us))
         hf_elapsed_sum += time.perf_counter() - rep_start
         hf_results = rep_results
 
-    hf_stats = summarize_run("HF", hf_elapsed_sum / args.repeat, hf_results)
+    hf_in_tok  = sum(prompt_input_lens)
+    hf_out_tok = sum(len(r[0]) - prompt_input_lens[i] for i, r in enumerate(hf_results))
+    hf_lat_us  = [r[1] for r in hf_results]
+    hf_stats = summarize_run("HF", hf_elapsed_sum / args.repeat, len(prompts),
+                              hf_in_tok, hf_out_tok, hf_lat_us)
     del hf_model; gc.collect()
     torch.cuda.empty_cache(); torch.cuda.synchronize()
 
@@ -70,13 +78,16 @@ def main():
     for _ in range(args.repeat):
         rep_results = []
         rep_start = time.perf_counter()
-        for p in prompts:
+        for i, p in enumerate(prompts):
             tokens, e_us = llaisys_infer(p, tokenizer, ll_model, max_steps, tp, tk, temp)
-            rep_results.append((tokens, tokens, e_us))
+            rep_results.append((tokens, e_us))
         ll_elapsed_sum += time.perf_counter() - rep_start
         ll_results = rep_results
 
-    ll_stats = summarize_run("LLAISYS", ll_elapsed_sum / args.repeat, ll_results)
+    ll_out_tok = sum(len(r[0]) - prompt_input_lens[i] for i, r in enumerate(ll_results))
+    ll_lat_us  = [r[1] for r in ll_results]
+    ll_stats = summarize_run("LLAISYS", ll_elapsed_sum / args.repeat, len(prompts),
+                              hf_in_tok, ll_out_tok, ll_lat_us)
 
     # ── Output ───────────────────────────────────────
     gpu = torch.cuda.get_device_name(0)
@@ -87,7 +98,7 @@ def main():
     if args.test:
         matched = 0
         for idx, (hf_r, ll_r) in enumerate(zip(hf_results, ll_results)):
-            ok = hf_r[0] == ll_r[0]
+            ok = hf_r[0] == ll_r[0]  # hf_r[0] = tokens, ll_r[0] = tokens
             matched += int(ok)
             print(f"  Prompt [{idx}] {'OK' if ok else 'MISMATCH'}  hf={len(hf_r[0])}  ll={len(ll_r[0])}")
         print(f"  Correctness: {matched}/{len(prompts)} matched")
