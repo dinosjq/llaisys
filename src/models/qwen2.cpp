@@ -181,7 +181,7 @@ Qwen2::Qwen2(Qwen2Meta meta,
          "swiglu", "linear:down_proj", "add:mlp"},
         {"embed"},
         {"embed:gather", "out_norm", "linear:lm_head", "top_k"});
-    OpProfiler::instance().set_sample_points({1, 32, 128, 256, 512, 1024});
+    OpProfiler::instance().set_sample_points({1, 32, 64, 128, 256, 512, 1024});
 #endif
 }
 

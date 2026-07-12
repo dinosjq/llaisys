@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <fstream>
-#include <iomanip>
 #include <iostream>
 #include <map>
 #include <string>
@@ -246,26 +245,11 @@ void OpProfiler::dump_json(const char* path) {
         for (const auto& [_, pair] : agg) total_ms += pair.first;
 
         // ── sort by total_ms descending ────────────
-        std::vector<std::tuple<std::string, double, int, double>> sorted;
+        std::vector<std::tuple<std::string, double, int>> sorted;
         for (const auto& [name, pair] : agg)
-            sorted.emplace_back(name, pair.first, pair.second, pair.first);
+            sorted.emplace_back(name, pair.first, pair.second);
         std::sort(sorted.begin(), sorted.end(),
             [](auto& a, auto& b) { return std::get<1>(a) > std::get<1>(b); });
-
-        // ── console header ──────────────────────────
-        std::cout << "\n  period: " << snap.phase << "   step: " << snap.step
-                  << "   total_ms: " << std::fixed << std::setprecision(2) << total_ms << "\n\n";
-        std::cout << "    operator          avg_ms    count    total_ms\n";
-        std::cout << "    ─────────────────────────────────────────────\n";
-
-        for (const auto& [name, sum, cnt, _] : sorted) {
-            std::cout << "    " << std::left  << std::setw(20) << name
-                      << std::right << std::setw(8)  << std::fixed << std::setprecision(2) << (sum / cnt)
-                      << std::right << std::setw(8)  << cnt
-                      << std::right << std::setw(12) << sum << "\n";
-        }
-        std::cout << "    ─────────────────────────────────────────────\n";
-        std::cout << "    total" << std::setw(42) << std::right << total_ms << "\n";
 
         // ── JSON (aggregated, sorted) ──────────────
         f << "    {\n";
@@ -274,7 +258,7 @@ void OpProfiler::dump_json(const char* path) {
         f << "      \"total_ms\": " << total_ms << ",\n";
         f << "      \"ops\": [\n";
         for (size_t i = 0; i < sorted.size(); ++i) {
-            const auto& [name, sum, cnt, _] = sorted[i];
+            const auto& [name, sum, cnt] = sorted[i];
             f << "        {\"name\": \"" << name
               << "\", \"avg_ms\": " << (sum / cnt)
               << ", \"count\": " << cnt
@@ -288,7 +272,6 @@ void OpProfiler::dump_json(const char* path) {
     }
 
     f << "  ]\n}\n";
-    std::cout << "  Profile written to " << path << std::endl;
 }
 
 #else // !LLAISYS_ENABLE_PROFILING
