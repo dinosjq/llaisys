@@ -82,8 +82,7 @@ public:
     void begin_forward(bool is_prefill);
     void end_forward(int decode_step);
     void step();
-
-    ~OpProfiler();  // dumps JSON on destruction
+    void dump_json(const char* path);  // called from Qwen2::stop()
 
 private:
     OpProfiler() = default;

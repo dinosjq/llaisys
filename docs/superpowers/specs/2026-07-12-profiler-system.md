@@ -50,7 +50,7 @@ class OpProfiler {
 
 ```cpp
 OpProfiler::instance().register_sequence("qwen2", 28,
-    { // per_layer_ops (16 ops per layer)
+    { // per_layer_ops (17 ops per layer)
       "attn_norm", "linear:q_proj", "linear:k_proj", "linear:v_proj",
       "rope:q", "rope:k", "kv_cache_move:k", "kv_cache_move:v",
       "paged_attn", "linear:o_proj", "add:attn",
@@ -79,10 +79,14 @@ while (running) {
     auto [seqs, is_prefill] = scheduler->schedule();
     if (seqs.empty()) continue;
 
+    auto block_ids = model->prepare_block_table(seqs);
+    Qwen2Pack pack = is_prefill ? prepare_prefill(seqs) : prepare_decode(seqs);
+
     PROFILE_BEGIN(is_prefill);
-    forward(...);
-    model->scheduler->postprocess(...);
+    forward(pack, block_ids);
     PROFILE_END(is_prefill ? 0 : ++decode_step);
+
+    model->scheduler->postprocess(seqs, token_ids, is_prefill);
 }
 ```
 
