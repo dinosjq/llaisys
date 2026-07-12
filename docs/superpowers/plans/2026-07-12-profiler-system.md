@@ -162,7 +162,7 @@ After `start()` call:
          "mlp_norm", "linear:gate_proj", "linear:up_proj",
          "swiglu", "linear:down_proj", "add:mlp"},
         {"embed"},
-        {"out_norm", "linear:lm_head", "top_k"});
+        {"embed:gather", "out_norm", "linear:lm_head", "top_k"});
     OpProfiler::instance().set_sample_points({1, 32, 128, 256, 512, 1024});
 #endif
 ```
@@ -175,12 +175,14 @@ while(model->_running){
     auto [seqs, is_prefill] = ...;
     if(seqs.empty()) continue;
 
-    PROFILE_BEGIN(is_prefill);
     auto block_ids = model->prepare_block_table(seqs);
     Qwen2Pack pack = is_prefill ? model->prepare_prefill(seqs) : model->prepare_decode(seqs);
+
+    PROFILE_BEGIN(is_prefill);
     std::vector<int64_t> token_ids = model->forward(pack, block_ids);
-    model->_scheduler->postprocess(seqs, token_ids, is_prefill);
     PROFILE_END(is_prefill ? 0 : ++decode_step);
+
+    model->_scheduler->postprocess(seqs, token_ids, is_prefill);
 }
 ```
 

@@ -58,7 +58,7 @@ OpProfiler::instance().register_sequence("qwen2", 28,
       "swiglu", "linear:down_proj", "add:mlp",
     },
     { // pre_ops (before layer loop): "embed" },
-    { // post_ops (after layer loop): "out_norm", "linear:lm_head", "top_k" }
+    { // post_ops (after layer loop): "embed:gather", "out_norm", "linear:lm_head", "top_k" }
 );
 ```
 
@@ -96,7 +96,7 @@ while (running) {
 
 ### 输出
 
-模型析构时自动调用 `dump_json("profile_qwen2.json")`，内容：
+`Qwen2::stop()` 中调用 `OpProfiler::instance().dump_json("profile_qwen2.json")`。内容：
 
 ```json
 {
