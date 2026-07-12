@@ -76,6 +76,7 @@ private:
     std::shared_mutex _hash_lock;
     // 事件循环
     bool _running;
+    bool _profiled = false;
     std::thread _worker;
 
 public:
