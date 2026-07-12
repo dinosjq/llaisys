@@ -1,18 +1,20 @@
 # Inference Operator Profiling
 
-端到端推理 pipeline 的逐算子耗时 profiling 系统。
+端到端推理 pipeline 的逐算子耗时 profiling 系统。每次运行 profile 一个 prompt。
 
 ## 快速开始
 
 ```bash
 xmake f --nv-gpu=y --profiling=y -c && xmake && xmake install
-pip install -e ./python/
 
-# 单条 prompt
-python test/profile/profile_model.py --model <path> --prompt-index 0
-
-# 全部 prompt
+# 默认中等长度 prompt
 python test/profile/profile_model.py --model <path>
+
+# 指定输入长度档位
+python test/profile/profile_model.py --model <path> --prompt-len 500
+
+# 自定义 prompt
+python test/profile/profile_model.py --model <path> --prompt "Explain quantum computing."
 ```
 
 ## CLI
@@ -20,54 +22,29 @@ python test/profile/profile_model.py --model <path>
 | 参数 | 默认值 | 说明 |
 |---|---|---|
 | `--model` | (required) | 模型路径 |
-| `--max_steps` | 1024 | 每 prompt 最大生成 token 数 |
-| `--prompt-index` | -1 (全部) | 指定单条 prompt (0-4) |
+| `--max_steps` | 1025 | 最大生成 token 数 |
+| `--prompt-len` | 50 | 预设 prompt 长度档位 (10/50/100/500) |
+| `--prompt` | — | 自定义 prompt（覆盖 --prompt-len） |
 
 ## 采样点
 
-在 decode step {0(prefill), 1, 32, 128, 256, 512, 1024} 处自动快照。
+decode step: {0(prefill), 1, 32, 64, 128, 256, 512, 1024}
 
 ## 输出格式
 
-终端输出（聚合到 operator 级别，28 层求和）：
-
 ```
-  period: prefill   step: 0
+  input_token: 23   output_token: 32   elapsed: 1.84s
+  throughput: 17.4 tok/s   TTFT: 258.50 ms   TPOT: 57.46 ms
 
-    operator          avg_ms    count    total_ms
-    ─────────────────────────────────────────────
-    embed               0.16        1       0.16
-    attn_norm           2.82       28      79.06
-    linear:k_proj       5.82       28     163.06
-    top_k               4.54        1       4.54
+  period: prefill   step: 0   total_ms: 258.50
+    operator          avg_ms    count    total_ms     %
+    ───────────────────────────────────────────────────
+    linear:k_proj       4.23       28      118.48   45.8
+    attn_norm           3.11       28       87.21   33.7
     ...
-    ─────────────────────────────────────────────
-    total                                    295.93
-
-  period: decode   step: 1
-
-    operator          avg_ms    count    total_ms
-    ─────────────────────────────────────────────
-    attn_norm           0.08       28       2.29
-    ...
-    ─────────────────────────────────────────────
-    total                                     52.06
 ```
 
-- `count` = 调用次数（28 = 28 层求和，1 = 单次调用）
-- `avg_ms` = total_ms / count
-- `total_ms` = 该 operator 在当前 step 的总耗时
-
-JSON 同时写入 `profile_qwen2.json`。
-
-## Prompt
-
-5 条候选，覆盖短/中/长：
-
-| index | 类型 | 内容 |
-|---|---|---|
-| 0 | short | What is the capital of France? |
-| 1 | medium | Explain how backpropagation works... |
-| 2 | long | You are designing a GPU inference system... |
-| 3 | code | Write a Python function to compute Fibonacci... |
-| 4 | medium | Summarize the transformer architecture... |
+- `throughput` / `TPOT` 基于 wall-clock `time.perf_counter()`
+- `TTFT` = prefill step total_ms
+- `%` = operator total_ms / step total_ms × 100
+- JSON 输出到 `test/profile/results/profile_YYYYmmdd_HHMMSS.json`
