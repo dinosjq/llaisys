@@ -86,3 +86,4 @@ cache/
 
 # Models
 *.gguf
+profile_qwen2.json
