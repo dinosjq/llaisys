@@ -2,11 +2,13 @@
 #include "../../core/llaisys_core.hpp"
 #include "../../utils.hpp"
 #include "nvidia/kv_cache_move_nvidia.cuh"
+#include "../../profiler/profiler.hpp"
 
 
 namespace llaisys::ops {
 void kv_cache_move(tensor_t out, tensor_t in, tensor_t block_ids, tensor_t cut_idx, tensor_t pos_ids, size_t max_seq_len)
 {
+    PROFILE_STEP();
     // 检查设备一致性
     CHECK_SAME_DEVICE(out, in, block_ids, cut_idx);
     // 检查数据类型一致性

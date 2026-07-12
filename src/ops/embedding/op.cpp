@@ -4,9 +4,11 @@
 #include "../../utils.hpp"
 #include "cpu/embedding_cpu.hpp"
 #include "nvidia/embedding_nvidia.cuh"
+#include "../../profiler/profiler.hpp"
 
 namespace llaisys::ops {
 void embedding(tensor_t out, tensor_t index, tensor_t weight, int padding) {
+    PROFILE_STEP();
     // 检查设备一致性
     CHECK_SAME_DEVICE(out, index, weight);
 

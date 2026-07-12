@@ -5,10 +5,12 @@
 
 #include "cpu/paged_attention_cpu.hpp"
 #include "nvidia/paged_attention_nvidia.cuh"
+#include "../../profiler/profiler.hpp"
 
 namespace llaisys::ops {
-void paged_attention(tensor_t attn_val, tensor_t q, tensor_t k_cache, tensor_t v_cache, tensor_t block_ids, tensor_t cut_idx, tensor_t tot_len, size_t max_seq_len, float scale) 
+void paged_attention(tensor_t attn_val, tensor_t q, tensor_t k_cache, tensor_t v_cache, tensor_t block_ids, tensor_t cut_idx, tensor_t tot_len, size_t max_seq_len, float scale)
 {
+    PROFILE_STEP();
     // 检查设备一致性
     CHECK_SAME_DEVICE(attn_val, q, k_cache, v_cache, block_ids, cut_idx, tot_len);
     // 检查数据类型一致性
