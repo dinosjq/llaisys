@@ -15,6 +15,7 @@
 #include "../ops/top_k/op.hpp"
 #include "../config.hpp"
 #include "../ops/kv_cache_move/op.hpp"
+#include "../profiler/profiler.hpp"
 
 #include <algorithm>
 #include <numeric>
@@ -170,6 +171,18 @@ Qwen2::Qwen2(Qwen2Meta meta,
     this->_scheduler = std::make_shared<Scheduler>(token_num, block_num, BATCH_MAX_TOKEN_NUM, BATCH_MAX_SEQ_NUM, meta.end_token);
     // 启动时间循环
     this->start();
+
+#ifdef LLAISYS_ENABLE_PROFILING
+    OpProfiler::instance().register_sequence("qwen2", nlayer,
+        {"attn_norm", "linear:q_proj", "linear:k_proj", "linear:v_proj",
+         "rope:q", "rope:k", "kv_cache_move:k", "kv_cache_move:v",
+         "paged_attn", "linear:o_proj", "add:attn",
+         "mlp_norm", "linear:gate_proj", "linear:up_proj",
+         "swiglu", "linear:down_proj", "add:mlp"},
+        {"embed"},
+        {"embed:gather", "out_norm", "linear:lm_head", "top_k"});
+    OpProfiler::instance().set_sample_points({1, 32, 128, 256, 512, 1024});
+#endif
 }
 
 Qwen2::~Qwen2() {
@@ -189,6 +202,7 @@ void Qwen2::start(){
     }
     // 事件循环方法
     auto loop = [](Qwen2 *model)->void{
+        int decode_step = 0;
         while(model->_running){
             // 先根据调度器的调度方法决定本次计算的序列
             auto [seqs, is_prefill] = model->_scheduler->schedule();
@@ -198,7 +212,9 @@ void Qwen2::start(){
             // 根据是 prefill 还是 decode 分别进行预处理
             Qwen2Pack pack = is_prefill ? model->prepare_prefill(seqs) : model->prepare_decode(seqs);
             // 执行一次批处理前向传播
+            PROFILE_BEGIN(is_prefill);
             std::vector<int64_t> token_ids = model->forward(pack, block_ids);
+            PROFILE_END(is_prefill ? 0 : ++decode_step);
             // 后处理更新kv cache信息
             model->_scheduler->postprocess(seqs, token_ids, is_prefill);
         }
@@ -211,6 +227,9 @@ void Qwen2::start(){
 // 暂停事件循环
 void Qwen2::stop(){
     this->_running = false;
+#ifdef LLAISYS_ENABLE_PROFILING
+    OpProfiler::instance().dump_json("profile_qwen2.json");
+#endif
 }
 
 // 请求方法
