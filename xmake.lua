@@ -13,6 +13,16 @@ option("nv-gpu")
     set_description("Whether to compile implementations for Nvidia GPU")
 option_end()
 
+option("profiling")
+    set_default(false)
+    set_showmenu(true)
+    set_description("Enable operator-level profiling (CUDA events)")
+option_end()
+
+if has_config("profiling") then
+    add_defines("LLAISYS_ENABLE_PROFILING")
+end
+
 if has_config("nv-gpu") then
     add_defines("ENABLE_NVIDIA_API")
     includes("xmake/nvidia.lua")
@@ -67,6 +77,7 @@ target("llaisys-core")
     add_files("src/kv_cache/*.cpp")
     add_files("src/scheduler/*.cpp")
     add_files("src/models/*.cpp")
+    add_files("src/profiler/*.cpp")
 
     on_install(function (target) end)
 target_end()
