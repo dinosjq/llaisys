@@ -22,9 +22,10 @@ public:
     // Event loop hooks
     void begin_forward(bool is_prefill);
     void end_forward(int decode_step);
+
+#ifdef LLAISYS_ENABLE_PROFILING
     bool active() const { return _active; }
 
-    // RAII per-operator timer (replaces per-boundary events)
     struct ScopedTimer {
         OpProfiler* prof;
         size_t pos;
@@ -32,8 +33,15 @@ public:
         ScopedTimer(OpProfiler& p);
         ~ScopedTimer();
     };
+#else
+    bool active() const { return false; }
 
-    // Called from Qwen2::stop()
+    struct ScopedTimer {
+        ScopedTimer(OpProfiler&) {}
+        ~ScopedTimer() {}
+    };
+#endif
+
     void dump_json(const char* path);
 
 private:
@@ -58,15 +66,21 @@ private:
     };
     std::vector<TimerEntry> _scoped_timers;
 
+    // Pre-allocated event pool — populated at registration, recycled per-pass
+    std::vector<cudaEvent_t> _start_pool;
+    std::vector<cudaEvent_t> _end_pool;
+    size_t _pool_idx = 0;
+
     size_t _step_counter = 0;
     bool _active = false;
     bool _is_prefill = false;
 
     struct OpSnapshot {
         std::string name;
-        int layer;
         float elapsed_ms;
+        int layer = -1;
     };
+
     struct ForwardSnapshot {
         int step;
         std::string phase;

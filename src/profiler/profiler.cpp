@@ -49,22 +49,25 @@ void OpProfiler::set_sample_points(const std::vector<int>& points) {
 void OpProfiler::_build_op_sequence() {
     _op_names.clear();
 
-    // Pre-ops (e.g. "embed")
-    for (auto& name : _pre_ops) {
+    for (auto& name : _pre_ops)
         _op_names.push_back(name);
-    }
-
-    // Per-layer ops repeated for each layer
-    for (size_t l = 0; l < _layers; ++l) {
-        for (auto& name : _per_layer_ops) {
+    for (size_t l = 0; l < _layers; ++l)
+        for (auto& name : _per_layer_ops)
             _op_names.push_back(name);
-        }
-    }
-
-    // Post-ops (e.g. "embed:gather", "out_norm", "linear:lm_head", "top_k")
-    for (auto& name : _post_ops) {
+    for (auto& name : _post_ops)
         _op_names.push_back(name);
+
+#ifdef LLAISYS_ENABLE_PROFILING
+    // Pre-allocate event pool (one start+end pair per op in sequence)
+    for (auto& e : _start_pool) cudaEventDestroy(e);
+    for (auto& e : _end_pool)   cudaEventDestroy(e);
+    _start_pool.resize(_op_names.size());
+    _end_pool.resize(_op_names.size());
+    for (size_t i = 0; i < _op_names.size(); ++i) {
+        cudaEventCreate(&_start_pool[i]);
+        cudaEventCreate(&_end_pool[i]);
     }
+#endif
 }
 
 int OpProfiler::_get_layer_for_op_index(size_t idx) const {
@@ -111,24 +114,21 @@ void OpProfiler::begin_forward(bool is_prefill) {
 
     _is_prefill = is_prefill;
 
-    // Clear scoped timers from previous forward pass
-    for (auto& t : _scoped_timers) {
-        cudaEventDestroy(t.start_ev);
-        cudaEventDestroy(t.end_ev);
-    }
+    // Clear scoped timers and recycle events to pool
     _scoped_timers.clear();
+    _pool_idx = 0;
 }
 
-// Per-operator ScopedTimer — replaces per-boundary event recording
+// Per-operator ScopedTimer — uses pre-allocated event pool (zero cudaEventCreate)
 OpProfiler::ScopedTimer::ScopedTimer(OpProfiler& p) : prof(&p) {
-    if (!p._active || p._op_names.empty()) {
+    if (!p._active || p._op_names.empty() || p._pool_idx >= p._start_pool.size()) {
         prof = nullptr;
         return;
     }
     pos = p._step_counter++;
-
-    cudaEventCreate(&start_ev);
-    cudaEventCreate(&end_ev);
+    start_ev = p._start_pool[p._pool_idx];
+    end_ev   = p._end_pool[p._pool_idx];
+    p._pool_idx++;
 
     cudaStream_t stream = p._get_stream();
     if (stream) {
@@ -144,7 +144,6 @@ OpProfiler::ScopedTimer::~ScopedTimer() {
         cudaEventRecord(end_ev, stream);
     }
 
-    // Store for later sync+elapsed computation
     prof->_scoped_timers.push_back({pos, start_ev, end_ev});
 }
 
@@ -267,8 +266,6 @@ void OpProfiler::dump_json(const char* path) {
 // No-op stubs
 void OpProfiler::begin_forward(bool) {}
 void OpProfiler::end_forward(int) {}
-OpProfiler::ScopedTimer::ScopedTimer(OpProfiler&) {}
-OpProfiler::ScopedTimer::~ScopedTimer() {}
 void OpProfiler::dump_json(const char*) {}
 
 #endif // LLAISYS_ENABLE_PROFILING
