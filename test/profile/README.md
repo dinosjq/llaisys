@@ -44,11 +44,22 @@ decode step: {0(prefill), 1, 32, 64, 128, 256, 512, 1024}
     linear:k_proj       0.32       28        8.89    3.5
     ...
 
-  period: decode   step: 128   total_ms: 51.82
+  period: decode   step: 1   total_ms: 49.60
     operator          avg_ms    count    total_ms     %
     ───────────────────────────────────────────────────
-    paged_attn          0.15       28        4.17    8.1
+    linear:gate_proj    0.19       28        5.28   10.6
+    linear:down_proj    0.19       28        5.23   10.5
+    linear:up_proj      0.18       28        5.10   10.3
     ...
+
+  period: decode   step: 32   total_ms: 50.71
+    ...
+    paged_attn          0.10       28        2.92    5.8
+    ...
+
+  period: decode   step: 128   total_ms: 51.82
+    ...
+    paged_attn          0.15       28        4.17    8.1  ← KV cache 增长
 ```
 
 - `throughput` / `TPOT` 基于 wall-clock `time.perf_counter()`（非采样 step 零开销）
