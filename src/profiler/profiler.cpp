@@ -253,7 +253,8 @@ void OpProfiler::dump_json(const char* path) {
             [](auto& a, auto& b) { return std::get<1>(a) > std::get<1>(b); });
 
         // ── console header ──────────────────────────
-        std::cout << "\n  period: " << snap.phase << "   step: " << snap.step << "\n\n";
+        std::cout << "\n  period: " << snap.phase << "   step: " << snap.step
+                  << "   total_ms: " << std::fixed << std::setprecision(2) << total_ms << "\n\n";
         std::cout << "    operator          avg_ms    count    total_ms\n";
         std::cout << "    ─────────────────────────────────────────────\n";
 

@@ -28,14 +28,11 @@ def main():
     for i, prompt in enumerate(PROMPTS):
         if args.prompt_index >= 0 and i != args.prompt_index:
             continue
-        print(f"  Prompt {i+1}/{len(PROMPTS)}: {prompt[:60]}...")
         input_ids = tokenizer.encode(prompt)
         tokens = model.generate(input_ids, max_new_tokens=args.max_steps)
-        print(f"    Generated {len(tokens) - len(input_ids)} tokens")
 
     # Explicit close → C++ destructor → stop() → dump_json()
     model.close()
-    print("Profile auto-saved to profile_qwen2.json")
 
 if __name__ == "__main__":
     main()
