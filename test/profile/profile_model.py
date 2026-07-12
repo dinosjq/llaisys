@@ -17,7 +17,7 @@ PROMPTS = [
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", required=True)
-    parser.add_argument("--max_steps", default=1024, type=int)
+    parser.add_argument("--max_steps", default=1025, type=int)
     parser.add_argument("--prompt-index", default=-1, type=int,
                         help="Run single prompt by index (0-4), default runs all")
     args = parser.parse_args()
