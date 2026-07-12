@@ -1,11 +1,14 @@
 #include "profiler.hpp"
 
+#include <algorithm>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <map>
 #include <string>
-#include <algorithm>
+#include <sys/stat.h>
+#include <tuple>
+#include <vector>
 
 #ifdef LLAISYS_ENABLE_PROFILING
 #include "../core/context/context.hpp"
@@ -212,6 +215,14 @@ void OpProfiler::_snapshot(int decode_step) {
 }
 
 void OpProfiler::dump_json(const char* path) {
+    // Ensure parent directory exists
+    std::string p(path);
+    auto pos = p.find_last_of('/');
+    if (pos != std::string::npos) {
+        std::string dir = p.substr(0, pos);
+        mkdir(dir.c_str(), 0755);
+    }
+
     std::ofstream f(path);
     if (!f.is_open()) {
         std::cerr << "OpProfiler: cannot write to " << path << std::endl;
@@ -223,15 +234,8 @@ void OpProfiler::dump_json(const char* path) {
     for (size_t s = 0; s < _snapshots.size(); ++s) {
         const auto& snap = _snapshots[s];
 
-        // ── console output ──────────────────────────
-        std::cout << "\n  period: " << snap.phase;
-        if (snap.step >= 0)
-            std::cout << "   step: " << snap.step;
-        std::cout << "\n\n    operator          avg_ms    count    total_ms\n";
-        std::cout << "    ─────────────────────────────────────────────\n";
-
-        // aggregate by operator name
-        std::map<std::string, std::pair<double, int>> agg;  // name -> {sum_ms, count}
+        // ── aggregate by operator name ─────────────
+        std::map<std::string, std::pair<double, int>> agg;
         for (const auto& op : snap.ops) {
             auto& entry = agg[op.name];
             entry.first  += op.elapsed_ms;
@@ -239,31 +243,42 @@ void OpProfiler::dump_json(const char* path) {
         }
 
         double total_ms = 0.0;
-        for (const auto& [name, pair] : agg) {
-            double sum = pair.first;
-            int    cnt = pair.second;
-            total_ms += sum;
+        for (const auto& [_, pair] : agg) total_ms += pair.first;
+
+        // ── sort by total_ms descending ────────────
+        std::vector<std::tuple<std::string, double, int, double>> sorted;
+        for (const auto& [name, pair] : agg)
+            sorted.emplace_back(name, pair.first, pair.second, pair.first);
+        std::sort(sorted.begin(), sorted.end(),
+            [](auto& a, auto& b) { return std::get<1>(a) > std::get<1>(b); });
+
+        // ── console header ──────────────────────────
+        std::cout << "\n  period: " << snap.phase << "   step: " << snap.step << "\n\n";
+        std::cout << "    operator          avg_ms    count    total_ms\n";
+        std::cout << "    ─────────────────────────────────────────────\n";
+
+        for (const auto& [name, sum, cnt, _] : sorted) {
             std::cout << "    " << std::left  << std::setw(20) << name
                       << std::right << std::setw(8)  << std::fixed << std::setprecision(2) << (sum / cnt)
                       << std::right << std::setw(8)  << cnt
                       << std::right << std::setw(12) << sum << "\n";
         }
         std::cout << "    ─────────────────────────────────────────────\n";
-        std::cout << "    total" << std::setw(42) << std::right << total_ms << "\n\n";
+        std::cout << "    total" << std::setw(42) << std::right << total_ms << "\n";
 
-        // ── JSON (aggregated) ──────────────────────
+        // ── JSON (aggregated, sorted) ──────────────
         f << "    {\n";
         f << "      \"phase\": \"" << snap.phase << "\",\n";
         f << "      \"step\": " << snap.step << ",\n";
         f << "      \"total_ms\": " << total_ms << ",\n";
         f << "      \"ops\": [\n";
-        size_t n = 0;
-        for (const auto& [name, pair] : agg) {
+        for (size_t i = 0; i < sorted.size(); ++i) {
+            const auto& [name, sum, cnt, _] = sorted[i];
             f << "        {\"name\": \"" << name
-              << "\", \"avg_ms\": " << (pair.first / pair.second)
-              << ", \"count\": " << pair.second
-              << ", \"total_ms\": " << pair.first << "}";
-            if (++n < agg.size()) f << ",";
+              << "\", \"avg_ms\": " << (sum / cnt)
+              << ", \"count\": " << cnt
+              << ", \"total_ms\": " << sum << "}";
+            if (i + 1 < sorted.size()) f << ",";
             f << "\n";
         }
         f << "      ]\n    }";

@@ -235,7 +235,7 @@ void Qwen2::stop(){
     this->_running = false;
 #ifdef LLAISYS_ENABLE_PROFILING
     if (!_profiled) {
-        OpProfiler::instance().dump_json("profile_qwen2.json");
+        OpProfiler::instance().dump_json("test/profile/results/profile_qwen2.json");
         _profiled = true;
     }
 #endif
