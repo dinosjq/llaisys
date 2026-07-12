@@ -36,15 +36,24 @@ decode step: {0(prefill), 1, 32, 64, 128, 256, 512, 1024}
   input_token: 23   output_token: 32   elapsed: 1.84s
   throughput: 17.4 tok/s   TTFT: 258.50 ms   TPOT: 57.46 ms
 
-  period: prefill   step: 0   total_ms: 258.50
+  period: prefill   step: 0   total_ms: 253.81
     operator          avg_ms    count    total_ms     %
     ───────────────────────────────────────────────────
-    linear:k_proj       4.23       28      118.48   45.8
-    attn_norm           3.11       28       87.21   33.7
+    linear:q_proj       4.17       28      116.75   46.0
+    embed              82.44        1       82.44   32.5
+    linear:k_proj       0.32       28        8.89    3.5
+    ...
+
+  period: decode   step: 128   total_ms: 51.82
+    operator          avg_ms    count    total_ms     %
+    ───────────────────────────────────────────────────
+    paged_attn          0.15       28        4.17    8.1
     ...
 ```
 
-- `throughput` / `TPOT` 基于 wall-clock `time.perf_counter()`
+- `throughput` / `TPOT` 基于 wall-clock `time.perf_counter()`（非采样 step 零开销）
+- per-step `total_ms` 含 CUDA event 测量开销，用于**相对瓶颈分析**
+- 绝对值以 `benchmark_infer.py` 的 profiling=n 结果为准
 - `TTFT` = prefill step total_ms
 - `%` = operator total_ms / step total_ms × 100
 - JSON 输出到 `test/profile/results/profile_YYYYmmdd_HHMMSS.json`
