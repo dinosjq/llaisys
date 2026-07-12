@@ -122,13 +122,18 @@ void OpProfiler::begin_forward(bool is_prefill) {
         return;
 
     _step_counter = 0;
-    _active = true;
+
+    // Prefill always sampled. Decode: _active set by previous end_forward
+    if (is_prefill)
+        _active = true;
+
     _is_prefill = is_prefill;
 
-    // Ensure event pool is large enough for the sequence
+    if (!_active)
+        return;
+
     _ensure_events();
 
-    // Record the first event (start of forward pass / first op)
     cudaStream_t stream = _get_stream();
     if (stream && !_events.empty()) {
         cudaEventRecord(_events[0], stream);
@@ -181,8 +186,14 @@ void OpProfiler::end_forward(int decode_step) {
             _sample_points.begin(), _sample_points.end(), decode_step);
     }
 
-    if (!should_sample)
+    if (!should_sample) {
+        // Check if NEXT decode step should be sampled (prefetch _active)
+        if (!_is_prefill && !_sample_points.empty()) {
+            _active = std::binary_search(
+                _sample_points.begin(), _sample_points.end(), decode_step + 1);
+        }
         return;
+    }
 
     // Synchronize on the last recorded event to ensure all GPU work is done
     if (stream && _step_counter < _events.size()) {
@@ -190,6 +201,12 @@ void OpProfiler::end_forward(int decode_step) {
     }
 
     _snapshot(decode_step);
+
+    // Check if NEXT decode step should be sampled
+    if (!_is_prefill && !_sample_points.empty()) {
+        _active = std::binary_search(
+            _sample_points.begin(), _sample_points.end(), decode_step + 1);
+    }
 }
 
 void OpProfiler::_snapshot(int decode_step) {
