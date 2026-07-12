@@ -202,7 +202,9 @@ void Qwen2::start(){
     }
     // 事件循环方法
     auto loop = [](Qwen2 *model)->void{
+#ifdef LLAISYS_ENABLE_PROFILING
         int decode_step = 0;
+#endif
         while(model->_running){
             // 先根据调度器的调度方法决定本次计算的序列
             auto [seqs, is_prefill] = model->_scheduler->schedule();
@@ -212,9 +214,13 @@ void Qwen2::start(){
             // 根据是 prefill 还是 decode 分别进行预处理
             Qwen2Pack pack = is_prefill ? model->prepare_prefill(seqs) : model->prepare_decode(seqs);
             // 执行一次批处理前向传播
+#ifdef LLAISYS_ENABLE_PROFILING
             PROFILE_BEGIN(is_prefill);
             std::vector<int64_t> token_ids = model->forward(pack, block_ids);
             PROFILE_END(is_prefill ? 0 : ++decode_step);
+#else
+            std::vector<int64_t> token_ids = model->forward(pack, block_ids);
+#endif
             // 后处理更新kv cache信息
             model->_scheduler->postprocess(seqs, token_ids, is_prefill);
         }
