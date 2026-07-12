@@ -154,12 +154,19 @@ void OpProfiler::step() {
 }
 
 void OpProfiler::end_forward(int decode_step) {
-    if (!_active)
-        return;
-    _active = false;
+    // Compute whether NEXT forward pass should be sampled
+    bool next_active = false;
+    if (!_sample_points.empty()) {
+        int next_step = _is_prefill ? 1 : decode_step + 1;
+        next_active = std::binary_search(
+            _sample_points.begin(), _sample_points.end(), next_step);
+    }
 
-    if (_op_names.empty())
+    if (!_active) {
+        _active = next_active;
         return;
+    }
+    _active = false;
 
     size_t n_ops = _op_names.size();
 
@@ -187,11 +194,7 @@ void OpProfiler::end_forward(int decode_step) {
     }
 
     if (!should_sample) {
-        // Check if NEXT decode step should be sampled (prefetch _active)
-        if (!_is_prefill && !_sample_points.empty()) {
-            _active = std::binary_search(
-                _sample_points.begin(), _sample_points.end(), decode_step + 1);
-        }
+        _active = next_active;
         return;
     }
 
@@ -201,12 +204,7 @@ void OpProfiler::end_forward(int decode_step) {
     }
 
     _snapshot(decode_step);
-
-    // Check if NEXT decode step should be sampled
-    if (!_is_prefill && !_sample_points.empty()) {
-        _active = std::binary_search(
-            _sample_points.begin(), _sample_points.end(), decode_step + 1);
-    }
+    _active = next_active;
 }
 
 void OpProfiler::_snapshot(int decode_step) {

@@ -31,7 +31,7 @@ def format_table(profile: dict, input_tok: int, output_tok: int,
                  elapsed_s: float) -> str:
     lines = []
     prefill_ms = profile["snapshots"][0]["total_ms"]
-    throughput = output_tok / elapsed_s if elapsed_s > 0 else 0
+    throughput = (input_tok + output_tok) / elapsed_s if elapsed_s > 0 else 0
     tpot_ms = elapsed_s * 1000 / output_tok if output_tok > 0 else 0
 
     lines.append(
