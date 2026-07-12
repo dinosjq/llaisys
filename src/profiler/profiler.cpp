@@ -92,24 +92,6 @@ int OpProfiler::_get_layer_for_op_index(size_t idx) const {
 // ============================================================
 #ifdef LLAISYS_ENABLE_PROFILING
 
-void OpProfiler::_ensure_events() {
-    // We need one event per op boundary: N ops + 1 final event = N+1 events
-    size_t needed = _op_names.size() + 1;
-    if (_events.size() >= needed)
-        return;
-
-    // Destroy old events before resizing
-    for (auto e : _events) {
-        if (e) cudaEventDestroy(e);
-    }
-    _events.clear();
-    _events.resize(needed, nullptr);
-
-    for (size_t i = 0; i < needed; ++i) {
-        cudaEventCreate(&_events[i]);
-    }
-}
-
 cudaStream_t OpProfiler::_get_stream() {
     auto& runtime = llaisys::core::context().runtime();
     if (runtime.deviceType() != LLAISYS_DEVICE_NVIDIA)
@@ -129,32 +111,44 @@ void OpProfiler::begin_forward(bool is_prefill) {
 
     _is_prefill = is_prefill;
 
-    if (!_active)
+    // Clear scoped timers from previous forward pass
+    for (auto& t : _scoped_timers) {
+        cudaEventDestroy(t.start_ev);
+        cudaEventDestroy(t.end_ev);
+    }
+    _scoped_timers.clear();
+}
+
+// Per-operator ScopedTimer — replaces per-boundary event recording
+OpProfiler::ScopedTimer::ScopedTimer(OpProfiler& p) : prof(&p) {
+    if (!p._active || p._op_names.empty()) {
+        prof = nullptr;
         return;
+    }
+    pos = p._step_counter++;
 
-    _ensure_events();
+    cudaEventCreate(&start_ev);
+    cudaEventCreate(&end_ev);
 
-    cudaStream_t stream = _get_stream();
-    if (stream && !_events.empty()) {
-        cudaEventRecord(_events[0], stream);
+    cudaStream_t stream = p._get_stream();
+    if (stream) {
+        cudaEventRecord(start_ev, stream);
     }
 }
 
-void OpProfiler::step() {
-    if (!_active || _op_names.empty())
-        return;
+OpProfiler::ScopedTimer::~ScopedTimer() {
+    if (!prof || !prof->_active) return;
 
-    ++_step_counter;
-
-    // Record an event at this step boundary (end of previous op, start of next)
-    cudaStream_t stream = _get_stream();
-    if (stream && _step_counter < _events.size()) {
-        cudaEventRecord(_events[_step_counter], stream);
+    cudaStream_t stream = prof->_get_stream();
+    if (stream) {
+        cudaEventRecord(end_ev, stream);
     }
+
+    // Store for later sync+elapsed computation
+    prof->_scoped_timers.push_back({pos, start_ev, end_ev});
 }
 
 void OpProfiler::end_forward(int decode_step) {
-    // Compute whether NEXT forward pass should be sampled
     bool next_active = false;
     if (!_sample_points.empty()) {
         int next_step = _is_prefill ? 1 : decode_step + 1;
@@ -168,39 +162,20 @@ void OpProfiler::end_forward(int decode_step) {
     }
     _active = false;
 
-    size_t n_ops = _op_names.size();
-
-    // Guard: if fewer step() calls than ops, clamp to what we have
-    if (_step_counter > n_ops)
-        _step_counter = n_ops;
-
-    // Record final event (end of last op)
-    cudaStream_t stream = _get_stream();
-    if (stream && _step_counter < _events.size()) {
-        cudaEventRecord(_events[_step_counter], stream);
-    }
-
-    // Determine whether to sample this step
-    bool should_sample = false;
-    if (_is_prefill) {
-        // Always capture prefill (step 0) for diagnostics
-        should_sample = true;
-    } else if (_sample_points.empty()) {
-        // No filter configured → capture every decode step
-        should_sample = true;
-    } else {
-        should_sample = std::binary_search(
-            _sample_points.begin(), _sample_points.end(), decode_step);
-    }
+    bool should_sample = _is_prefill || _sample_points.empty() ||
+        std::binary_search(_sample_points.begin(), _sample_points.end(), decode_step);
 
     if (!should_sample) {
         _active = next_active;
         return;
     }
 
-    // Synchronize on the last recorded event to ensure all GPU work is done
-    if (stream && _step_counter < _events.size()) {
-        cudaEventSynchronize(_events[_step_counter]);
+    // Sync all scoped timers
+    cudaStream_t stream = _get_stream();
+    if (stream) {
+        for (auto& t : _scoped_timers) {
+            cudaEventSynchronize(t.end_ev);
+        }
     }
 
     _snapshot(decode_step);
@@ -212,16 +187,14 @@ void OpProfiler::_snapshot(int decode_step) {
     snap.step = decode_step;
     snap.phase = _is_prefill ? "prefill" : "decode";
 
-    size_t n_ops = _op_names.size();
-
-    for (size_t i = 0; i < n_ops && i + 1 < _events.size(); ++i) {
+    for (auto& t : _scoped_timers) {
         float ms = 0.0f;
-        cudaEventElapsedTime(&ms, _events[i], _events[i + 1]);
+        cudaEventElapsedTime(&ms, t.start_ev, t.end_ev);
 
         OpSnapshot op;
-        op.name = _op_names[i];
+        op.name = (t.pos < _op_names.size()) ? _op_names[t.pos] : "?";
         op.elapsed_ms = ms;
-        op.layer = _get_layer_for_op_index(i);
+        op.layer = _get_layer_for_op_index(t.pos);
         snap.ops.push_back(std::move(op));
     }
 
@@ -291,12 +264,11 @@ void OpProfiler::dump_json(const char* path) {
 
 #else // !LLAISYS_ENABLE_PROFILING
 
-// No-op stubs — compiled when profiling is disabled.
-// The PROFILE_* macros expand to ((void)0) so these are never called,
-// but they must exist so the class links cleanly.
+// No-op stubs
 void OpProfiler::begin_forward(bool) {}
 void OpProfiler::end_forward(int) {}
-void OpProfiler::step() {}
+OpProfiler::ScopedTimer::ScopedTimer(OpProfiler&) {}
+OpProfiler::ScopedTimer::~ScopedTimer() {}
 void OpProfiler::dump_json(const char*) {}
 
 #endif // LLAISYS_ENABLE_PROFILING

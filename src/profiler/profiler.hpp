@@ -22,7 +22,16 @@ public:
     // Event loop hooks
     void begin_forward(bool is_prefill);
     void end_forward(int decode_step);
-    void step();
+    bool active() const { return _active; }
+
+    // RAII per-operator timer (replaces per-boundary events)
+    struct ScopedTimer {
+        OpProfiler* prof;
+        size_t pos;
+        cudaEvent_t start_ev, end_ev;
+        ScopedTimer(OpProfiler& p);
+        ~ScopedTimer();
+    };
 
     // Called from Qwen2::stop()
     void dump_json(const char* path);
@@ -43,8 +52,12 @@ private:
     std::vector<int> _sample_points;
 
 #ifdef LLAISYS_ENABLE_PROFILING
-    // CUDA event pool and snapshot storage
-    std::vector<cudaEvent_t> _events;
+    struct TimerEntry {
+        size_t pos;
+        cudaEvent_t start_ev, end_ev;
+    };
+    std::vector<TimerEntry> _scoped_timers;
+
     size_t _step_counter = 0;
     bool _active = false;
     bool _is_prefill = false;
@@ -61,7 +74,6 @@ private:
     };
     std::vector<ForwardSnapshot> _snapshots;
 
-    void _ensure_events();
     void _snapshot(int decode_step);
     cudaStream_t _get_stream();
 #endif
@@ -70,7 +82,7 @@ private:
 } // namespace llaisys
 
 #ifdef LLAISYS_ENABLE_PROFILING
-  #define PROFILE_STEP()   llaisys::OpProfiler::instance().step()
+  #define PROFILE_STEP()   llaisys::OpProfiler::ScopedTimer _pftimer(llaisys::OpProfiler::instance())
   #define PROFILE_BEGIN(p) llaisys::OpProfiler::instance().begin_forward(p)
   #define PROFILE_END(d)   llaisys::OpProfiler::instance().end_forward(d)
 #else
