@@ -207,16 +207,18 @@ class Qwen2:
 
         """
         if max_new_tokens is None:
-            max_new_tokens = 128
+            max_new_tokens = -1    # -1: use C++ config default (MAX_TOKEN_NUM)
 
+        _loop_bound = max_new_tokens if max_new_tokens >= 0 else 128
         tokens = list(int(t) for t in inputs)
-        for step in range(max_new_tokens):
+        for step in range(_loop_bound):
             arr = (c_int64 * len(tokens))(*tokens)
             next_token = int(
                 LIB_LLAISYS.llaisysQwen2ModelInfer(
                     self._model,
                     arr,
                     c_size_t(len(tokens)),
+                    c_int64(max_new_tokens),
                 )
             )
             tokens.append(next_token)
@@ -227,3 +229,12 @@ class Qwen2:
             if next_token == int(self._meta.end_token):
                 break
         return tokens
+
+    def free_blocks(self):
+        return LIB_LLAISYS.llaisysQwen2GetFreeBlockCount(self._model)
+
+    def used_blocks(self):
+        return LIB_LLAISYS.llaisysQwen2GetUsedBlockCount(self._model)
+
+    def running_count(self):
+        return LIB_LLAISYS.llaisysQwen2GetRunningCount(self._model)
