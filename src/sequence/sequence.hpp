@@ -33,7 +33,7 @@ private:
     std::vector<int64_t> _block_ids;    // 缓存块表
 
 public:
-    Sequence(int64_t *token_ids, size_t ntoken);
+    Sequence(int64_t *token_ids, size_t ntoken, size_t max_ntoken = MAX_TOKEN_NUM);
 
     ~Sequence() = default;
 

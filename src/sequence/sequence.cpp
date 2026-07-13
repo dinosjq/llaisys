@@ -2,7 +2,7 @@
 #include "../kv_cache/block_manager.hpp"
 
 namespace llaisys{
-Sequence::Sequence(int64_t *token_ids, size_t ntoken):
+Sequence::Sequence(int64_t *token_ids, size_t ntoken, size_t max_ntoken):
                     _seq_id(Sequence::counter()),
                     _status(SeqStatus::WAITING),
                     _is_prefill(true),
@@ -11,7 +11,7 @@ Sequence::Sequence(int64_t *token_ids, size_t ntoken):
                     _cached_ntoken(0),
                     _prompt_ntoken(ntoken),
                     _scheduled_ntoken(0),
-                    _max_ntoken(MAX_TOKEN_NUM),
+                    _max_ntoken(max_ntoken),
                     _last_token(token_ids[ntoken - 1])
 {
     this->_token_ids = std::vector<int64_t>(token_ids, token_ids + ntoken);
