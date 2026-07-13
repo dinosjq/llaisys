@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "WebSearch"
+      "WebSearch",
+      "Bash(nvcc --version)",
+      "Bash(nvidia-smi --query-gpu=compute_cap --format=csv,noheader)"
     ]
   }
 }

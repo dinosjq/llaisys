@@ -230,11 +230,4 @@ class Qwen2:
                 break
         return tokens
 
-    def free_blocks(self):
-        return LIB_LLAISYS.llaisysQwen2GetFreeBlockCount(self._model)
 
-    def used_blocks(self):
-        return LIB_LLAISYS.llaisysQwen2GetUsedBlockCount(self._model)
-
-    def running_count(self):
-        return LIB_LLAISYS.llaisysQwen2GetRunningCount(self._model)

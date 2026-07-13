@@ -20,8 +20,9 @@ __global__ void embedding_gather_kernel(T *out, const int64_t *index, const T *w
 
     constexpr size_t VEC = 4;
     const size_t vec_len = len & ~(VEC - 1);
+    const size_t stride = static_cast<size_t>(blockDim.x) * VEC;
 
-    for (size_t i = static_cast<size_t>(threadIdx.x) * VEC; i + (VEC - 1) < vec_len; i += static_cast<size_t>(blockDim.x) * VEC) {
+    for (size_t i = static_cast<size_t>(threadIdx.x) * VEC; i + (VEC - 1) < vec_len; i += stride) {
         const float4 v = llaisys::utils::nvidia::load_4d(src + i);
         llaisys::utils::nvidia::save_4d(dst + i, v);
     }

@@ -2,8 +2,6 @@
 
 #include "../llaisys_tensor.hpp"
 #include "../../models/qwen2.hpp"
-#include "../../kv_cache/block_manager.hpp"
-#include "../../config.hpp"
 
 struct LlaisysQwen2Model {
     llaisys::Qwen2_t qwen2;
@@ -35,23 +33,5 @@ __C {
     int64_t llaisysQwen2ModelInfer(struct LlaisysQwen2Model *model, int64_t *token_ids, size_t ntoken, int64_t max_new_tokens) {
         if (!model || !model->qwen2) return -1;
         return model->qwen2->request(token_ids, ntoken, max_new_tokens);
-    }
-
-    /** 可用 block 数 */
-    size_t llaisysQwen2GetFreeBlockCount(struct LlaisysQwen2Model *model) {
-        if (!model || !model->qwen2) return 0;
-        return model->qwen2->free_block_count();
-    }
-
-    /** 已用 block 数 */
-    size_t llaisysQwen2GetUsedBlockCount(struct LlaisysQwen2Model *model) {
-        if (!model || !model->qwen2) return 0;
-        return model->qwen2->used_block_count();
-    }
-
-    /** 调度器中 running 序列数 */
-    size_t llaisysQwen2GetRunningCount(struct LlaisysQwen2Model *model) {
-        if (!model || !model->qwen2) return 0;
-        return model->qwen2->running_count();
     }
 }

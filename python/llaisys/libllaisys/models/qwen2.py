@@ -68,16 +68,6 @@ def load_qwen2(lib):
     ]
     lib.llaisysQwen2ModelInfer.restype = c_int64
 
-    lib.llaisysQwen2GetFreeBlockCount.argtypes = [llaisysQwen2Model_t]
-    lib.llaisysQwen2GetFreeBlockCount.restype = c_size_t
-
-    lib.llaisysQwen2GetUsedBlockCount.argtypes = [llaisysQwen2Model_t]
-    lib.llaisysQwen2GetUsedBlockCount.restype = c_size_t
-
-    lib.llaisysQwen2GetRunningCount.argtypes = [llaisysQwen2Model_t]
-    lib.llaisysQwen2GetRunningCount.restype = c_size_t
-
-
 __all__ = [
     "LlaisysQwen2Meta",
     "LlaisysQwen2Weights",

@@ -510,20 +510,4 @@ std::vector<int64_t> Qwen2::forward(Qwen2Pack &pack, std::vector<int64_t> &block
     return result;
 }
 
-size_t Qwen2::free_block_count() {
-    return this->_scheduler->block_manager()->free_block_count();
-}
-
-size_t Qwen2::used_block_count() {
-    return this->_scheduler->block_manager()->used_block_count();
-}
-
-size_t Qwen2::running_count() {
-    return this->_scheduler->running_count();
-}
-
-size_t Qwen2::waiting_count() {
-    return this->_scheduler->waiting_count();
-}
-
 }

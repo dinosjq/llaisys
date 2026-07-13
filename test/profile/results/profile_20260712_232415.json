@@ -1,0 +1,92 @@
+{
+  "model": "qwen2",
+  "snapshots": [
+    {
+      "phase": "prefill",
+      "step": 0,
+      "total_ms": 249.074,
+      "ops": [
+        {"name": "linear:q_proj", "avg_ms": 4.56448, "count": 28, "total_ms": 127.805},
+        {"name": "embed", "avg_ms": 66.2405, "count": 1, "total_ms": 66.2405},
+        {"name": "linear:k_proj", "avg_ms": 0.313647, "count": 28, "total_ms": 8.78211},
+        {"name": "linear:gate_proj", "avg_ms": 0.201517, "count": 28, "total_ms": 5.64246},
+        {"name": "linear:up_proj", "avg_ms": 0.198407, "count": 28, "total_ms": 5.55539},
+        {"name": "linear:down_proj", "avg_ms": 0.192221, "count": 28, "total_ms": 5.38218},
+        {"name": "linear:o_proj", "avg_ms": 0.0997246, "count": 28, "total_ms": 2.79229},
+        {"name": "paged_attn", "avg_ms": 0.0935474, "count": 28, "total_ms": 2.61933},
+        {"name": "linear:v_proj", "avg_ms": 0.085152, "count": 28, "total_ms": 2.38426},
+        {"name": "kv_cache_move:v", "avg_ms": 0.0813726, "count": 28, "total_ms": 2.27843},
+        {"name": "attn_norm", "avg_ms": 0.0772663, "count": 28, "total_ms": 2.16346},
+        {"name": "kv_cache_move:k", "avg_ms": 0.0762446, "count": 28, "total_ms": 2.13485},
+        {"name": "rope:q", "avg_ms": 0.0755909, "count": 28, "total_ms": 2.11654},
+        {"name": "linear:lm_head", "avg_ms": 2.1033, "count": 1, "total_ms": 2.1033},
+        {"name": "swiglu", "avg_ms": 0.0749931, "count": 28, "total_ms": 2.09981},
+        {"name": "add:attn", "avg_ms": 0.0744469, "count": 28, "total_ms": 2.08451},
+        {"name": "add:mlp", "avg_ms": 0.074, "count": 28, "total_ms": 2.072},
+        {"name": "rope:k", "avg_ms": 0.0731623, "count": 28, "total_ms": 2.04854},
+        {"name": "mlp_norm", "avg_ms": 0.0723406, "count": 28, "total_ms": 2.02554},
+        {"name": "top_k", "avg_ms": 0.6144, "count": 1, "total_ms": 0.6144},
+        {"name": "out_norm", "avg_ms": 0.064512, "count": 1, "total_ms": 0.064512},
+        {"name": "embed:gather", "avg_ms": 0.064512, "count": 1, "total_ms": 0.064512}
+      ]
+    },
+    {
+      "phase": "decode",
+      "step": 1,
+      "total_ms": 52.1833,
+      "ops": [
+        {"name": "linear:down_proj", "avg_ms": 0.197493, "count": 28, "total_ms": 5.52979},
+        {"name": "linear:gate_proj", "avg_ms": 0.196957, "count": 28, "total_ms": 5.51478},
+        {"name": "linear:up_proj", "avg_ms": 0.194741, "count": 28, "total_ms": 5.45274},
+        {"name": "linear:q_proj", "avg_ms": 0.101514, "count": 28, "total_ms": 2.8424},
+        {"name": "linear:o_proj", "avg_ms": 0.0996823, "count": 28, "total_ms": 2.7911},
+        {"name": "paged_attn", "avg_ms": 0.0890674, "count": 28, "total_ms": 2.49389},
+        {"name": "linear:v_proj", "avg_ms": 0.0840434, "count": 28, "total_ms": 2.35322},
+        {"name": "attn_norm", "avg_ms": 0.083408, "count": 28, "total_ms": 2.33542},
+        {"name": "linear:k_proj", "avg_ms": 0.0827474, "count": 28, "total_ms": 2.31693},
+        {"name": "add:mlp", "avg_ms": 0.0822137, "count": 28, "total_ms": 2.30198},
+        {"name": "kv_cache_move:v", "avg_ms": 0.081472, "count": 28, "total_ms": 2.28122},
+        {"name": "rope:k", "avg_ms": 0.0812331, "count": 28, "total_ms": 2.27453},
+        {"name": "swiglu", "avg_ms": 0.0799806, "count": 28, "total_ms": 2.23946},
+        {"name": "mlp_norm", "avg_ms": 0.0792903, "count": 28, "total_ms": 2.22013},
+        {"name": "add:attn", "avg_ms": 0.0780709, "count": 28, "total_ms": 2.18598},
+        {"name": "rope:q", "avg_ms": 0.0779429, "count": 28, "total_ms": 2.1824},
+        {"name": "kv_cache_move:k", "avg_ms": 0.0765417, "count": 28, "total_ms": 2.14317},
+        {"name": "linear:lm_head", "avg_ms": 1.96029, "count": 1, "total_ms": 1.96029},
+        {"name": "top_k", "avg_ms": 0.56944, "count": 1, "total_ms": 0.56944},
+        {"name": "embed", "avg_ms": 0.068448, "count": 1, "total_ms": 0.068448},
+        {"name": "out_norm", "avg_ms": 0.063488, "count": 1, "total_ms": 0.063488},
+        {"name": "embed:gather", "avg_ms": 0.062464, "count": 1, "total_ms": 0.062464}
+      ]
+    },
+    {
+      "phase": "decode",
+      "step": 32,
+      "total_ms": 50.1459,
+      "ops": [
+        {"name": "linear:down_proj", "avg_ms": 0.191591, "count": 28, "total_ms": 5.36454},
+        {"name": "linear:up_proj", "avg_ms": 0.189085, "count": 28, "total_ms": 5.29437},
+        {"name": "linear:gate_proj", "avg_ms": 0.18733, "count": 28, "total_ms": 5.24525},
+        {"name": "paged_attn", "avg_ms": 0.10376, "count": 28, "total_ms": 2.90528},
+        {"name": "linear:o_proj", "avg_ms": 0.0997726, "count": 28, "total_ms": 2.79363},
+        {"name": "linear:q_proj", "avg_ms": 0.0966766, "count": 28, "total_ms": 2.70694},
+        {"name": "linear:k_proj", "avg_ms": 0.0799417, "count": 28, "total_ms": 2.23837},
+        {"name": "linear:v_proj", "avg_ms": 0.078464, "count": 28, "total_ms": 2.19699},
+        {"name": "rope:k", "avg_ms": 0.0761669, "count": 28, "total_ms": 2.13267},
+        {"name": "add:mlp", "avg_ms": 0.0753886, "count": 28, "total_ms": 2.11088},
+        {"name": "add:attn", "avg_ms": 0.075048, "count": 28, "total_ms": 2.10134},
+        {"name": "rope:q", "avg_ms": 0.0746663, "count": 28, "total_ms": 2.09066},
+        {"name": "swiglu", "avg_ms": 0.0744491, "count": 28, "total_ms": 2.08458},
+        {"name": "attn_norm", "avg_ms": 0.0738629, "count": 28, "total_ms": 2.06816},
+        {"name": "mlp_norm", "avg_ms": 0.0728743, "count": 28, "total_ms": 2.04048},
+        {"name": "kv_cache_move:k", "avg_ms": 0.0724823, "count": 28, "total_ms": 2.0295},
+        {"name": "kv_cache_move:v", "avg_ms": 0.0717486, "count": 28, "total_ms": 2.00896},
+        {"name": "linear:lm_head", "avg_ms": 1.99914, "count": 1, "total_ms": 1.99914},
+        {"name": "top_k", "avg_ms": 0.536576, "count": 1, "total_ms": 0.536576},
+        {"name": "embed", "avg_ms": 0.070336, "count": 1, "total_ms": 0.070336},
+        {"name": "embed:gather", "avg_ms": 0.064672, "count": 1, "total_ms": 0.064672},
+        {"name": "out_norm", "avg_ms": 0.062592, "count": 1, "total_ms": 0.062592}
+      ]
+    }
+  ]
+}

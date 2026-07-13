@@ -38,9 +38,5 @@ __C {
     __export struct LlaisysQwen2Weights *llaisysQwen2ModelWeights(struct LlaisysQwen2Model * model);
 
     __export int64_t llaisysQwen2ModelInfer(struct LlaisysQwen2Model * model, int64_t *token_ids, size_t ntoken, int64_t max_new_tokens);
-
-    __export size_t llaisysQwen2GetFreeBlockCount(struct LlaisysQwen2Model * model);
-    __export size_t llaisysQwen2GetUsedBlockCount(struct LlaisysQwen2Model * model);
-    __export size_t llaisysQwen2GetRunningCount(struct LlaisysQwen2Model * model);
 }
 #endif // LLAISYS_MODELS_QWEN2_H
