@@ -21,27 +21,84 @@ Root cause confirmed in session diagnostics: `docs/superpowers/specs/` (in-conve
 
 ---
 
-### Task 1: Add set_max_token_num() to Sequence
+### Task 1: Add max_ntoken parameter to Sequence constructor
 
 **Files:**
 - Modify: `src/sequence/sequence.hpp`
+- Modify: `src/sequence/sequence.cpp`
 
 **Interfaces:**
-- Produces: `void Sequence::set_max_token_num(size_t v)` — sets `_max_ntoken`
+- Produces: `Sequence(int64_t *token_ids, size_t ntoken, size_t max_ntoken = MAX_TOKEN_NUM)` — default preserves existing behavior
 
-- [ ] **Step 1: Add setter declaration**
+- [ ] **Step 1: Update constructor declaration**
 
-In `src/sequence/sequence.hpp`, after `size_t max_token_num();` add:
+In `src/sequence/sequence.hpp`, change:
 
 ```cpp
-void set_max_token_num(size_t v) { _max_ntoken = v; }
+Sequence(int64_t *token_ids, size_t ntoken);
 ```
 
-- [ ] **Step 2: Commit**
+To:
+
+```cpp
+Sequence(int64_t *token_ids, size_t ntoken, size_t max_ntoken = MAX_TOKEN_NUM);
+```
+
+- [ ] **Step 2: Update constructor implementation**
+
+In `src/sequence/sequence.cpp`, change:
+
+```cpp
+Sequence::Sequence(int64_t *token_ids, size_t ntoken):
+                    _seq_id(Sequence::counter()),
+                    _status(SeqStatus::WAITING),
+                    _is_prefill(true),
+                    _prompt_hash(BlockManager::_compute_hash(token_ids, ntoken, -1)),
+                    _ntoken(ntoken),
+                    _cached_ntoken(0),
+                    _prompt_ntoken(ntoken),
+                    _scheduled_ntoken(0),
+                    _max_ntoken(MAX_TOKEN_NUM),
+                    _last_token(token_ids[ntoken - 1])
+{
+    this->_token_ids = std::vector<int64_t>(token_ids, token_ids + ntoken);
+    this->_block_ids = std::vector<int64_t>();
+}
+```
+
+To:
+
+```cpp
+Sequence::Sequence(int64_t *token_ids, size_t ntoken, size_t max_ntoken):
+                    _seq_id(Sequence::counter()),
+                    _status(SeqStatus::WAITING),
+                    _is_prefill(true),
+                    _prompt_hash(BlockManager::_compute_hash(token_ids, ntoken, -1)),
+                    _ntoken(ntoken),
+                    _cached_ntoken(0),
+                    _prompt_ntoken(ntoken),
+                    _scheduled_ntoken(0),
+                    _max_ntoken(max_ntoken),
+                    _last_token(token_ids[ntoken - 1])
+{
+    this->_token_ids = std::vector<int64_t>(token_ids, token_ids + ntoken);
+    this->_block_ids = std::vector<int64_t>();
+}
+```
+
+- [ ] **Step 3: Build and verify compile**
 
 ```bash
-git add src/sequence/sequence.hpp
-git commit -m "feat: add set_max_token_num() setter to Sequence"
+xmake && xmake install
+```
+
+Expected: `build ok` (default parameter ensures all existing callers compile unchanged)
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add src/sequence/sequence.hpp src/sequence/sequence.cpp
+git commit -m "feat: add max_ntoken parameter to Sequence constructor"
 ```
 
 ---
@@ -55,7 +112,7 @@ git commit -m "feat: add set_max_token_num() setter to Sequence"
 - Modify: `src/models/qwen2.cpp` (Qwen2 impl)
 
 **Interfaces:**
-- Consumes: `Sequence::set_max_token_num()` from Task 1
+- Consumes: `Sequence(token_ids, ntoken, max_ntoken)` with 3-arg constructor from Task 1
 - Produces: `llaisysQwen2ModelInfer(model, token_ids, ntoken, max_new_tokens)` with new 4th arg
 
 - [ ] **Step 1: Update C API header**
@@ -87,7 +144,7 @@ int64_t request(int64_t *token_ids, size_t ntoken, int64_t max_new_tokens);
 
 - [ ] **Step 4: Update Qwen2::request() implementation**
 
-In `src/models/qwen2.cpp`, change `request()` signature to match the header, and in the new-sequence branch:
+In `src/models/qwen2.cpp`, change the new-sequence construction to pass `max_ntoken` via constructor:
 
 ```cpp
 int64_t Qwen2::request(int64_t *token_ids, size_t ntoken, int64_t max_new_tokens){
@@ -106,12 +163,10 @@ int64_t Qwen2::request(int64_t *token_ids, size_t ntoken, int64_t max_new_tokens
             std::unique_lock<std::shared_mutex> write_lk(this->_hash_lock);
             seq = _hash_2_seq.count(hash) ? _hash_2_seq[hash] : nullptr;
             if(seq == nullptr){
-                seq = std::make_shared<Sequence>(token_ids, ntoken);
-                // Set sequence max tokens: -1 → use config default, else prompt + max_new_tokens
                 size_t limit = (max_new_tokens < 0)
-                    ? seq->max_token_num()  // MAX_TOKEN_NUM from config
+                    ? MAX_TOKEN_NUM
                     : (ntoken + static_cast<size_t>(max_new_tokens));
-                seq->set_max_token_num(limit);
+                seq = std::make_shared<Sequence>(token_ids, ntoken, limit);
                 _hash_2_seq[seq->prompt_hash()] = seq;
                 this->_scheduler->add(seq);
             }
@@ -143,7 +198,7 @@ Expected: `build ok`
 
 ```bash
 git add include/llaisys/models/qwen2.h src/llaisys/models/qwen2.cc src/models/qwen2.hpp src/models/qwen2.cpp
-git commit -m "feat: propagate max_new_tokens to Sequence for KV cache cleanup"
+git commit -m "feat: propagate max_new_tokens to Sequence constructor for KV cache cleanup"
 ```
 
 ---
