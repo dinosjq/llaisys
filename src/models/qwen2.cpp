@@ -242,7 +242,7 @@ void Qwen2::stop(){
 }
 
 // 请求方法
-int64_t Qwen2::request(int64_t *token_ids, size_t ntoken){
+int64_t Qwen2::request(int64_t *token_ids, size_t ntoken, int64_t max_new_tokens){
     // 先根据 token_ids 计算 prompt hash 尝试进行最长前缀匹配 查找对应的seq
     long long hash = 0;
     std::shared_ptr<Sequence> seq;
@@ -262,7 +262,8 @@ int64_t Qwen2::request(int64_t *token_ids, size_t ntoken){
             // double-check: 可能其他线程已创建
             seq = _hash_2_seq.count(hash) ? _hash_2_seq[hash] : nullptr;
             if(seq == nullptr){
-                seq = std::make_shared<Sequence>(token_ids, ntoken);
+                size_t limit = (max_new_tokens < 0) ? MAX_TOKEN_NUM : (ntoken + static_cast<size_t>(max_new_tokens));
+                seq = std::make_shared<Sequence>(token_ids, ntoken, limit);
                 _hash_2_seq[seq->prompt_hash()] = seq;
                 this->_scheduler->add(seq);
             }
@@ -507,6 +508,22 @@ std::vector<int64_t> Qwen2::forward(Qwen2Pack &pack, std::vector<int64_t> &block
         result[i] = _random_sample(idx, val, TOP_P);
     }
     return result;
-}   
+}
+
+size_t Qwen2::free_block_count() {
+    return this->_scheduler->block_manager()->free_block_count();
+}
+
+size_t Qwen2::used_block_count() {
+    return this->_scheduler->block_manager()->used_block_count();
+}
+
+size_t Qwen2::running_count() {
+    return this->_scheduler->running_count();
+}
+
+size_t Qwen2::waiting_count() {
+    return this->_scheduler->waiting_count();
+}
 
 }

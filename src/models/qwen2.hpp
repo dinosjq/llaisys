@@ -98,7 +98,7 @@ public:
     void stop();
 
     // 请求
-    int64_t request(int64_t *token_ids, size_t ntoken);
+    int64_t request(int64_t *token_ids, size_t ntoken, int64_t max_new_tokens);
 
     // 填充块表
     std::vector<int64_t> prepare_block_table(const std::vector<seq_t> &seqs);
@@ -112,6 +112,12 @@ public:
 
     // 模型权重
     Qwen2Weights &weights(){ return this->_weights; }
+
+    // KV cache 诊断
+    size_t free_block_count();
+    size_t used_block_count();
+    size_t running_count();
+    size_t waiting_count();
 };
 
 };
