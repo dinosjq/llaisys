@@ -3,7 +3,7 @@ from pathlib import Path
 import json
 import numpy as np
 import safetensors
-from ctypes import c_int64, c_size_t, c_int, c_void_p, POINTER, byref
+from ctypes import c_int64, c_size_t, c_int, c_float, c_void_p, POINTER, byref
 
 from ..libllaisys import (
     LIB_LLAISYS,
@@ -219,8 +219,13 @@ class Qwen2:
                     arr,
                     c_size_t(len(tokens)),
                     c_int64(max_new_tokens),
+                    c_int(top_k),
+                    c_float(top_p),
+                    c_float(temperature),
                 )
             )
+            if next_token == -2:
+                break  # cancelled
             tokens.append(next_token)
             if callback is not None:
                 cont = callback(next_token, step, tuple(tokens))

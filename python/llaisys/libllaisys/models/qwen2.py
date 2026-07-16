@@ -65,8 +65,28 @@ def load_qwen2(lib):
         POINTER(c_int64),
         c_size_t,
         c_int64,
+        c_int,     # top_k
+        c_float,   # top_p
+        c_float,   # temperature
     ]
     lib.llaisysQwen2ModelInfer.restype = c_int64
+
+    lib.llaisysQwen2ModelAbort.argtypes = [
+        llaisysQwen2Model_t,
+        POINTER(c_int64),
+        c_size_t,
+    ]
+    lib.llaisysQwen2ModelAbort.restype = None
+
+    lib.llaisysQwen2ModelGetLogprobs.argtypes = [
+        llaisysQwen2Model_t,
+        POINTER(c_float),  # out_logprobs
+        c_int,             # n_vocab
+        POINTER(c_int),    # out_tokens
+        c_int,             # n_tokens
+        c_int,             # batch_idx
+    ]
+    lib.llaisysQwen2ModelGetLogprobs.restype = c_int
 
 __all__ = [
     "LlaisysQwen2Meta",
