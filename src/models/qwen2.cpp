@@ -307,10 +307,13 @@ void Qwen2::abort(int64_t *token_ids, size_t ntoken) {
     // 避免 "erase 后 request 重建同名序列" 的 TOCTOU 窗口
     // (队列清理与 kv cache 释放由 worker 线程完成)
     this->_scheduler->abort(seq);
-    // 再从 hash 表移除
+    // 再从 hash 表移除 (仅当条目仍指向本序列, 防止误删同 prompt 的新序列)
     {
         std::unique_lock<std::shared_mutex> write_lk(this->_hash_lock);
-        this->_hash_2_seq.erase(seq->prompt_hash());
+        auto it = this->_hash_2_seq.find(seq->prompt_hash());
+        if (it != this->_hash_2_seq.end() && it->second == seq) {
+            this->_hash_2_seq.erase(it);
+        }
     }
 }
 
