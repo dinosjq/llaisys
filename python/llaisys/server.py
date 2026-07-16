@@ -41,13 +41,18 @@ _state = {
 }
 
 
-def _build_prompt(messages) -> str:
-    """Apply Qwen2 chat template to messages."""
-    prompt_text = ""
-    for msg in messages:
-        prompt_text += f"<|im_start|>{msg.role}\n{msg.content}<|im_end|>\n"
-    prompt_text += "<|im_start|>assistant\n"
-    return prompt_text
+def _encode_messages(tokenizer, messages) -> list[int]:
+    """Tokenize chat messages using the model's own chat template."""
+    conv = [{"role": m.role, "content": m.content} for m in messages]
+    try:
+        return tokenizer.apply_chat_template(conv, add_generation_prompt=True, tokenize=True)
+    except Exception:
+        # fallback: generic im_start/im_end template
+        prompt_text = ""
+        for m in messages:
+            prompt_text += f"<|im_start|>{m.role}\n{m.content}<|im_end|>\n"
+        prompt_text += "<|im_start|>assistant\n"
+        return tokenizer.encode(prompt_text, add_special_tokens=False)
 
 
 def create_app(model_path: str, device: str = "nvidia", model_name: str = "qwen2-1.5b") -> FastAPI:
@@ -83,8 +88,7 @@ def create_app(model_path: str, device: str = "nvidia", model_name: str = "qwen2
         model: Qwen2 = _state["model"]
         tokenizer = _state["tokenizer"]
 
-        prompt_text = _build_prompt(req.messages)
-        input_ids = tokenizer.encode(prompt_text, add_special_tokens=False)
+        input_ids = _encode_messages(tokenizer, req.messages)
 
         req_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
         created = int(time.time())
