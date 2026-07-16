@@ -5,6 +5,8 @@
 
 #include <vector>
 #include <memory>
+#include <condition_variable>
+#include <mutex>
 
 namespace llaisys{
 
@@ -31,9 +33,19 @@ private:
     int64_t _last_token;        // 最后一个token信息
     std::vector<int64_t> _token_ids;    // token列表
     std::vector<int64_t> _block_ids;    // 缓存块表
+    // 异步等待 + 取消
+    std::mutex _token_mutex;
+    std::condition_variable _token_cv;
+    bool _cancelled;
+    // per-request 采样参数 (构造时固化)
+    int _top_k;
+    float _top_p;
+    float _temperature;
 
 public:
-    Sequence(int64_t *token_ids, size_t ntoken, size_t max_ntoken = MAX_TOKEN_NUM);
+    Sequence(int64_t *token_ids, size_t ntoken,
+             size_t max_ntoken = MAX_TOKEN_NUM,
+             int top_k = TOP_K, float top_p = TOP_P, float temperature = 1.0f);
 
     ~Sequence() = default;
 
@@ -64,8 +76,19 @@ public:
     std::vector<int64_t> &block_ids();
 
     std::pair<int64_t *, size_t> block(size_t i);
-    void add(int64_t token); 
-    
+    void add(int64_t token);
+
+    // 异步等待 (condvar, 不空转)
+    bool wait_for_token(size_t ntoken);
+    void notify_token();
+    // 取消
+    void cancel();
+    bool cancelled();
+    // 采样参数
+    int top_k();
+    float top_p();
+    float temperature();
+
     // seq_id 计数器
     static size_t counter(){
         static size_t count = 0;
