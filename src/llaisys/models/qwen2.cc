@@ -30,8 +30,23 @@ __C {
     }
 
     /** 一次完整前向传播 */
-    int64_t llaisysQwen2ModelInfer(struct LlaisysQwen2Model *model, int64_t *token_ids, size_t ntoken, int64_t max_new_tokens) {
+    int64_t llaisysQwen2ModelInfer(struct LlaisysQwen2Model *model, int64_t *token_ids, size_t ntoken, int64_t max_new_tokens,
+                                   int top_k, float top_p, float temperature) {
         if (!model || !model->qwen2) return -1;
-        return model->qwen2->request(token_ids, ntoken, max_new_tokens);
+        return model->qwen2->request(token_ids, ntoken, max_new_tokens, top_k, top_p, temperature);
+    }
+
+    /** 取消请求 */
+    void llaisysQwen2ModelAbort(struct LlaisysQwen2Model *model, int64_t *token_ids, size_t ntoken) {
+        if (!model || !model->qwen2) return;
+        model->qwen2->abort(token_ids, ntoken);
+    }
+
+    /** 获取上一步 logprobs (top-n token + logprob) */
+    int llaisysQwen2ModelGetLogprobs(struct LlaisysQwen2Model *model,
+                                     float *out_logprobs, int n_vocab,
+                                     int *out_tokens, int n_tokens, int batch_idx) {
+        if (!model || !model->qwen2) return -1;
+        return model->qwen2->get_logprobs(out_logprobs, n_vocab, out_tokens, n_tokens, batch_idx);
     }
 }
