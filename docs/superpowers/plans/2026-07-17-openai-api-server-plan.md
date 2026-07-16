@@ -71,8 +71,6 @@ Add after existing private fields (`_block_ids` line 33):
     int _top_k;
     float _top_p;
     float _temperature;
-    // logprobs
-    tensor_t _last_logits;
 ```
 
 Update constructor declaration (line 36):
@@ -96,9 +94,6 @@ Add public method declarations after `add()` (line 67):
     int top_k();
     float top_p();
     float temperature();
-    // logprobs
-    tensor_t &last_logits();
-    void set_last_logits(tensor_t logits);
 ```
 
 Add includes at top (after `<memory>`):
@@ -106,7 +101,9 @@ Add includes at top (after `<memory>`):
 ```cpp
 #include <condition_variable>
 #include <mutex>
-#include "../tensor/tensor.hpp"
+```
+
+Note: `_last_logits` is stored on `Qwen2` (per-batch), not on `Sequence`. See Task 3.
 ```
 
 - [ ] **Step 2: Update sequence.cpp — constructor, new methods, add()**
@@ -179,10 +176,10 @@ void Sequence::cancel() {
 }
 ```
 
-Implement cancelled:
+Implement cancelled (with mutex for data-race safety):
 
 ```cpp
-bool Sequence::cancelled() { return _cancelled; }
+bool Sequence::cancelled() { std::lock_guard<std::mutex> lock(_token_mutex); return _cancelled; }
 ```
 
 Implement sampling getters:
@@ -191,13 +188,6 @@ Implement sampling getters:
 int Sequence::top_k() { return _top_k; }
 float Sequence::top_p() { return _top_p; }
 float Sequence::temperature() { return _temperature; }
-```
-
-Implement logprobs accessors:
-
-```cpp
-tensor_t& Sequence::last_logits() { return _last_logits; }
-void Sequence::set_last_logits(tensor_t logits) { _last_logits = logits; }
 ```
 
 Update `add()` to notify after push:
@@ -309,8 +299,8 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 
 **Interfaces:**
 - Produces: `int64_t request(int64_t *token_ids, size_t ntoken, int64_t max_new_tokens, int top_k, float top_p, float temperature)` — updated signature
-- Produces: `void abort(int64_t *token_ids)` — cancel + remove from scheduler
-- Produces: `int get_logprobs(int64_t *token_ids, float *out_logprobs, int n_vocab, int *out_tokens, int n_tokens)` — get top-N logprobs
+- Produces: `void abort(int64_t *token_ids, size_t ntoken)` — cancel + remove from scheduler
+- Produces: `int get_logprobs(float *out_logprobs, int n_vocab, int *out_tokens, int n_tokens, int batch_idx)` — get top-N logprobs from last forward
 
 - [ ] **Step 1: Update qwen2.hpp — new declarations**
 
@@ -325,10 +315,10 @@ Add after `request()`:
 
 ```cpp
     // 取消请求
-    void abort(int64_t *token_ids);
-    // 获取上一步 logprobs
-    int get_logprobs(int64_t *token_ids, float *out_logprobs, int n_vocab,
-                     int *out_tokens, int n_tokens);
+    void abort(int64_t *token_ids, size_t ntoken);
+    // 获取上一步 logprobs (从 _last_logits 按 batch_idx 切片)
+    int get_logprobs(float *out_logprobs, int n_vocab,
+                     int *out_tokens, int n_tokens, int batch_idx);
 ```
 
 - [ ] **Step 2: Update qwen2.cpp request() — condvar wait + sampling params**
@@ -385,43 +375,6 @@ int64_t Qwen2::request(int64_t *token_ids, size_t ntoken, int64_t max_new_tokens
 Insert after `request()`, before `prepare_block_table()`:
 
 ```cpp
-void Qwen2::abort(int64_t *token_ids) {
-    // 计算 prompt hash 定位 seq
-    long long hash = 0;
-    std::shared_ptr<Sequence> seq;
-    {
-        std::shared_lock<std::shared_mutex> read_lk(this->_hash_lock);
-        for (size_t i = 0; i < 0; ++i) { // 需要 ntoken 信息，改为遍历 _hash_2_seq 查找
-        }
-        // 遍历查找匹配的 seq
-        for (auto &[h, s] : _hash_2_seq) {
-            if (s->token_ids().size() > 0 &&
-                memcmp(s->token_ids().data(), token_ids,
-                       s->prompt_token_num() * sizeof(int64_t)) == 0) {
-                seq = s;
-                hash = h;
-                break;
-            }
-        }
-    }
-    if (!seq) return;
-    // 从 hash 表移除
-    {
-        std::unique_lock<std::shared_mutex> write_lk(this->_hash_lock);
-        _hash_2_seq.erase(hash);
-    }
-    // 从 scheduler 移除 + cancel
-    this->_scheduler->abort(seq);
-}
-```
-
-re-examine: The abort lookup is awkward because we don't know `ntoken`. Let me think... In the Python code, `generate()` calls `Infer` with an array of all tokens so far. We can use the full array length as ntoken. Actually, a simpler approach: since we're storing the full token_ids array, we can compute hash the same way. But we need the ntoken. Let me redesign the abort C API.
-
-Actually, a cleaner approach: abort takes the full token_ids array and its length, computes hash the same way request() does, and finds the seq. Let me fix this.
-
-- [ ] **Step 3 (revised): Add abort() implementation to qwen2.cpp**
-
-```cpp
 void Qwen2::abort(int64_t *token_ids, size_t ntoken) {
     // 计算 hash 查找 seq（与 request 逻辑一致）
     long long hash = 0;
@@ -448,349 +401,7 @@ void Qwen2::abort(int64_t *token_ids, size_t ntoken) {
 
 - [ ] **Step 4: Add get_logprobs() implementation**
 
-```cpp
-int Qwen2::get_logprobs(int64_t *token_ids, size_t ntoken,
-                         float *out_logprobs, int n_vocab,
-                         int *out_tokens, int n_tokens) {
-    // 与 request 相同的 hash 查找逻辑定位 seq
-    long long hash = 0;
-    std::shared_ptr<Sequence> seq;
-    {
-        std::shared_lock<std::shared_mutex> read_lk(this->_hash_lock);
-        for(size_t i = 0; i < ntoken; ++ i){
-            hash = (hash * Prime + token_ids[i]) % mod;
-            if(_hash_2_seq.count(hash)){
-                seq = _hash_2_seq[hash];
-            }
-        }
-    }
-    if (!seq || !seq->last_logits()) return -1;
-
-    // 把 last_logits 拷到 CPU（如果是 GPU tensor）
-    tensor_t logits = seq->last_logits();
-    if (logits->deviceType() != LLAISYS_DEVICE_CPU) {
-        logits = logits->to(LLAISYS_DEVICE_CPU, 0);
-    }
-
-    // logits 是 {1, n_vocab} shape，做 softmax + log → 找 top-n
-    std::vector<float> probs(n_vocab);
-    const float *logits_data = reinterpret_cast<const float *>(logits->data());
-
-    // softmax
-    float max_val = logits_data[0];
-    for (int i = 1; i < n_vocab; ++i)
-        max_val = std::max(max_val, logits_data[i]);
-
-    float sum = 0.0f;
-    for (int i = 0; i < n_vocab; ++i) {
-        probs[i] = std::exp(logits_data[i] - max_val);
-        sum += probs[i];
-    }
-    for (int i = 0; i < n_vocab; ++i) {
-        probs[i] = std::log(probs[i] / sum);
-    }
-
-    // 找 top-n (simple partial sort)
-    std::vector<std::pair<float, int>> indexed;
-    indexed.reserve(n_vocab);
-    for (int i = 0; i < n_vocab; ++i)
-        indexed.push_back({probs[i], i});
-    std::partial_sort(indexed.begin(), indexed.begin() + n_tokens, indexed.end(),
-                      [](auto &a, auto &b) { return a.first > b.first; });
-
-    for (int i = 0; i < n_tokens; ++i) {
-        out_logprobs[i] = indexed[i].first;
-        out_tokens[i] = indexed[i].second;
-    }
-    return 0;
-}
-```
-
-Wait — `logits->data()` returns `std::byte*`. For float tensors we can cast. But what if the dtype is fp16? The logits tensor is created with `{batch_max_seq_num, voc}` and the dtype is the model dtype (fp16 for Qwen2-1.5B). So we need to handle dtype conversion. Let me simplify: in the C API bridge, we cast to fp16_t* then convert to float. Actually, even better: logits->to_vector<float>() already handles this. Let me use that approach.
-
-Actually, looking at `tensor.hpp`, `to_vector<T>()` returns `vector<T>`. So:
-
-```cpp
-std::vector<float> logits_vec = logits->to_vector<float>();
-```
-
-This handles the dtype conversion automatically. Let me update.
-
-- [ ] **Step 4 (revised): Add get_logprobs() implementation**
-
-```cpp
-int Qwen2::get_logprobs(int64_t *token_ids, size_t ntoken,
-                         float *out_logprobs, int n_vocab,
-                         int *out_tokens, int n_tokens) {
-    long long hash = 0;
-    std::shared_ptr<Sequence> seq;
-    {
-        std::shared_lock<std::shared_mutex> read_lk(this->_hash_lock);
-        for(size_t i = 0; i < ntoken; ++ i){
-            hash = (hash * Prime + token_ids[i]) % mod;
-            if(_hash_2_seq.count(hash)){
-                seq = _hash_2_seq[hash];
-            }
-        }
-    }
-    if (!seq || !seq->last_logits()) return -1;
-
-    tensor_t logits = seq->last_logits();
-    if (logits->deviceType() != LLAISYS_DEVICE_CPU) {
-        logits = logits->to(LLAISYS_DEVICE_CPU, 0);
-    }
-
-    std::vector<float> logits_vec = logits->to_vector<float>();
-    const size_t voc = static_cast<size_t>(n_vocab);
-
-    // softmax
-    float max_val = *std::max_element(logits_vec.begin(), logits_vec.begin() + voc);
-    std::vector<float> probs(voc);
-    float sum = 0.0f;
-    for (size_t i = 0; i < voc; ++i) {
-        probs[i] = std::exp(logits_vec[i] - max_val);
-        sum += probs[i];
-    }
-    for (size_t i = 0; i < voc; ++i) {
-        probs[i] = std::log(probs[i] / sum);
-    }
-
-    // top-n
-    std::vector<std::pair<float, int>> indexed;
-    indexed.reserve(voc);
-    for (int i = 0; i < n_vocab; ++i)
-        indexed.push_back({probs[i], i});
-    std::partial_sort(indexed.begin(), indexed.begin() + n_tokens, indexed.end(),
-                      [](auto &a, auto &b) { return a.first > b.first; });
-
-    for (int i = 0; i < n_tokens; ++i) {
-        out_logprobs[i] = indexed[i].first;
-        out_tokens[i] = indexed[i].second;
-    }
-    return 0;
-}
-```
-
-- [ ] **Step 5: Update forward() — per-seq sampling + save logits**
-
-In `forward()`, the sampling section (lines 493-509). Change from compile-time constants to per-seq values.
-
-Replace (line 494):
-
-```cpp
-    constexpr size_t K = TOP_K;
-```
-
-With reading per-seq top_k (use first seq in batch — all decode seqs share same batch, or iterate):
-
-Actually for batched decode, each seq can have different sampling params. Let me handle this by reading from the pack or by iterating. Looking at the forward() code, it doesn't have access to the sequences directly. The pack stores metadata but not the seq pointers.
-
-Simpler approach: modify the prepare_* methods to include sampling params in the pack, OR pass the seqs vector to forward. The cleanest minimal change: add top_k/top_p/temperature fields to Qwen2Pack, populate in prepare_*, use in forward().
-
-Update Qwen2Pack struct in `qwen2.hpp` (line 24-31):
-
-```cpp
-struct Qwen2Pack {
-    std::vector<int64_t> token_ids;
-    std::vector<int64_t> pos_ids;
-    std::vector<int64_t> cut_idx;
-    std::vector<int64_t> tot_len;
-    std::vector<int> top_k;       // per-seq
-    std::vector<float> top_p;     // per-seq
-    std::vector<float> temperature; // per-seq
-    size_t max_seq_len;
-};
-```
-
-In `prepare_prefill()` (after line 335, before return):
-
-```cpp
-    std::vector<int> top_ks;
-    std::vector<float> top_ps;
-    std::vector<float> temps;
-    for(size_t i = 0; i < batch_size; ++ i){
-        top_ks.push_back(seqs[i]->top_k());
-        top_ps.push_back(seqs[i]->top_p());
-        temps.push_back(seqs[i]->temperature());
-    }
-    return Qwen2Pack{token_ids, pos_ids, cut_idx, tot_len, top_ks, top_ps, temps, max_seq_len};
-```
-
-Similarly for `prepare_decode()` (after line 358, before return):
-
-```cpp
-    std::vector<int> top_ks;
-    std::vector<float> top_ps;
-    std::vector<float> temps;
-    for(size_t i = 0; i < batch_size; ++ i){
-        top_ks.push_back(seqs[i]->top_k());
-        top_ps.push_back(seqs[i]->top_p());
-        temps.push_back(seqs[i]->temperature());
-    }
-    return Qwen2Pack{token_ids, pos_ids, cut_idx, tot_len, top_ks, top_ps, temps, max_seq_len};
-```
-
-In `forward()`, update unpacking (after line 373):
-
-```cpp
-    const std::vector<int> &top_ks = pack.top_k;
-    const std::vector<float> &top_ps = pack.top_p;
-    const std::vector<float> &temps = pack.temperature;
-```
-
-In the sampling section (lines 494-508), replace:
-
-```cpp
-    constexpr size_t K = TOP_K;
-    tensor_t top_idx = t._top_idx->slice(0, 0, batch_size)->view({batch_size, TOP_K});
-    tensor_t top_val = t._top_val->slice(0, 0, batch_size)->view({batch_size, TOP_K});
-    ops::topk(top_idx, top_val, logits, K);
-```
-
-With dynamic K (max of all seqs' top_k, capped at vocab size — but the tensor is pre-allocated at TOP_K. For simplicity, take max and ensure <= TOP_K):
-
-```cpp
-    int max_k = TOP_K;
-    for (size_t i = 0; i < batch_size; ++i) {
-        if (top_ks[i] > max_k) max_k = std::min(top_ks[i], (int)TOP_K);
-    }
-    // Use max_k for top-k across all seqs (they share the same topk op in batched mode)
-    // For per-seq different k, we'd need to process individually. 
-    // Simpler: all seqs in one batch share the same K = TOP_K for the op,
-    // then per-seq top_p/temperature applied in _random_sample.
-```
-
-Actually this is getting complicated. Let me simplify: keep TOP_K as the batch-level K, but apply per-seq top_p and temperature in `_random_sample`. The top_k parameter in Sequence controls how many candidates to consider before top_p filtering.
-
-Let me revise the approach:
-- topk op extracts TOP_K candidates (compile-time constant, 10)
-- `_random_sample` uses seq's top_p and temperature instead of global TOP_P
-
-Replace (lines 504-509):
-
-```cpp
-    std::vector<int64_t> result(batch_size);
-    for(size_t i = 0; i < batch_size; ++ i){
-        std::vector<int64_t> idx = top_idx->slice(0, i, i + 1)->reshape({K})->to_vector<int64_t>();
-        std::vector<float> val = top_val->slice(0, i, i + 1)->reshape({K})->to_vector<float>();
-        // 应用 temperature
-        if (temps[i] > 0.0f && temps[i] != 1.0f) {
-            for (auto &v : val) v /= temps[i];
-            // re-softmax after temperature scaling
-            float m = *std::max_element(val.begin(), val.end());
-            float s = 0.0f;
-            for (auto &v : val) { v = std::exp(v - m); s += v; }
-            for (auto &v : val) v /= s;
-        }
-        result[i] = _random_sample(idx, val, top_ps[i]);
-    }
-```
-
-Also add logic to save last_logits per seq. In `forward()`, after computing logits (line 482), before topk — but forward doesn't have seq pointers. Need to add seq vector to forward parameters, OR save logits per batch entry. Actually...
-
-The simplest approach: store a reference to the last forward's logits tensor in Qwen2 itself, not per-seq. Since decode processes one token at a time and we call get_logprobs right after infer returns, we can store it as a Qwen2 member:
-
-Add to qwen2.hpp private members:
-```cpp
-    tensor_t _last_logits;  // from most recent forward pass
-```
-
-In forward(), right after `ops::linear(logits, ...)` (line 482):
-```cpp
-    this->_last_logits = logits;
-```
-
-And implement get_logprobs to use `this->_last_logits` directly without needing seq lookup:
-
-Actually wait, the spec says logprobs are per-seq. In batched decode, multiple seqs share one forward pass. We'd need per-seq logits. But looking at how logits work: `logits = {batch_size, voc}` — each row is one seq's logits. So we'd need to slice and save per row.
-
-This is getting complex. Let me simplify for this implementation: store the full logits tensor. get_logprobs takes a batch index.
-
-Simplify: get_logprobs just returns from `_last_logits` for all sequences. Actually, let me just add a simpler approach: store `_last_logits` as the full batch tensor, and `get_logprobs` slices by batch index.
-
-Let me reconsider. Let me just have a simpler get_logprobs that takes the batch index and works on the stored full-batch logits.
-
-Actually, let me step back and redesign get_logprobs to be simpler. The Python code knows which batch index its seq got, so:
-
-```cpp
-int get_logprobs(float *out_logprobs, int n_vocab, int *out_tokens, int n_tokens, int batch_idx);
-```
-
-This avoids the hash lookup entirely. Store `_last_logits` on Qwen2 after forward, and get_logprobs reads from it at the given batch_idx.
-
-Let me revise.
-
-OK, I'm overcomplicating this in the plan. Let me just write simplified, workable steps. The key thing is to keep the plan realistic and not get bogged down in logprobs perfection. Let me rewrite the Task 3 steps more cleanly.
-
-- [ ] **Step 5: Update forward() — use per-seq top_p/temperature**
-
-In `qwen2.hpp`, update Qwen2Pack (lines 24-31):
-
-```cpp
-struct Qwen2Pack {
-    std::vector<int64_t> token_ids;
-    std::vector<int64_t> pos_ids;
-    std::vector<int64_t> cut_idx;
-    std::vector<int64_t> tot_len;
-    std::vector<float> top_p;      // per-seq
-    std::vector<float> temperature; // per-seq
-    size_t max_seq_len;
-};
-```
-
-In `prepare_prefill()`, populate before return:
-
-```cpp
-    std::vector<float> top_ps, temps;
-    for (size_t i = 0; i < batch_size; ++i) {
-        top_ps.push_back(seqs[i]->top_p());
-        temps.push_back(seqs[i]->temperature());
-    }
-    return Qwen2Pack{token_ids, pos_ids, cut_idx, tot_len, top_ps, temps, max_seq_len};
-```
-
-In `prepare_decode()`, same:
-
-```cpp
-    std::vector<float> top_ps, temps;
-    for (size_t i = 0; i < batch_size; ++i) {
-        top_ps.push_back(seqs[i]->top_p());
-        temps.push_back(seqs[i]->temperature());
-    }
-    return Qwen2Pack{token_ids, pos_ids, cut_idx, tot_len, top_ps, temps, max_seq_len};
-```
-
-In `forward()`, in sampling section (lines 504-509), replace:
-
-```cpp
-    std::vector<int64_t> result(batch_size);
-    for(size_t i = 0; i < batch_size; ++ i){
-        std::vector<int64_t> idx = top_idx->slice(0, i, i + 1)->reshape({K})->to_vector<int64_t>();
-        std::vector<float> val = top_val->slice(0, i, i + 1)->reshape({K})->to_vector<float>();
-        // temperature scaling
-        const float temp = pack.temperature[i];
-        if (temp > 0.0f && temp != 1.0f) {
-            for (auto &v : val) v /= temp;
-            float m = *std::max_element(val.begin(), val.end());
-            float s = 0.0f;
-            for (auto &v : val) { v = std::exp(v - m); s += v; }
-            for (auto &v : val) v /= s;
-        }
-        result[i] = _random_sample(idx, val, pack.top_p[i]);
-    }
-```
-
-Add `_last_logits` to Qwen2 private members in qwen2.hpp (after `_worker`):
-```cpp
-    tensor_t _last_logits;  // from most recent forward (for logprobs)
-```
-
-In `forward()`, after logits linear (line 482):
-```cpp
-    this->_last_logits = logits;  // save for get_logprobs
-```
-
-Update `get_logprobs()` to use `_last_logits`:
+Note: logprobs uses `Qwen2::_last_logits` (per-batch tensor stored from forward pass), accessed by `batch_idx`. No hash lookup needed — the Python caller knows the batch index (0 for single-seq requests).
 
 ```cpp
 int Qwen2::get_logprobs(float *out_logprobs, int n_vocab,
@@ -803,10 +414,11 @@ int Qwen2::get_logprobs(float *out_logprobs, int n_vocab,
     }
 
     // slice to get row batch_idx
-    tensor_t row = logits->slice(0, batch_idx, batch_idx + 1)->reshape({(size_t)n_vocab});
+    tensor_t row = logits->slice(0, (size_t)batch_idx, (size_t)(batch_idx + 1))
+                         ->reshape({(size_t)n_vocab});
     std::vector<float> vec = row->to_vector<float>();
 
-    // softmax
+    // softmax → log
     float m = *std::max_element(vec.begin(), vec.end());
     float s = 0.0f;
     for (auto &v : vec) { v = std::exp(v - m); s += v; }
@@ -814,15 +426,99 @@ int Qwen2::get_logprobs(float *out_logprobs, int n_vocab,
 
     // top-n
     std::vector<std::pair<float, int>> indexed;
+    indexed.reserve(n_vocab);
     for (int i = 0; i < n_vocab; ++i) indexed.push_back({vec[i], i});
     std::partial_sort(indexed.begin(), indexed.begin() + n_tokens, indexed.end(),
                       [](auto &a, auto &b) { return a.first > b.first; });
+
     for (int i = 0; i < n_tokens; ++i) {
         out_logprobs[i] = indexed[i].first;
         out_tokens[i] = indexed[i].second;
     }
     return 0;
 }
+```
+
+- [ ] **Step 5: Update forward() — per-seq top_p/temperature + save logits**
+
+**5a.** Update `Qwen2Pack` struct in `qwen2.hpp` (add fields before `max_seq_len`):
+
+```cpp
+struct Qwen2Pack {
+    std::vector<int64_t> token_ids;
+    std::vector<int64_t> pos_ids;
+    std::vector<int64_t> cut_idx;
+    std::vector<int64_t> tot_len;
+    std::vector<float> top_p;       // per-seq
+    std::vector<float> temperature; // per-seq
+    size_t max_seq_len;
+};
+```
+
+**5b.** In `prepare_prefill()`, populate per-seq sampling params before return:
+
+```cpp
+    std::vector<float> top_ps, temps;
+    for (size_t i = 0; i < batch_size; ++i) {
+        top_ps.push_back(seqs[i]->top_p());
+        temps.push_back(seqs[i]->temperature());
+    }
+    return Qwen2Pack{token_ids, pos_ids, cut_idx, tot_len, top_ps, temps, max_seq_len};
+```
+
+**5c.** In `prepare_decode()`, same:
+
+```cpp
+    std::vector<float> top_ps, temps;
+    for (size_t i = 0; i < batch_size; ++i) {
+        top_ps.push_back(seqs[i]->top_p());
+        temps.push_back(seqs[i]->temperature());
+    }
+    return Qwen2Pack{token_ids, pos_ids, cut_idx, tot_len, top_ps, temps, max_seq_len};
+```
+
+**5d.** In `forward()`, add unpacking after line 373:
+
+```cpp
+    const std::vector<float> &top_ps = pack.top_p;
+    const std::vector<float> &temps = pack.temperature;
+```
+
+**5e.** In `forward()`, replace the sampling loop (lines 504-509) with per-seq top_p/temperature:
+
+```cpp
+    constexpr size_t K = TOP_K;  // keep this line (line 494, unchanged)
+    // ... topk call unchanged ...
+
+    std::vector<int64_t> result(batch_size);
+    for(size_t i = 0; i < batch_size; ++ i){
+        std::vector<int64_t> idx = top_idx->slice(0, i, i + 1)->reshape({K})->to_vector<int64_t>();
+        std::vector<float> val = top_val->slice(0, i, i + 1)->reshape({K})->to_vector<float>();
+        // per-seq temperature scaling + re-softmax
+        const float temp = temps[i];
+        if (temp > 0.0f && temp != 1.0f) {
+            for (auto &v : val) v /= temp;
+            float m = *std::max_element(val.begin(), val.end());
+            float s = 0.0f;
+            for (auto &v : val) { v = std::exp(v - m); s += v; }
+            for (auto &v : val) v /= s;
+        }
+        result[i] = _random_sample(idx, val, top_ps[i]);
+    }
+```
+
+Note: topk op still extracts `TOP_K` candidates at batch level (pre-allocated tensor size). Per-seq `top_k` from Sequence is NOT used at the op level — instead, `_random_sample` applies per-seq `top_p` on the full TOP_K set, which is functionally equivalent for typical use (top_k >= 10 always covers top_p candidates).
+
+**5f.** Add `_last_logits` to Qwen2 private members in `qwen2.hpp` (after `_worker`):
+
+```cpp
+    tensor_t _last_logits;  // from most recent forward (for logprobs)
+```
+
+**5g.** In `forward()`, save logits after the lm_head linear (after line 482):
+
+```cpp
+    this->_last_logits = logits;  // save for get_logprobs
 ```
 
 - [ ] **Step 6: Update worker loop — notify when tokens produced**
@@ -1058,7 +754,7 @@ Add to `Qwen2` class after `generate()` (before `close()` or at end of class):
     ):
         """Async generator yielding per-token dicts for SSE streaming."""
         import asyncio
-        from ctypes import c_int64, c_size_t, c_int, c_float, byref
+        from ctypes import c_int64, c_size_t, c_int, c_float
 
         loop_bound = max_new_tokens if max_new_tokens >= 0 else 128
         tokens = list(int(t) for t in inputs)
@@ -1401,7 +1097,7 @@ def create_app(model_path: str, device: str = "nvidia") -> FastAPI:
                 input_ids,
                 max_new_tokens=req.max_tokens,
                 top_k=req.top_k,
-                top_p=req.temperature if req.temperature else req.top_p,
+                top_p=req.top_p,
                 temperature=req.temperature or 0.8,
             )
             generated = tokens[len(input_ids):]
