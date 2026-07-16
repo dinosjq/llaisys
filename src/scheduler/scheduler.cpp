@@ -45,6 +45,13 @@ std::pair<std::vector<seq_t>, bool> Scheduler::schedule(){
     while(!this->_waiting[cur_id].empty() && scheduled_seqs.size() < this->_batch_max_seq_num){
         // 选一个
         seq_t seq = this->_waiting[cur_id].front();
+        // 被取消的序列: 释放资源并跳过
+        if(seq->cancelled()){
+            this->_waiting[cur_id].pop();
+            seq->status() = SeqStatus::FINISHED;
+            this->_manager->deallocate(seq);
+            continue;
+        }
         // 计算还剩多少
         remaining = this->_batch_max_token_num - batch_token_num;
         if(remaining == 0){
@@ -92,6 +99,12 @@ std::pair<std::vector<seq_t>, bool> Scheduler::schedule(){
     while(!this->_running.empty() && scheduled_seqs.size() < this->_batch_max_seq_num){
         seq_t seq = this->_running.front();
         this->_running.pop_front();
+        // 被取消的序列: 释放资源并跳过
+        if(seq->cancelled()){
+            seq->status() = SeqStatus::FINISHED;
+            this->_manager->deallocate(seq);
+            continue;
+        }
         remaining = this->_batch_max_token_num - batch_token_num;
         if(remaining == 0){
             break;
@@ -136,6 +149,14 @@ void Scheduler::preempty(seq_t &seq){
     seq->status() = SeqStatus::WAITING;
     // 重新加入到等待队列
     this->add(seq);
+}
+
+// 取消请求
+// 线程安全设计: _waiting/_running/BlockManager 均只由 worker 线程(schedule/postprocess)修改,
+// abort 由请求线程调用, 因此这里只标记 cancelled 并唤醒等待线程,
+// 队列清理与 kv cache 释放由 worker 线程在 schedule() 弹出时检测完成
+void Scheduler::abort(seq_t seq) {
+    seq->cancel();
 }
 
 // 后处理更新对应的序列占有的 kv cache 缓存信息

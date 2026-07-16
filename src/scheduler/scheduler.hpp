@@ -61,7 +61,10 @@ public:
 
     // 后处理更新对应缓存块的信息
     void postprocess(std::vector<seq_t> &seqs, std::vector<int64_t> token_ids, bool is_prefill);
-    
+
+    // 取消指定请求: 从队列移除 + 释放kv cache + 标记cancelled
+    void abort(seq_t seq);
+
     // 每块 token 数
     size_t token_num() { return this->_token_num; }
 };
