@@ -26,6 +26,8 @@ struct Qwen2Pack {
     std::vector<int64_t> pos_ids;
     std::vector<int64_t> cut_idx;
     std::vector<int64_t> tot_len;
+    std::vector<float> top_p;       // per-seq 采样参数
+    std::vector<float> temperature; // per-seq 采样参数
     size_t max_seq_len;
 };
 
@@ -78,6 +80,8 @@ private:
     bool _running;
     bool _profiled = false;
     std::thread _worker;
+    // logprobs: 保存最近一次 forward 的 logits (batch, voc)
+    tensor_t _last_logits;
 
 public:
     Qwen2(Qwen2Meta meta, llaisysDeviceType_t device, int *device_ids, int ndevice);
@@ -98,7 +102,15 @@ public:
     void stop();
 
     // 请求
-    int64_t request(int64_t *token_ids, size_t ntoken, int64_t max_new_tokens);
+    int64_t request(int64_t *token_ids, size_t ntoken, int64_t max_new_tokens,
+                    int top_k = TOP_K, float top_p = TOP_P, float temperature = 1.0f);
+
+    // 取消请求
+    void abort(int64_t *token_ids, size_t ntoken);
+
+    // 获取上一步 logprobs (从 _last_logits 按 batch_idx 切片)
+    int get_logprobs(float *out_logprobs, int n_vocab,
+                     int *out_tokens, int n_tokens, int batch_idx);
 
     // 填充块表
     std::vector<int64_t> prepare_block_table(const std::vector<seq_t> &seqs);

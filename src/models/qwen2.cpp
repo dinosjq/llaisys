@@ -242,7 +242,8 @@ void Qwen2::stop(){
 }
 
 // 请求方法
-int64_t Qwen2::request(int64_t *token_ids, size_t ntoken, int64_t max_new_tokens){
+int64_t Qwen2::request(int64_t *token_ids, size_t ntoken, int64_t max_new_tokens,
+                       int top_k, float top_p, float temperature){
     // 先根据 token_ids 计算 prompt hash 尝试进行最长前缀匹配 查找对应的seq
     long long hash = 0;
     std::shared_ptr<Sequence> seq;
@@ -263,16 +264,19 @@ int64_t Qwen2::request(int64_t *token_ids, size_t ntoken, int64_t max_new_tokens
             seq = _hash_2_seq.count(hash) ? _hash_2_seq[hash] : nullptr;
             if(seq == nullptr){
                 size_t limit = (max_new_tokens < 0) ? MAX_TOKEN_NUM : (ntoken + static_cast<size_t>(max_new_tokens));
-                seq = std::make_shared<Sequence>(token_ids, ntoken, limit);
+                seq = std::make_shared<Sequence>(token_ids, ntoken, limit, top_k, top_p, temperature);
                 _hash_2_seq[seq->prompt_hash()] = seq;
                 this->_scheduler->add(seq);
             }
         }
     }
 
-    // 没到指定长度之前先空转
-    while(seq->token_num() <= ntoken){
-        std::this_thread::yield();
+    // condvar 真等待 (线程休眠, 不再 busy-wait)
+    if (!seq->wait_for_token(ntoken)) {
+        // 被取消: 从查询表清除并返回 -2
+        std::unique_lock<std::shared_mutex> write_lk(this->_hash_lock);
+        this->_hash_2_seq.erase(seq->prompt_hash());
+        return -2;
     }
 
     // 索引找到应该返回的 token_id
@@ -283,6 +287,63 @@ int64_t Qwen2::request(int64_t *token_ids, size_t ntoken, int64_t max_new_tokens
         this->_hash_2_seq.erase(seq->prompt_hash());
     }
     return token;
+}
+
+// 取消请求: 通过与 request 相同的 hash 前缀匹配定位 seq
+void Qwen2::abort(int64_t *token_ids, size_t ntoken) {
+    long long hash = 0;
+    std::shared_ptr<Sequence> seq;
+    {
+        std::shared_lock<std::shared_mutex> read_lk(this->_hash_lock);
+        for(size_t i = 0; i < ntoken; ++ i){
+            hash = (hash * Prime + token_ids[i]) % mod;
+            if(_hash_2_seq.count(hash)){
+                seq = _hash_2_seq[hash];
+            }
+        }
+    }
+    if (!seq) return;
+    // 从 hash 表移除
+    {
+        std::unique_lock<std::shared_mutex> write_lk(this->_hash_lock);
+        this->_hash_2_seq.erase(seq->prompt_hash());
+    }
+    // 标记取消 (队列清理与 kv cache 释放由 worker 线程完成)
+    this->_scheduler->abort(seq);
+}
+
+// 获取上一步 logprobs: 对 _last_logits 的 batch_idx 行做 softmax+log, 返回 top-n
+int Qwen2::get_logprobs(float *out_logprobs, int n_vocab,
+                        int *out_tokens, int n_tokens, int batch_idx) {
+    if (!this->_last_logits) return -1;
+
+    tensor_t logits = this->_last_logits;
+    if ((size_t)batch_idx >= logits->shape()[0]) return -1;
+    if (logits->deviceType() != LLAISYS_DEVICE_CPU) {
+        logits = logits->to(LLAISYS_DEVICE_CPU, 0);
+    }
+
+    // 切出第 batch_idx 行
+    tensor_t row = logits->slice(0, (size_t)batch_idx, (size_t)batch_idx + 1)->reshape({(size_t)n_vocab});
+    std::vector<float> vec = row->to_vector<float>();
+
+    // softmax → log
+    float m = *std::max_element(vec.begin(), vec.end());
+    float s = 0.0f;
+    for (auto &v : vec) { v = std::exp(v - m); s += v; }
+    for (auto &v : vec) v = std::log(v / s);
+
+    // top-n
+    std::vector<std::pair<float, int>> indexed;
+    indexed.reserve(n_vocab);
+    for (int i = 0; i < n_vocab; ++i) indexed.push_back({vec[i], i});
+    std::partial_sort(indexed.begin(), indexed.begin() + n_tokens, indexed.end(),
+                      [](const std::pair<float, int> &a, const std::pair<float, int> &b) { return a.first > b.first; });
+    for (int i = 0; i < n_tokens; ++i) {
+        out_logprobs[i] = indexed[i].first;
+        out_tokens[i] = indexed[i].second;
+    }
+    return 0;
 }
 
 /**
@@ -334,7 +395,13 @@ Qwen2Pack Qwen2::prepare_prefill(const std::vector<seq_t> &seqs){
         tot_len.push_back(begin + seq_len);
         max_seq_len = std::max(max_seq_len, seq_len);
     }
-    return Qwen2Pack{token_ids, pos_ids, cut_idx, tot_len, max_seq_len};
+    // per-seq 采样参数
+    std::vector<float> top_ps, temps;
+    for(size_t i = 0; i < batch_size; ++ i){
+        top_ps.push_back(seqs[i]->top_p());
+        temps.push_back(seqs[i]->temperature());
+    }
+    return Qwen2Pack{token_ids, pos_ids, cut_idx, tot_len, top_ps, temps, max_seq_len};
 }
 
 /**
@@ -356,7 +423,13 @@ Qwen2Pack Qwen2::prepare_decode(const std::vector<seq_t> &seqs){
         cut_idx.push_back(cut_idx.back() + 1);
         tot_len.push_back(seq->token_num());
     }
-    return Qwen2Pack{token_ids, pos_ids, cut_idx, tot_len, 1};
+    // per-seq 采样参数
+    std::vector<float> top_ps, temps;
+    for(size_t i = 0; i < batch_size; ++ i){
+        top_ps.push_back(seqs[i]->top_p());
+        temps.push_back(seqs[i]->temperature());
+    }
+    return Qwen2Pack{token_ids, pos_ids, cut_idx, tot_len, top_ps, temps, 1};
 }
 
 std::vector<int64_t> Qwen2::forward(Qwen2Pack &pack, std::vector<int64_t> &block_ids){
@@ -480,6 +553,8 @@ std::vector<int64_t> Qwen2::forward(Qwen2Pack &pack, std::vector<int64_t> &block
     // 把隐藏向量映射到词表维度（voc）生成未归一化的打分（logits）
     tensor_t logits = t._logits->slice(0, 0, batch_size)->view({batch_size, voc});
     ops::linear(logits, x_part_norm, to_tensor(w.out_embed), nullptr);
+    // 保存 logits 供 get_logprobs 查询
+    this->_last_logits = logits;
     
     // argmax
     // tensor_t max_idx = Tensor::create({batch_size, 1}, LLAISYS_DTYPE_I64, device, device_id);
@@ -500,12 +575,21 @@ std::vector<int64_t> Qwen2::forward(Qwen2Pack &pack, std::vector<int64_t> &block
         top_idx = top_idx->to(LLAISYS_DEVICE_CPU, 0);
         top_val = top_val->to(LLAISYS_DEVICE_CPU, 0);
     }
-    // 逐个进行随机 top_p 采样
+    // 逐个进行随机 top_p 采样 (per-seq top_p / temperature)
     std::vector<int64_t> result(batch_size);
     for(size_t i = 0; i < batch_size; ++ i){
         std::vector<int64_t> idx = top_idx->slice(0, i, i + 1)->reshape({K})->to_vector<int64_t>();
         std::vector<float> val = top_val->slice(0, i, i + 1)->reshape({K})->to_vector<float>();
-        result[i] = _random_sample(idx, val, TOP_P);
+        // temperature 缩放 + 重新 softmax
+        const float temp = pack.temperature[i];
+        if (temp > 0.0f && temp != 1.0f) {
+            for (auto &v : val) v /= temp;
+            float m = *std::max_element(val.begin(), val.end());
+            float s = 0.0f;
+            for (auto &v : val) { v = std::exp(v - m); s += v; }
+            for (auto &v : val) v /= s;
+        }
+        result[i] = _random_sample(idx, val, pack.top_p[i]);
     }
     return result;
 }
