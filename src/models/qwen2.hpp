@@ -80,8 +80,10 @@ private:
     bool _running;
     bool _profiled = false;
     std::thread _worker;
-    // logprobs: 保存最近一次 forward 的 logits (batch, voc)
+    // logprobs: 保存最近一次 forward 的 logits 快照 (CPU 独立副本, batch x voc)
+    // worker 线程写入 / 请求线程读取, 由 _logits_mutex 保护
     tensor_t _last_logits;
+    std::mutex _logits_mutex;
 
 public:
     Qwen2(Qwen2Meta meta, llaisysDeviceType_t device, int *device_ids, int ndevice);

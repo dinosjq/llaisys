@@ -303,25 +303,28 @@ void Qwen2::abort(int64_t *token_ids, size_t ntoken) {
         }
     }
     if (!seq) return;
-    // 从 hash 表移除
+    // 先标记取消: 保证等待中的 request 线程一定看到 cancelled 并返回 -2,
+    // 避免 "erase 后 request 重建同名序列" 的 TOCTOU 窗口
+    // (队列清理与 kv cache 释放由 worker 线程完成)
+    this->_scheduler->abort(seq);
+    // 再从 hash 表移除
     {
         std::unique_lock<std::shared_mutex> write_lk(this->_hash_lock);
         this->_hash_2_seq.erase(seq->prompt_hash());
     }
-    // 标记取消 (队列清理与 kv cache 释放由 worker 线程完成)
-    this->_scheduler->abort(seq);
 }
 
 // 获取上一步 logprobs: 对 _last_logits 的 batch_idx 行做 softmax+log, 返回 top-n
 int Qwen2::get_logprobs(float *out_logprobs, int n_vocab,
                         int *out_tokens, int n_tokens, int batch_idx) {
-    if (!this->_last_logits) return -1;
-
-    tensor_t logits = this->_last_logits;
-    if ((size_t)batch_idx >= logits->shape()[0]) return -1;
-    if (logits->deviceType() != LLAISYS_DEVICE_CPU) {
-        logits = logits->to(LLAISYS_DEVICE_CPU, 0);
+    // 取快照引用 (mutex 保护跨线程 shared_ptr 读写)
+    tensor_t logits;
+    {
+        std::lock_guard<std::mutex> lk(this->_logits_mutex);
+        logits = this->_last_logits;
     }
+    if (!logits) return -1;
+    if ((size_t)batch_idx >= logits->shape()[0]) return -1;
 
     // 切出第 batch_idx 行
     tensor_t row = logits->slice(0, (size_t)batch_idx, (size_t)batch_idx + 1)->reshape({(size_t)n_vocab});
@@ -553,8 +556,19 @@ std::vector<int64_t> Qwen2::forward(Qwen2Pack &pack, std::vector<int64_t> &block
     // 把隐藏向量映射到词表维度（voc）生成未归一化的打分（logits）
     tensor_t logits = t._logits->slice(0, 0, batch_size)->view({batch_size, voc});
     ops::linear(logits, x_part_norm, to_tensor(w.out_embed), nullptr);
-    // 保存 logits 供 get_logprobs 查询
-    this->_last_logits = logits;
+    // 保存 logits 的 CPU 独立快照供 get_logprobs 查询
+    // (必须真实拷贝: t._logits 缓冲区会被下一次 forward 复用; mutex 防止跨线程 shared_ptr 竞争)
+    {
+        tensor_t snapshot;
+        if (device != LLAISYS_DEVICE_CPU) {
+            snapshot = logits->to(LLAISYS_DEVICE_CPU, 0);  // D2H 真实拷贝
+        } else {
+            snapshot = Tensor::create(logits->shape(), logits->dtype(), LLAISYS_DEVICE_CPU, 0);
+            snapshot->load(logits->data());  // H2H 真实拷贝
+        }
+        std::lock_guard<std::mutex> lk(this->_logits_mutex);
+        this->_last_logits = snapshot;
+    }
     
     // argmax
     // tensor_t max_idx = Tensor::create({batch_size, 1}, LLAISYS_DTYPE_I64, device, device_id);
