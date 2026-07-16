@@ -1,5 +1,6 @@
 from typing import Callable, Sequence
 from pathlib import Path
+import asyncio
 import json
 import numpy as np
 import safetensors
@@ -234,5 +235,98 @@ class Qwen2:
             if next_token == int(self._meta.end_token):
                 break
         return tokens
+
+    async def generate_async(
+        self,
+        inputs: Sequence[int],
+        max_new_tokens: int = -1,
+        top_k: int = 10,
+        top_p: float = 0.9,
+        temperature: float = 0.8,
+        logprobs: bool = False,
+        top_logprobs: int = 0,
+    ):
+        """Async generator yielding per-token dicts for SSE streaming.
+
+        Each yielded dict has keys:
+        - ``token``: the generated token id
+        - ``index``: 0-based generation step
+        - ``finish_reason``: None or "stop"
+        - ``logprobs`` (optional): {"content": [{"token": id, "logprob": float}, ...]}
+
+        The blocking C call runs in a worker thread via ``asyncio.to_thread``;
+        the C++ side sleeps on a condition variable, so the thread does not
+        spin while waiting. On ``asyncio.CancelledError`` (client disconnect)
+        the C++ sequence is aborted before re-raising.
+        """
+        loop_bound = max_new_tokens if max_new_tokens >= 0 else 128
+        tokens = list(int(t) for t in inputs)
+        prompt_len = len(tokens)
+
+        try:
+            for step in range(loop_bound):
+                arr = (c_int64 * len(tokens))(*tokens)
+                ntoken = len(tokens)
+
+                def _infer(arr=arr, ntoken=ntoken):
+                    return int(
+                        LIB_LLAISYS.llaisysQwen2ModelInfer(
+                            self._model,
+                            arr,
+                            c_size_t(ntoken),
+                            c_int64(max_new_tokens),
+                            c_int(top_k),
+                            c_float(top_p),
+                            c_float(temperature),
+                        )
+                    )
+
+                next_token = await asyncio.to_thread(_infer)
+
+                if next_token == -2:
+                    break  # cancelled from another path
+                if next_token == -1:
+                    raise RuntimeError("llaisysQwen2ModelInfer failed")
+
+                tokens.append(next_token)
+
+                chunk = {
+                    "token": next_token,
+                    "index": step,
+                    "finish_reason": None,
+                }
+
+                if logprobs and top_logprobs > 0:
+                    lp_vals = (c_float * top_logprobs)()
+                    lp_tokens = (c_int * top_logprobs)()
+                    ret = LIB_LLAISYS.llaisysQwen2ModelGetLogprobs(
+                        self._model,
+                        lp_vals,
+                        c_int(int(self._meta.voc)),
+                        lp_tokens,
+                        c_int(top_logprobs),
+                        c_int(0),  # batch_idx=0: 单请求场景
+                    )
+                    if ret == 0:
+                        chunk["logprobs"] = {
+                            "content": [
+                                {"token": int(lp_tokens[i]), "logprob": float(lp_vals[i])}
+                                for i in range(top_logprobs)
+                            ]
+                        }
+
+                is_eos = next_token == int(self._meta.end_token)
+                if is_eos:
+                    chunk["finish_reason"] = "stop"
+
+                yield chunk
+
+                if is_eos:
+                    break
+        except asyncio.CancelledError:
+            # 客户端断开: 中止 C++ 序列 (定位用 prompt 前缀即可)
+            arr = (c_int64 * prompt_len)(*tokens[:prompt_len])
+            LIB_LLAISYS.llaisysQwen2ModelAbort(self._model, arr, c_size_t(prompt_len))
+            raise
 
 
