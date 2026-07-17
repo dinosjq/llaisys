@@ -19,9 +19,9 @@
    - `/v1/chat/completions`（SSE streaming + 非流式）、`/v1/completions`、`/v1/models`、`/health`
    - 真异步：C++ 侧 busy-wait 替换为 condition_variable 真休眠，Python 侧 asyncio.to_thread + async generator
    - Request cancellation：客户端断开 → CancelledError → C API Abort → scheduler 延迟清理（worker 线程释放 KV cache，无跨线程数据竞争）
-   - Logprobs：forward 保存 logits CPU 快照（mutex 保护），softmax→log→top-n 返回
    - Per-request 采样参数：top_k/top_p/temperature 经 C API 下沉到 Sequence（构造时固化）
-   - 集成测试 test/test_server.py 7/7 通过；回归测试无性能与正确性回退
+   - 集成测试 test/test_server.py 6/6 通过；回归测试无性能与正确性回退
+   - Logprobs 已暂缓：无条件 logits 快照（D2H ~300KB/步）造成吞吐回退（1.16x→1.09x），后续以请求参数按需触发的方式重新实现
 
 ---
 
