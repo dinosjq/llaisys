@@ -46,8 +46,10 @@
    - SwiGLU + Linear(down) 融合：单 kernel 完成 silu×up + linear(down)，省一次中间结果写回
    - RoPE + KV Cache Move 融合：RoPE 后直接写入 KV cache block，省一次 global mem 读写
 
-10) 异步 Tokenizer
+10) 异步 Tokenizer（待定）
    Tokenization 在 CPU 上执行，可能成为 decode 循环的瓶颈。将 tokenizer 移到独立线程，与 GPU 推理流水线化。
+   - 2026-07-18 评估结论：C++ worker 线程自治推进序列，Python decode 期间 GPU 本就在算下一个 token，"与 GPU 流水线化"收益≈0（decode ~50µs vs GPU ~19ms/step），预取式重叠还存在 EOS 复活序列的确定性 bug，故暂缓
+   - 真实遗留问题（若重启任务再做）：server encode 阻塞事件循环（应 to_thread）；逐 token decode 的 UTF-8 正确性缺陷（应实现 vLLM 式增量 detokenizer）；generate_async 的 GeneratorExit 路径不触发 Abort（KV cache 泄漏）
 
 11) 算子通用性优化
     方便适配其他模型架构，减少硬编码假设（如 d=128、nkvh=2 等维度特化）。
