@@ -80,10 +80,7 @@ private:
     bool _running;
     bool _profiled = false;
     std::thread _worker;
-    // logprobs: 保存最近一次 forward 的 logits 快照 (CPU 独立副本, batch x voc)
-    // worker 线程写入 / 请求线程读取, 由 _logits_mutex 保护
-    tensor_t _last_logits;
-    std::mutex _logits_mutex;
+    // logprobs 下次迭代实现: 添加 mutex + 需要时 forward 中保存 logits C PU 快照
 
 public:
     Qwen2(Qwen2Meta meta, llaisysDeviceType_t device, int *device_ids, int ndevice);
@@ -109,10 +106,6 @@ public:
 
     // 取消请求
     void abort(int64_t *token_ids, size_t ntoken);
-
-    // 获取上一步 logprobs (从 _last_logits 按 batch_idx 切片)
-    int get_logprobs(float *out_logprobs, int n_vocab,
-                     int *out_tokens, int n_tokens, int batch_idx);
 
     // 填充块表
     std::vector<int64_t> prepare_block_table(const std::vector<seq_t> &seqs);

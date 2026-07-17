@@ -44,8 +44,5 @@ __C {
     __export void llaisysQwen2ModelAbort(struct LlaisysQwen2Model *model,
         int64_t *token_ids, size_t ntoken);
 
-    __export int llaisysQwen2ModelGetLogprobs(struct LlaisysQwen2Model *model,
-        float *out_logprobs, int n_vocab,
-        int *out_tokens, int n_tokens, int batch_idx);
 }
 #endif // LLAISYS_MODELS_QWEN2_H

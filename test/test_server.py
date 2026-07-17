@@ -89,34 +89,6 @@ def test_chat_streaming(base):
     print(f"[PASS] chat_streaming: {len(chunks)} chunks + [DONE]")
 
 
-def test_chat_streaming_logprobs(base):
-    got_logprobs = False
-    with httpx.stream("POST", f"{base}/v1/chat/completions", json={
-        "model": "qwen2-1.5b",
-        "messages": [{"role": "user", "content": "hello"}],
-        "max_tokens": 4,
-        "stream": True,
-        "logprobs": True,
-        "top_logprobs": 3,
-    }, timeout=120.0) as r:
-        assert r.status_code == 200
-        for line in r.iter_lines():
-            if not line.startswith("data:"):
-                continue
-            data_str = line[5:].strip()
-            if data_str == "[DONE]":
-                break
-            chunk = json.loads(data_str)
-            lp = chunk["choices"][0].get("logprobs")
-            if lp and lp.get("content"):
-                got_logprobs = True
-                assert "logprob" in lp["content"][0]
-                assert lp["content"][0]["logprob"] <= 0.0
-
-    assert got_logprobs, "no logprobs in any chunk"
-    print("[PASS] chat_streaming_logprobs")
-
-
 def test_completions_non_stream(base):
     r = httpx.post(f"{base}/v1/completions", json={
         "model": "qwen2-1.5b",
@@ -179,7 +151,6 @@ def main():
         test_list_models(base)
         test_chat_non_streaming(base)
         test_chat_streaming(base)
-        test_chat_streaming_logprobs(base)
         test_completions_non_stream(base)
         test_cancellation(base)
         print("\nAll server tests passed.")

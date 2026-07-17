@@ -243,8 +243,6 @@ class Qwen2:
         top_k: int = 10,
         top_p: float = 0.9,
         temperature: float = 0.8,
-        logprobs: bool = False,
-        top_logprobs: int = 0,
     ):
         """Async generator yielding per-token dicts for SSE streaming.
 
@@ -252,7 +250,6 @@ class Qwen2:
         - ``token``: the generated token id
         - ``index``: 0-based generation step
         - ``finish_reason``: None or "stop"
-        - ``logprobs`` (optional): {"content": [{"token": id, "logprob": float}, ...]}
 
         The blocking C call runs in a worker thread via ``asyncio.to_thread``;
         the C++ side sleeps on a condition variable, so the thread does not
@@ -295,25 +292,6 @@ class Qwen2:
                     "index": step,
                     "finish_reason": None,
                 }
-
-                if logprobs and top_logprobs > 0:
-                    lp_vals = (c_float * top_logprobs)()
-                    lp_tokens = (c_int * top_logprobs)()
-                    ret = LIB_LLAISYS.llaisysQwen2ModelGetLogprobs(
-                        self._model,
-                        lp_vals,
-                        c_int(int(self._meta.voc)),
-                        lp_tokens,
-                        c_int(top_logprobs),
-                        c_int(0),  # batch_idx=0: 单请求场景
-                    )
-                    if ret == 0:
-                        chunk["logprobs"] = {
-                            "content": [
-                                {"token": int(lp_tokens[i]), "logprob": float(lp_vals[i])}
-                                for i in range(top_logprobs)
-                            ]
-                        }
 
                 is_eos = next_token == int(self._meta.end_token)
                 if is_eos:

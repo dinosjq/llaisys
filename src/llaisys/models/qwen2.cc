@@ -42,11 +42,4 @@ __C {
         model->qwen2->abort(token_ids, ntoken);
     }
 
-    /** 获取上一步 logprobs (top-n token + logprob) */
-    int llaisysQwen2ModelGetLogprobs(struct LlaisysQwen2Model *model,
-                                     float *out_logprobs, int n_vocab,
-                                     int *out_tokens, int n_tokens, int batch_idx) {
-        if (!model || !model->qwen2) return -1;
-        return model->qwen2->get_logprobs(out_logprobs, n_vocab, out_tokens, n_tokens, batch_idx);
-    }
 }

@@ -24,8 +24,6 @@ from .schemas import (
     ModelCard,
     ModelList,
     CompletionRequest,
-    LogprobContent,
-    LogprobItem,
     Message,
 )
 from .models.qwen2 import Qwen2
@@ -131,8 +129,6 @@ def create_app(model_path: str, device: str = "nvidia", model_name: str = "qwen2
                     top_k=req.top_k,
                     top_p=req.top_p,
                     temperature=req.temperature or 0.8,
-                    logprobs=req.logprobs,
-                    top_logprobs=req.top_logprobs or 0,
                 ):
                     token_id = chunk_data["token"]
                     finish = chunk_data.get("finish_reason")
@@ -142,18 +138,6 @@ def create_app(model_path: str, device: str = "nvidia", model_name: str = "qwen2
                     if chunk_data["index"] == 0:
                         delta.role = "assistant"
 
-                    logprobs_data = None
-                    if "logprobs" in chunk_data:
-                        items = [
-                            LogprobItem(
-                                token=tokenizer.decode([lp["token"]]),
-                                token_id=lp["token"],
-                                logprob=lp["logprob"],
-                            )
-                            for lp in chunk_data["logprobs"]["content"]
-                        ]
-                        logprobs_data = LogprobContent(content=items)
-
                     chunk = ChatCompletionChunk(
                         id=req_id,
                         created=created,
@@ -162,7 +146,6 @@ def create_app(model_path: str, device: str = "nvidia", model_name: str = "qwen2
                             index=0,
                             delta=delta,
                             finish_reason=finish,
-                            logprobs=logprobs_data,
                         )],
                     )
                     yield {"data": chunk.model_dump_json(exclude_none=True)}
@@ -222,8 +205,6 @@ def create_app(model_path: str, device: str = "nvidia", model_name: str = "qwen2
                     top_k=req.top_k,
                     top_p=req.top_p,
                     temperature=req.temperature or 0.8,
-                    logprobs=req.logprobs is not None and req.logprobs > 0,
-                    top_logprobs=req.logprobs or 0,
                 ):
                     token_id = chunk_data["token"]
                     finish = chunk_data.get("finish_reason")

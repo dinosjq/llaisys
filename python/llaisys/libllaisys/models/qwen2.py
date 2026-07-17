@@ -78,16 +78,6 @@ def load_qwen2(lib):
     ]
     lib.llaisysQwen2ModelAbort.restype = None
 
-    lib.llaisysQwen2ModelGetLogprobs.argtypes = [
-        llaisysQwen2Model_t,
-        POINTER(c_float),  # out_logprobs
-        c_int,             # n_vocab
-        POINTER(c_int),    # out_tokens
-        c_int,             # n_tokens
-        c_int,             # batch_idx
-    ]
-    lib.llaisysQwen2ModelGetLogprobs.restype = c_int
-
 __all__ = [
     "LlaisysQwen2Meta",
     "LlaisysQwen2Weights",
