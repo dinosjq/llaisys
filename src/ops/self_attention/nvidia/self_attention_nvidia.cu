@@ -14,25 +14,21 @@ __device__ __forceinline__ float warp_reduce(float val) {
     return val;
 }
 
-// 0 1 2 3 4 5 ... 127   =>  0 32 64 96 1 33 ... 127
-// physical addr => logical addr
-__device__ __forceinline__ size_t hash(size_t idx) {
-    return ((idx & 3) << 5) + (idx >> 2);
-}
-
-// logical addr => physical addr
-__device__ __forceinline__ size_t in_hash(size_t idx) {
-    return ((idx & 31) << 2) + (idx >> 5);
-}
-
 static constexpr size_t BLOCK_M = 8;
-static constexpr size_t block_dim = 256;
 
 // 针对模型特化的 flash_attention
 template <typename T>
-__global__ void flash_attention_kernel(T *__restrict__ _attn, const T *__restrict__ _Q, const T *__restrict__ _K, const T *__restrict__ _V,
-                                       const float _scale, const size_t _seqlen, const size_t _nhead, const size_t _dv, const size_t _d,
-                                       const size_t _totlen, const size_t _nkvhead) {
+__global__ void flash_attention_kernel(T *__restrict__ _attn, 
+                                       const T *__restrict__ _Q, 
+                                       const T *__restrict__ _K, 
+                                       const T *__restrict__ _V,
+                                       const float _scale, 
+                                       const size_t _seqlen, 
+                                       const size_t _nhead, 
+                                       const size_t _dv, 
+                                       const size_t _d,
+                                       const size_t _totlen, 
+                                       const size_t _nkvhead) {
 
     extern __shared__ float smem[];
     float *_s_acc = smem;                 // (BLOCK_M X dv) 计算的暂存值

@@ -1,0 +1,327 @@
+用优化后的 profile 系统进行性能分析，发现随着推理的进行，attention 算子逐渐变成性能瓶颈
+
+原本以为的长序列推理瓶颈会是 linear 算子，但是发现 linear 算子的耗时基本上不会随序列长度有很大变化
+
+所以优化 attention 算子在长序列推理性能是主要目标
+
+我查看了数据发现 attention 算子耗时从 128 到 256 增加了 3 ms，从 256 到 512 耗时增加了 5ms 左右，从 512 到 1024 增加了 9 ms左右，基本上就是线性的增长的，合理推断是存在访存瓶颈。
+
+
+
+(venv) songjq@SongjqMechine:~/llaisys-main$ python test/profile/profile_model.py --model /home/songjq/models/DeepSeek-R1-Distill-Qwen-1.5B --max_step 1025
+  input_token: 23   output_token: 1025   elapsed: 24.52s
+  throughput: 41.8 tok/s   TTFT: 263.51 ms   TPOT: 23.92 ms
+
+  period: prefill   step: 0   total_ms: 263.51
+    operator                 avg_ms  count   total_ms       %
+    ─────────────────────────────────────────────────────────
+    linear:q_proj              6.24     28     174.71   66.3
+    embed                     30.14      1      30.14   11.4
+    linear:k_proj              0.60     28      16.91    6.4
+    linear:gate_proj           0.19     28       5.34    2.0
+    linear:up_proj             0.19     28       5.31    2.0
+    linear:down_proj           0.18     28       5.11    1.9
+    linear:o_proj              0.08     28       2.37    0.9
+    paged_attn                 0.08     28       2.27    0.9
+    linear:lm_head             2.20      1       2.20    0.8
+    linear:v_proj              0.07     28       2.01    0.8
+    rope:q                     0.07     28       1.96    0.7
+    kv_cache_move:k            0.07     28       1.91    0.7
+    attn_norm                  0.07     28       1.90    0.7
+    add:mlp                    0.07     28       1.85    0.7
+    swiglu                     0.07     28       1.82    0.7
+    kv_cache_move:v            0.06     28       1.78    0.7
+    rope:k                     0.06     28       1.76    0.7
+    mlp_norm                   0.06     28       1.75    0.7
+    add:attn                   0.06     28       1.74    0.7
+    top_k                      0.56      1       0.56    0.2
+    out_norm                   0.06      1       0.06    0.0
+    embed:gather               0.05      1       0.05    0.0
+    ─────────────────────────────────────────────────────────
+    total                                      263.51  100.0
+
+  period: decode   step: 1   total_ms: 42.89
+    operator                 avg_ms  count   total_ms       %
+    ─────────────────────────────────────────────────────────
+    linear:down_proj           0.18     28       4.93   11.5
+    linear:up_proj             0.17     28       4.88   11.4
+    linear:gate_proj           0.17     28       4.83   11.3
+    linear:q_proj              0.08     28       2.32    5.4
+    linear:o_proj              0.08     28       2.27    5.3
+    paged_attn                 0.07     28       2.06    4.8
+    linear:lm_head             1.97      1       1.97    4.6
+    linear:v_proj              0.07     28       1.83    4.3
+    linear:k_proj              0.06     28       1.81    4.2
+    kv_cache_move:k            0.06     28       1.75    4.1
+    mlp_norm                   0.06     28       1.73    4.0
+    rope:k                     0.06     28       1.72    4.0
+    rope:q                     0.06     28       1.71    4.0
+    kv_cache_move:v            0.06     28       1.69    3.9
+    attn_norm                  0.06     28       1.69    3.9
+    add:mlp                    0.06     28       1.67    3.9
+    swiglu                     0.06     28       1.66    3.9
+    add:attn                   0.06     28       1.65    3.9
+    top_k                      0.53      1       0.53    1.2
+    embed                      0.07      1       0.07    0.2
+    out_norm                   0.05      1       0.05    0.1
+    embed:gather               0.05      1       0.05    0.1
+    ─────────────────────────────────────────────────────────
+    total                                       42.89  100.0
+
+  period: decode   step: 32   total_ms: 44.70
+    operator                 avg_ms  count   total_ms       %
+    ─────────────────────────────────────────────────────────
+    linear:down_proj           0.18     28       5.00   11.2
+    linear:gate_proj           0.18     28       4.97   11.1
+    linear:up_proj             0.18     28       4.93   11.0
+    paged_attn                 0.09     28       2.58    5.8
+    linear:q_proj              0.08     28       2.37    5.3
+    linear:o_proj              0.08     28       2.30    5.1
+    linear:k_proj              0.07     28       2.00    4.5
+    linear:lm_head             1.98      1       1.98    4.4
+    linear:v_proj              0.07     28       1.89    4.2
+    rope:k                     0.07     28       1.85    4.1
+    rope:q                     0.06     28       1.81    4.1
+    attn_norm                  0.06     28       1.78    4.0
+    swiglu                     0.06     28       1.77    4.0
+    kv_cache_move:k            0.06     28       1.77    4.0
+    kv_cache_move:v            0.06     28       1.77    4.0
+    mlp_norm                   0.06     28       1.77    4.0
+    add:mlp                    0.06     28       1.74    3.9
+    add:attn                   0.06     28       1.70    3.8
+    top_k                      0.53      1       0.53    1.2
+    embed                      0.07      1       0.07    0.2
+    embed:gather               0.06      1       0.06    0.1
+    out_norm                   0.05      1       0.05    0.1
+    ─────────────────────────────────────────────────────────
+    total                                       44.70  100.0
+
+  period: decode   step: 64   total_ms: 45.66
+    operator                 avg_ms  count   total_ms       %
+    ─────────────────────────────────────────────────────────
+    linear:down_proj           0.18     28       5.10   11.2
+    linear:up_proj             0.18     28       4.97   10.9
+    linear:gate_proj           0.18     28       4.96   10.9
+    paged_attn                 0.11     28       3.05    6.7
+    linear:o_proj              0.09     28       2.40    5.2
+    linear:q_proj              0.09     28       2.39    5.2
+    linear:lm_head             1.98      1       1.98    4.3
+    linear:v_proj              0.07     28       1.98    4.3
+    linear:k_proj              0.07     28       1.92    4.2
+    kv_cache_move:k            0.07     28       1.87    4.1
+    kv_cache_move:v            0.07     28       1.84    4.0
+    add:mlp                    0.07     28       1.82    4.0
+    rope:q                     0.06     28       1.80    3.9
+    add:attn                   0.06     28       1.79    3.9
+    mlp_norm                   0.06     28       1.79    3.9
+    rope:k                     0.06     28       1.78    3.9
+    swiglu                     0.06     28       1.78    3.9
+    attn_norm                  0.06     28       1.78    3.9
+    top_k                      0.52      1       0.52    1.1
+    out_norm                   0.05      1       0.05    0.1
+    embed:gather               0.05      1       0.05    0.1
+    embed                      0.05      1       0.05    0.1
+    ─────────────────────────────────────────────────────────
+    total                                       45.66  100.0
+
+  period: decode   step: 128   total_ms: 44.96
+    operator                 avg_ms  count   total_ms       %
+    ─────────────────────────────────────────────────────────
+    linear:down_proj           0.18     28       4.94   11.0
+    linear:up_proj             0.18     28       4.90   10.9
+    linear:gate_proj           0.17     28       4.90   10.9
+    paged_attn                 0.14     28       4.03    9.0
+    linear:q_proj              0.08     28       2.26    5.0
+    linear:o_proj              0.08     28       2.25    5.0
+    linear:lm_head             1.99      1       1.99    4.4
+    linear:k_proj              0.07     28       1.83    4.1
+    linear:v_proj              0.06     28       1.81    4.0
+    kv_cache_move:k            0.06     28       1.75    3.9
+    attn_norm                  0.06     28       1.74    3.9
+    kv_cache_move:v            0.06     28       1.74    3.9
+    rope:q                     0.06     28       1.73    3.8
+    mlp_norm                   0.06     28       1.73    3.8
+    rope:k                     0.06     28       1.70    3.8
+    add:attn                   0.06     28       1.68    3.7
+    add:mlp                    0.06     28       1.67    3.7
+    swiglu                     0.06     28       1.65    3.7
+    top_k                      0.50      1       0.50    1.1
+    embed:gather               0.07      1       0.07    0.1
+    embed                      0.06      1       0.06    0.1
+    out_norm                   0.06      1       0.06    0.1
+    ─────────────────────────────────────────────────────────
+    total                                       44.96  100.0
+
+  period: decode   step: 256   total_ms: 47.33
+    operator                 avg_ms  count   total_ms       %
+    ─────────────────────────────────────────────────────────
+    paged_attn                 0.21     28       5.89   12.4
+    linear:gate_proj           0.18     28       4.98   10.5
+    linear:up_proj             0.18     28       4.91   10.4
+    linear:down_proj           0.18     28       4.91   10.4
+    linear:q_proj              0.08     28       2.35    5.0
+    linear:o_proj              0.08     28       2.30    4.9
+    linear:lm_head             1.97      1       1.97    4.2
+    linear:k_proj              0.07     28       1.96    4.1
+    linear:v_proj              0.07     28       1.86    3.9
+    kv_cache_move:v            0.06     28       1.78    3.8
+    rope:q                     0.06     28       1.77    3.7
+    attn_norm                  0.06     28       1.75    3.7
+    rope:k                     0.06     28       1.73    3.7
+    kv_cache_move:k            0.06     28       1.72    3.6
+    swiglu                     0.06     28       1.72    3.6
+    mlp_norm                   0.06     28       1.70    3.6
+    add:mlp                    0.06     28       1.69    3.6
+    add:attn                   0.06     28       1.69    3.6
+    top_k                      0.49      1       0.49    1.0
+    embed                      0.05      1       0.05    0.1
+    out_norm                   0.05      1       0.05    0.1
+    embed:gather               0.05      1       0.05    0.1
+    ─────────────────────────────────────────────────────────
+    total                                       47.33  100.0
+
+  period: decode   step: 512   total_ms: 52.22
+    operator                 avg_ms  count   total_ms       %
+    ─────────────────────────────────────────────────────────
+    paged_attn                 0.35     28       9.82   18.8
+    linear:gate_proj           0.18     28       5.04    9.7
+    linear:down_proj           0.18     28       4.99    9.6
+    linear:up_proj             0.18     28       4.93    9.4
+    linear:o_proj              0.09     28       2.53    4.8
+    linear:q_proj              0.09     28       2.46    4.7
+    linear:lm_head             1.94      1       1.94    3.7
+    linear:v_proj              0.07     28       1.91    3.7
+    linear:k_proj              0.07     28       1.89    3.6
+    mlp_norm                   0.06     28       1.81    3.5
+    swiglu                     0.06     28       1.79    3.4
+    add:mlp                    0.06     28       1.79    3.4
+    add:attn                   0.06     28       1.79    3.4
+    rope:k                     0.06     28       1.79    3.4
+    attn_norm                  0.06     28       1.78    3.4
+    rope:q                     0.06     28       1.77    3.4
+    kv_cache_move:v            0.06     28       1.72    3.3
+    kv_cache_move:k            0.06     28       1.72    3.3
+    top_k                      0.55      1       0.55    1.1
+    embed                      0.06      1       0.06    0.1
+    out_norm                   0.05      1       0.05    0.1
+    embed:gather               0.05      1       0.05    0.1
+    ─────────────────────────────────────────────────────────
+    total                                       52.22  100.0
+
+  period: decode   step: 1024   total_ms: 61.23
+    operator                 avg_ms  count   total_ms       %
+    ─────────────────────────────────────────────────────────
+    paged_attn                 0.64     28      17.98   29.4
+    linear:down_proj           0.18     28       5.06    8.3
+    linear:up_proj             0.18     28       5.05    8.3
+    linear:gate_proj           0.18     28       5.04    8.2
+    linear:o_proj              0.09     28       2.41    3.9
+    linear:q_proj              0.09     28       2.40    3.9
+    linear:lm_head             2.26      1       2.26    3.7
+    linear:k_proj              0.07     28       1.99    3.3
+    linear:v_proj              0.07     28       1.96    3.2
+    add:attn                   0.07     28       1.84    3.0
+    kv_cache_move:v            0.07     28       1.84    3.0
+    attn_norm                  0.07     28       1.84    3.0
+    swiglu                     0.07     28       1.83    3.0
+    rope:q                     0.07     28       1.83    3.0
+    mlp_norm                   0.06     28       1.81    3.0
+    kv_cache_move:k            0.06     28       1.81    3.0
+    add:mlp                    0.06     28       1.80    2.9
+    rope:k                     0.06     28       1.80    2.9
+    top_k                      0.51      1       0.51    0.8
+    embed                      0.07      1       0.07    0.1
+    out_norm                   0.06      1       0.06    0.1
+    embed:gather               0.05      1       0.05    0.1
+    ─────────────────────────────────────────────────────────
+    total                                       61.23  100.0
+
+链路 profile 还是会有一些偏差，所以换一种方式来实际确认 throughput
+
+(venv) songjq@SongjqMechine:~/llaisys-main$ python test/benchmark/benchmark_infer.py --model /home/songjq/models/DeepSeek-R1-Distill-Qwen-1.5B --warmup 1 --repeat 1 --num_prompts 6 --max_step 257
+Loading HF model from local: /home/songjq/models/DeepSeek-R1-Distill-Qwen-1.5B
+Loading LLAISYS model...
+
+  Model: Qwen2-1.5B  |  GPU: NVIDIA GeForce RTX 4060 Laptop GPU  |  Prompts: 6  |  Mode: single
+
+  ═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+  prompt      input(token)  LLAISYS_output(token)   HF_output(token)  LLAISYS_latency(ms)   HF_latency(ms)  speedup
+  ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  short_0               13                    257                257               4438.4           5420.0    1.22x
+  medium_0              35                    257                257               4479.0           5416.9    1.21x
+  long_0               186                    257                257               5104.1           5405.3    1.06x
+  short_1               14                    193                172               3238.5           3612.1    1.25x
+  medium_1              30                    257                257               4457.0           5423.5    1.22x
+  long_1               254                    257                257               5329.6           5488.7    1.03x
+  ═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+  Metric                  LLAISYS             HF
+  ─────────────────────────────────────────────────
+  avg latency           4507.8 ms      5127.7 ms
+  p50 latency           4479.0 ms      5420.0 ms
+  p90 latency           5104.1 ms      5423.5 ms
+  TTFT(avg)               61.1 ms        19.7 ms
+  TPOT                   18.30 ms       21.12 ms
+  Throughput             54.6 t/s       47.4 t/s
+
+  Throughput speedup: 1.15x
+  JSON saved: test/benchmark/results/run_20260714_234902/results.json
+
+
+(venv) songjq@SongjqMechine:~/llaisys-main$ python test/benchmark/benchmark_infer.py --model /home/songjq/models/DeepSeek-R1-Distill-Qwen-1.5B --warmup 1 --repeat 1 --num_prompts 6 --max_step 513
+Loading HF model from local: /home/songjq/models/DeepSeek-R1-Distill-Qwen-1.5B
+Loading LLAISYS model...
+
+  Model: Qwen2-1.5B  |  GPU: NVIDIA GeForce RTX 4060 Laptop GPU  |  Prompts: 6  |  Mode: single
+
+  ═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+  prompt      input(token)  LLAISYS_output(token)   HF_output(token)  LLAISYS_latency(ms)   HF_latency(ms)  speedup
+  ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  short_0               13                    343                513               6041.4           9973.2    1.10x
+  medium_0              35                    513                513               9739.7           9927.1    1.02x
+  long_0               186                    513                513              11146.9          10005.7    0.90x
+  short_1               14                    172                172               2971.4           3600.0    1.21x
+  medium_1              30                    513                513               9801.1          10095.8    1.03x
+  long_1               254                    513                513              11287.5          10007.5    0.89x
+  ═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+  Metric                  LLAISYS             HF
+  ─────────────────────────────────────────────────
+  avg latency           8498.0 ms      8934.9 ms
+  p50 latency           9801.1 ms     10005.7 ms
+  p90 latency          11146.9 ms     10007.5 ms
+  TTFT(avg)               61.0 ms        18.7 ms
+  TPOT                   19.86 ms       19.59 ms
+  Throughput             50.3 t/s       51.1 t/s
+
+  Throughput speedup: 0.99x
+  JSON saved: test/benchmark/results/run_20260714_234454/results.json
+
+(venv) songjq@SongjqMechine:~/llaisys-main$ python test/benchmark/benchmark_infer.py --model /home/songjq/models/DeepSeek-R1-Distill-Qwen-1.5B --warmup 1 --repeat 1 --num_prompts 6 --max_step 1024
+Loading HF model from local: /home/songjq/models/DeepSeek-R1-Distill-Qwen-1.5B
+Loading LLAISYS model...
+
+  Model: Qwen2-1.5B  |  GPU: NVIDIA GeForce RTX 4060 Laptop GPU  |  Prompts: 6  |  Mode: single
+
+  ═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+  prompt      input(token)  LLAISYS_output(token)   HF_output(token)  LLAISYS_latency(ms)   HF_latency(ms)  speedup
+  ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  short_0               13                    324                588               5703.5          11679.8    1.13x
+  medium_0              35                   1024               1024              23728.4          20212.3    0.85x
+  long_0               186                   1024               1024              25975.3          20522.9    0.79x
+  short_1               14                    193                172               3257.2           3618.7    1.25x
+  medium_1              30                   1024               1024              23267.8          22084.8    0.95x
+  long_1               254                   1024               1024              27463.2          21950.1    0.80x
+  ═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+  Metric                  LLAISYS             HF
+  ─────────────────────────────────────────────────
+  avg latency          18232.6 ms     16678.1 ms
+  p50 latency          23728.4 ms     20522.9 ms
+  p90 latency          25975.3 ms     21950.1 ms
+  TTFT(avg)               62.4 ms        20.4 ms
+  TPOT                   23.72 ms       20.61 ms
+  Throughput             42.2 t/s       48.5 t/s
+
+  Throughput speedup: 0.87x
+  JSON saved: test/benchmark/results/run_20260714_233507/results.json

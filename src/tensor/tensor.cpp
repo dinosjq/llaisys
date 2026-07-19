@@ -295,27 +295,185 @@ tensor_t Tensor::permute(const std::vector<size_t> &order) const {
 
 /**
  * @brief 创建一个新的张量视图（view），仅改变形状和步长，不拷贝数据。
- *        只有当原张量为连续内存布局且新形状与原元素总数一致时才允许创建视图，否则抛出异常。
+ *
+ * 泛化实现（2026-07-18）：
+ * - 连续张量：使用旧的 packed strides 算法（快速路径，与旧实现完全相同）
+ * - 非连续张量：采用 PyTorch/ATen 兼容的 stride 推导算法：
+ *   从最内维向外遍历旧维度，按"相对连续"关系分组为 chunk；
+ *   每个 chunk 内新维度的累积乘积须匹配 chunk 元素数，stride 从 chunk 最内层 stride 逐级乘出。
+ *   不兼容时抛异常。
+ *
  * @param shape 新视图的形状
  * @return 新的 Tensor 视图对象（与原张量共享底层存储）
- * @throws std::runtime_error 如果原张量不是连续内存或新形状元素总数不一致
+ * @throws std::runtime_error 如果形状不兼容
  */
+
+/*
+ * ==== 旧 view 实现（仅支持连续张量，保留以供对照）====
+ *
+ * tensor_t Tensor::view(const std::vector<size_t> &shape) const {
+ *     // 检查新形状元素总数是否与原张量一致，且原张量必须是连续内存
+ *     if (this->numel() != std::accumulate(shape.begin(), shape.end(), (size_t)1, std::multiplies<size_t>()) || !this->isContiguous()) {
+ *         throw std::runtime_error("Tensor::view error.");
+ *     }
+ *     // 重新计算新视图的 strides
+ *     size_t ndim = shape.size();
+ *     size_t stride = 1;
+ *     std::vector<ptrdiff_t> strides(ndim);
+ *     for (size_t i = 1; i <= ndim; ++i) {
+ *         strides[ndim - i] = stride;
+ *         stride *= shape[ndim - i];
+ *     }
+ *     TensorMeta _new_meta{this->dtype(), shape, strides};
+ *     return std::shared_ptr<Tensor>(new Tensor(_new_meta, _storage, _offset));
+ * }
+ */
+
 tensor_t Tensor::view(const std::vector<size_t> &shape) const {
-    // 检查新形状元素总数是否与原张量一致，且原张量必须是连续内存
-    if (this->numel() != std::accumulate(shape.begin(), shape.end(), (size_t)1, std::multiplies<size_t>()) || !this->isContiguous()) {
-        throw std::runtime_error("Tensor::view error.");
+    // ---- 元素总数校验（所有路径通用）----
+    size_t new_numel = std::accumulate(shape.begin(), shape.end(), (size_t)1, std::multiplies<size_t>());
+    if (this->numel() != new_numel) {
+        // 格式化错误信息
+        std::stringstream ss;
+        ss << "Tensor::view: shape element count " << new_numel
+           << " does not match tensor numel " << this->numel() << ".";
+        throw std::runtime_error(ss.str());
     }
-    // 在此之前，应该先检查总数是否一致，还有原tensor内存分布是否连续，否则抛出异常
-    // 重新计算新视图的 strides
-    size_t ndim = shape.size();
-    size_t stride = 1;
-    std::vector<ptrdiff_t> strides(ndim);
-    for (size_t i = 1; i <= ndim; ++i) {
-        strides[ndim - i] = stride;
-        stride *= shape[ndim - i];
+
+    // ---- 退化路径: ndim == 0 (标量) ----
+    if (this->ndim() == 0) {
+        std::vector<ptrdiff_t> nstrides(shape.size(), 1);
+        TensorMeta _new_meta{this->dtype(), shape, nstrides};
+        return std::shared_ptr<Tensor>(new Tensor(_new_meta, _storage, _offset));
     }
-    TensorMeta _new_meta{this->dtype(), shape, strides};
-    // 创建新视图对象，底层存储与原张量共享
+
+    // ---- 退化路径: numel == 0 (至少有一维为 0) ----
+    if (new_numel == 0) {
+        // 按 create() 语义生成 packed row-major strides
+        std::vector<ptrdiff_t> nstrides(shape.size());
+        size_t stride = 1;
+        for (size_t i = 1; i <= shape.size(); ++i) {
+            nstrides[shape.size() - i] = static_cast<ptrdiff_t>(stride);
+            stride *= shape[shape.size() - i];
+        }
+        TensorMeta _new_meta{this->dtype(), shape, nstrides};
+        return std::shared_ptr<Tensor>(new Tensor(_new_meta, _storage, _offset));
+    }
+
+    // ---- 连续快速路径: 旧 packed-strides 算法（与旧实现逐位相同）----
+    if (this->isContiguous()) {
+        size_t ndim = shape.size();
+        size_t stride = 1;
+        std::vector<ptrdiff_t> nstrides(ndim);
+        for (size_t i = 1; i <= ndim; ++i) {
+            nstrides[ndim - i] = static_cast<ptrdiff_t>(stride);
+            stride *= shape[ndim - i];
+        }
+        TensorMeta _new_meta{this->dtype(), shape, nstrides};
+        return std::shared_ptr<Tensor>(new Tensor(_new_meta, _storage, _offset));
+    }
+
+    // ================================================================
+    // 泛化路径: ATen 兼容的 chunk-walk stride 推导
+    // ================================================================
+    const auto &os = this->shape();
+    const auto &ost = this->strides();
+    size_t ond = this->ndim();
+
+    std::vector<ptrdiff_t> nst(shape.size(), 0);
+
+    size_t new_idx = shape.size();    // 从 innermost 向前消费
+    size_t chunk_numel = 1;           // 当前 chunk 的累积元素数
+    ptrdiff_t chunk_stride = 0;       // 当前 chunk 最内层的 stride
+
+    // 从最内维向外遍历旧维度
+    for (size_t i = ond; i > 0; --i) {
+        size_t d = i - 1;             // 当前旧维索引
+        size_t dim_sz = os[d];
+        ptrdiff_t dim_st = ost[d];
+
+        // size-1 旧维永不触发 chunk 边界（对齐 PyTorch 语义）
+        if (dim_sz == 1) {
+            continue;
+        }
+
+        // 判断是否与当前 chunk 连续
+        bool start_new_chunk = false;
+        if (chunk_stride != 0) {
+            ptrdiff_t expected = chunk_stride * static_cast<ptrdiff_t>(chunk_numel);
+            if (dim_st != expected) {
+                start_new_chunk = true;
+            }
+        }
+
+        if (start_new_chunk) {
+            // ---- 清空当前 chunk：消费新维 ----
+            size_t remaining = chunk_numel;
+            while (remaining > 1 && new_idx > 0) {
+                --new_idx;
+                size_t ns = shape[new_idx];
+                if (remaining % ns != 0) {
+                    throw std::runtime_error(
+                        "Tensor::view: shape is not compatible with current strides. "
+                        "Cannot align new dim with chunk product.");
+                }
+                nst[new_idx] = chunk_stride;
+                chunk_stride *= static_cast<ptrdiff_t>(ns);
+                remaining /= ns;
+            }
+            if (remaining != 1) {
+                throw std::runtime_error(
+                    "Tensor::view: shape is not compatible with current strides. "
+                    "Chunk product not fully consumed.");
+            }
+            // 开始新 chunk
+            chunk_numel = 1;
+            chunk_stride = 0;
+        }
+
+        // 将当前旧维加入 chunk
+        if (chunk_stride == 0) {
+            chunk_stride = dim_st;
+        }
+        chunk_numel *= dim_sz;
+    }
+
+    // ---- 清空最外层 chunk ----
+    if (chunk_numel > 1) {
+        size_t remaining = chunk_numel;
+        while (remaining > 1 && new_idx > 0) {
+            --new_idx;
+            size_t ns = shape[new_idx];
+            if (remaining % ns != 0) {
+                throw std::runtime_error(
+                    "Tensor::view: shape is not compatible with current strides. "
+                    "Cannot align new dim with chunk product.");
+            }
+            nst[new_idx] = chunk_stride;
+            chunk_stride *= static_cast<ptrdiff_t>(ns);
+            remaining /= ns;
+        }
+        if (remaining != 1) {
+            throw std::runtime_error(
+                "Tensor::view: shape is not compatible with current strides. "
+                "Final chunk product not fully consumed.");
+        }
+    }
+
+    // ---- 前面还剩的新维（必须全部为 size 1）----
+    while (new_idx > 0) {
+        --new_idx;
+        if (shape[new_idx] != 1) {
+            throw std::runtime_error(
+                "Tensor::view: shape is not compatible with current strides. "
+                "Leading new dims not consumed by old shape chunks.");
+        }
+        nst[new_idx] = (new_idx + 1 < shape.size())
+                           ? nst[new_idx + 1] * static_cast<ptrdiff_t>(shape[new_idx + 1])
+                           : 1;
+    }
+
+    TensorMeta _new_meta{this->dtype(), shape, nst};
     return std::shared_ptr<Tensor>(new Tensor(_new_meta, _storage, _offset));
 }
 
@@ -377,9 +535,26 @@ tensor_t Tensor::contiguous() const {
     return out;
 }
 
+/*
+ * ==== 旧 reshape 实现（保留以供对照）====
+ *
+ * tensor_t Tensor::reshape(const std::vector<size_t> &shape) const {
+ *     size_t new_numel = std::accumulate(shape.begin(), shape.end(), (size_t)1, std::multiplies<size_t>());
+ *     ASSERT(new_numel == this->numel(), "Tensor::reshape : shape size mismatch");
+ *     if (this->isContiguous()) {
+ *         return this->view(shape);
+ *     }
+ *     return this->contiguous()->view(shape);
+ * }
+ */
+
 /**
  * @brief 返回一个新形状的张量视图或副本。
- *        若原张量为连续内存，直接返回视图；否则先转为连续再视图。
+ *        先用泛化 view 尝试零拷贝变形；不兼容时退化为 contiguous()->view() 拷贝。
+ *
+ *        注意：结果可能为非连续视图（共享存储）。依赖 contiguous() 或 data() 原始指针
+ *        的调用方需自行保证连续性。
+ *
  * @param shape 新形状
  * @return 新形状的张量对象
  * @throws std::runtime_error 元素数量不一致时报错
@@ -387,8 +562,11 @@ tensor_t Tensor::contiguous() const {
 tensor_t Tensor::reshape(const std::vector<size_t> &shape) const {
     size_t new_numel = std::accumulate(shape.begin(), shape.end(), (size_t)1, std::multiplies<size_t>());
     ASSERT(new_numel == this->numel(), "Tensor::reshape : shape size mismatch");
-    if (this->isContiguous()) {
+    // 先尝试泛化 view（零拷贝）
+    try {
         return this->view(shape);
+    } catch (const std::runtime_error &) {
+        // view 不兼容 → 退化为拷贝路径
     }
     return this->contiguous()->view(shape);
 }

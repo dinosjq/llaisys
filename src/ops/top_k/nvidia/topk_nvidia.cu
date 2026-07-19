@@ -112,7 +112,6 @@ __global__ void _topk_kernel(size_t *out_idx, T *out_val, const T *vals, const s
         __syncthreads();
     }
     float f_kth_val = _uint_2_float(kth_val);
-#pragma unroll
     for(size_t i = tid; i < numel; i += stride){
         T val = vals[in_offset + i];
         float fval = llaisys::utils::nvidia::cast<float>(val);

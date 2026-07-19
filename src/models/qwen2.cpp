@@ -407,7 +407,7 @@ std::vector<int64_t> Qwen2::forward(Qwen2Pack &pack, std::vector<int64_t> &block
     // 加载元数据 + 权重
     const Qwen2Meta &meta = this->_meta;
     const Qwen2Weights &w = this->_weights;
-    const Qwen2Tensors &t = this->_tensors;
+    const Qwen2Tensors &ts = this->_tensors;
 
     // 预处理信息
     const std::vector<int64_t> &token_ids = pack.token_ids;
@@ -434,27 +434,27 @@ std::vector<int64_t> Qwen2::forward(Qwen2Pack &pack, std::vector<int64_t> &block
     const llaisysDeviceType_t device = this->_device_type;
 
     // 初始化中间张量
-    tensor_t x_norm = t._x_norm->slice(0, 0, tot_seq_len)->view({tot_seq_len, hs});
-    tensor_t q = t._q->slice(0, 0, tot_seq_len)->view({tot_seq_len, nh * dh});
-    tensor_t k = t._k->slice(0, 0, tot_seq_len)->view({tot_seq_len, nkvh * dh});
-    tensor_t v = t._v->slice(0, 0, tot_seq_len)->view({tot_seq_len, nkvh * dh}); 
-    tensor_t q_rope = t._q_rope->slice(0, 0, tot_seq_len)->view({tot_seq_len, nh, dh});
-    tensor_t k_rope = t._k_rope->slice(0, 0, tot_seq_len)->view({tot_seq_len, nkvh, dh});
-    tensor_t attn_val = t._attn_val->slice(0, 0, tot_seq_len)->view({tot_seq_len, nh, dh});
-    tensor_t attn_out = t._attn_out->slice(0, 0, tot_seq_len)->view({tot_seq_len, hs});
-    tensor_t x_attn = t._x_attn->slice(0, 0, tot_seq_len)->view({tot_seq_len, hs});
-    tensor_t m_norm = t._m_norm->slice(0, 0, tot_seq_len)->view({tot_seq_len, hs});
-    tensor_t gate = t._gate->slice(0, 0, tot_seq_len)->view({tot_seq_len, di});
-    tensor_t up = t._up->slice(0, 0, tot_seq_len)->view({tot_seq_len, di});
-    tensor_t swiglu = t._swiglu->slice(0, 0, tot_seq_len)->view({tot_seq_len, di});
-    tensor_t down =  t._down->slice(0, 0, tot_seq_len)->view({tot_seq_len, hs});
-    tensor_t x_mlp = t._x_mlp->slice(0, 0, tot_seq_len)->view({tot_seq_len, hs});
-    tensor_t dev_block_ids = t._dev_block_ids->slice(0, 0, batch_size * max_block_num)->view({batch_size, max_block_num});
-    tensor_t dev_cut_idx = t._dev_cut_idx->slice(0, 0, batch_size + 1)->view({batch_size + 1});
-    tensor_t dev_tot_len = t._dev_tot_len->slice(0, 0, batch_size)->view({batch_size});
-    tensor_t dev_token_ids = t._dev_token_ids->slice(0, 0, tot_seq_len)->view({tot_seq_len});
-    tensor_t dev_pos_ids = t._dev_pos_ids->slice(0, 0, tot_seq_len)->view({tot_seq_len});
-    tensor_t x =  t._x->slice(0, 0, tot_seq_len)->view({tot_seq_len, hs});
+    tensor_t x_norm = ts._x_norm->slice(0, 0, tot_seq_len)->view({tot_seq_len, hs});
+    tensor_t q = ts._q->slice(0, 0, tot_seq_len)->view({tot_seq_len, nh * dh});
+    tensor_t k = ts._k->slice(0, 0, tot_seq_len)->view({tot_seq_len, nkvh * dh});
+    tensor_t v = ts._v->slice(0, 0, tot_seq_len)->view({tot_seq_len, nkvh * dh}); 
+    tensor_t q_rope = ts._q_rope->slice(0, 0, tot_seq_len)->view({tot_seq_len, nh, dh});
+    tensor_t k_rope = ts._k_rope->slice(0, 0, tot_seq_len)->view({tot_seq_len, nkvh, dh});
+    tensor_t attn_val = ts._attn_val->slice(0, 0, tot_seq_len)->view({tot_seq_len, nh, dh});
+    tensor_t attn_out = ts._attn_out->slice(0, 0, tot_seq_len)->view({tot_seq_len, hs});
+    tensor_t x_attn = ts._x_attn->slice(0, 0, tot_seq_len)->view({tot_seq_len, hs});
+    tensor_t m_norm = ts._m_norm->slice(0, 0, tot_seq_len)->view({tot_seq_len, hs});
+    tensor_t gate = ts._gate->slice(0, 0, tot_seq_len)->view({tot_seq_len, di});
+    tensor_t up = ts._up->slice(0, 0, tot_seq_len)->view({tot_seq_len, di});
+    tensor_t swiglu = ts._swiglu->slice(0, 0, tot_seq_len)->view({tot_seq_len, di});
+    tensor_t down =  ts._down->slice(0, 0, tot_seq_len)->view({tot_seq_len, hs});
+    tensor_t x_mlp = ts._x_mlp->slice(0, 0, tot_seq_len)->view({tot_seq_len, hs});
+    tensor_t dev_block_ids = ts._dev_block_ids->slice(0, 0, batch_size * max_block_num)->view({batch_size, max_block_num});
+    tensor_t dev_cut_idx = ts._dev_cut_idx->slice(0, 0, batch_size + 1)->view({batch_size + 1});
+    tensor_t dev_tot_len = ts._dev_tot_len->slice(0, 0, batch_size)->view({batch_size});
+    tensor_t dev_token_ids = ts._dev_token_ids->slice(0, 0, tot_seq_len)->view({tot_seq_len});
+    tensor_t dev_pos_ids = ts._dev_pos_ids->slice(0, 0, tot_seq_len)->view({tot_seq_len});
+    tensor_t x =  ts._x->slice(0, 0, tot_seq_len)->view({tot_seq_len, hs});
 
     // 初始化设备端数据
     dev_block_ids->load(block_ids.data());
@@ -514,15 +514,15 @@ std::vector<int64_t> Qwen2::forward(Qwen2Pack &pack, std::vector<int64_t> &block
         std::swap(x, x_mlp);
     }
     // 先去提取
-    tensor_t x_part = t._x_part->slice(0, 0, batch_size)->view({batch_size, hs});
+    tensor_t x_part = ts._x_part->slice(0, 0, batch_size)->view({batch_size, hs});
     ops::embedding(x_part, dev_cut_idx->slice(0, 1, batch_size + 1), x, -1);
 
     // RMS-norm 均方根归一化
-    tensor_t x_part_norm = t._x_part_norm->slice(0, 0, batch_size)->view({batch_size, hs});
+    tensor_t x_part_norm = ts._x_part_norm->slice(0, 0, batch_size)->view({batch_size, hs});
     ops::rms_norm(x_part_norm, x_part, to_tensor(w.out_norm_w), epsilon);
 
     // 把隐藏向量映射到词表维度（voc）生成未归一化的打分（logits）
-    tensor_t logits = t._logits->slice(0, 0, batch_size)->view({batch_size, voc});
+    tensor_t logits = ts._logits->slice(0, 0, batch_size)->view({batch_size, voc});
     ops::linear(logits, x_part_norm, to_tensor(w.out_embed), nullptr);
     // argmax
     // tensor_t max_idx = Tensor::create({batch_size, 1}, LLAISYS_DTYPE_I64, device, device_id);
@@ -535,8 +535,8 @@ std::vector<int64_t> Qwen2::forward(Qwen2Pack &pack, std::vector<int64_t> &block
 
     // top_k
     constexpr size_t K = TOP_K;
-    tensor_t top_idx = t._top_idx->slice(0, 0, batch_size)->view({batch_size, TOP_K});
-    tensor_t top_val = t._top_val->slice(0, 0, batch_size)->view({batch_size, TOP_K});
+    tensor_t top_idx = ts._top_idx->slice(0, 0, batch_size)->view({batch_size, TOP_K});
+    tensor_t top_val = ts._top_val->slice(0, 0, batch_size)->view({batch_size, TOP_K});
     ops::topk(top_idx, top_val, logits, K);
     // 搬到cpu
     if (device != LLAISYS_DEVICE_CPU) {
@@ -549,13 +549,13 @@ std::vector<int64_t> Qwen2::forward(Qwen2Pack &pack, std::vector<int64_t> &block
         std::vector<int64_t> idx = top_idx->slice(0, i, i + 1)->reshape({K})->to_vector<int64_t>();
         std::vector<float> val = top_val->slice(0, i, i + 1)->reshape({K})->to_vector<float>();
         // temperature 缩放 + 重新 softmax
-        const float temp = pack.temperature[i];
-        if (temp > 0.0f && temp != 1.0f) {
-            for (auto &v : val) v /= temp;
+        const float t = pack.temperature[i];
+        if (t > 0.0f && t != 1.0f) {
             float m = *std::max_element(val.begin(), val.end());
-            float s = 0.0f;
-            for (auto &v : val) { v = std::exp(v - m); s += v; }
-            for (auto &v : val) v /= s;
+            float s = 0.0f, t_den = 1.0f / t;
+            for (auto &v : val) { v = std::exp((v - m) * t_den); s += v; }
+            float s_den = 1.0f / s;
+            for (auto &v : val) v *= s_den;
         }
         result[i] = _random_sample(idx, val, pack.top_p[i]);
     }

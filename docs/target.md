@@ -32,43 +32,9 @@
    - FlashDecoding 风格 KV 分块并行：将 totlen 切分为多个 chunk，各 block 独立计算 partial softmax，最后 reduction 合并
    - 解决 decode 阶段 grid 过小（仅 12 blocks）导致 SM 利用率低的问题
    - 考虑 warp specialization（FA3 思路）进一步提升 SM 利用率
-
-8) Linear 算子优化
-   Linear 耗时稳定（~27ms/step），但对整体延迟贡献大。当前使用 cuBLAS（`cublasGemmEx`）+ 独立 `add_bias` kernel。
-   - Fused QKV projection：合并 q/k/v 三次 GEMM 为一次（weight 沿 N 维拼接）
-   - Fused bias + GEMM（利用 cuBLAS 的 `beta` 参数或手写 fused kernel）
-   - 针对 decode 的 small-M GEMM 优化（M=1 时 cuBLAS launch overhead 显著）
-
-9) 算子融合
-   当前每个算子独立 launch，中间结果经 global memory 往返，存在大量冗余访存。
-   - QKV Projection 融合：3× GEMM + 3× bias → 1× GEMM (weight concat) + 1× fused bias（6→2 kernel launches）
-   - RMS-Norm + Residual Add 融合：单 kernel 内完成 norm + add，省一次 global mem round-trip
-   - SwiGLU + Linear(down) 融合：单 kernel 完成 silu×up + linear(down)，省一次中间结果写回
-   - RoPE + KV Cache Move 融合：RoPE 后直接写入 KV cache block，省一次 global mem 读写
-
-10) 异步 Tokenizer（待定）
-   Tokenization 在 CPU 上执行，可能成为 decode 循环的瓶颈。将 tokenizer 移到独立线程，与 GPU 推理流水线化。
-   - 2026-07-18 评估结论：C++ worker 线程自治推进序列，Python decode 期间 GPU 本就在算下一个 token，"与 GPU 流水线化"收益≈0（decode ~50µs vs GPU ~19ms/step），预取式重叠还存在 EOS 复活序列的确定性 bug，故暂缓
-   - 真实遗留问题（若重启任务再做）：server encode 阻塞事件循环（应 to_thread）；逐 token decode 的 UTF-8 正确性缺陷（应实现 vLLM 式增量 detokenizer）；generate_async 的 GeneratorExit 路径不触发 Abort（KV cache 泄漏）
-
+   
 11) 算子通用性优化
     方便适配其他模型架构，减少硬编码假设（如 d=128、nkvh=2 等维度特化）。
-
-12) 性能 Benchmark 报告
-    当前有散落的 JSON profile 数据，需整理成可呈现的文档+图表。定量展示优化成果。
-    - Throughput (tokens/sec) vs batch_size 曲线
-    - TTFT vs prompt_length，TPOT vs seq_len
-    - 每个算子的 micro-benchmark（耗时 + 带宽利用率）
-    - Roofline 分析：各算子的 arithmetic intensity vs 理论峰值
-    - 与 HuggingFace Transformers / vLLM 的加速比（同模型同硬件）
-    - Ablation：各优化项的独立收益（on/off 对比）
-
-13) Prefix Caching 增强
-    已有基础 hash-based prefix caching，需升级。
-    - Radix Tree（前缀树）管理缓存块 — 自动检测跨请求公共前缀，对标 SGLang
-    - LRU / LFU eviction — 当前只"踢掉最老的序列"，无基于访问频率的淘汰策略
-    - Cache hit rate metrics — 统计命中率、块复用率，量化缓存效果
-    - System prompt 缓存 — 多轮对话中 system prompt 只计算一次
 
 14) 适配新模型：Llama-3.2-3B-Instruct
     本地适配约占 6GB 显存，接近 RTX 4060 上限。
@@ -87,16 +53,6 @@
     KV Cache 量化：FP8 (E4M3) 或 INT8 K/V cache。写入时 cast → 读取时 paged_attention kernel 内 dequant。
     效果：同样显存支撑 2× 更长序列或 2× 更大 batch。对标 vLLM / TensorRT-LLM 标配技术。
 
-17) CUDA Graph（Decode）
-    Decode 阶段 kernel launch overhead 在高 batch 下明显。CUDA Graph 将整套 kernel 序列录制为 graph，单次 launch 执行。
-    注意：paged attention 中 block_id table 动态变化，需处理 graph 的动态输入。
-
-18) Speculative Decoding
-    - Prompt Lookup Decoding：从 prompt 中匹配 n-gram 作为 draft token，无需额外模型，~100 行代码，~2× 加速。性价比极高。
-    - MTP (Medusa-style)：多个预测头并行预测，需训练/加载额外参数。
-    - Eagle-style：独立 draft model，精度最高。
-    建议先实现 PLD，再考虑 MTP。
-
 19) 多卡并行：TP + PP + DP
     预计 128GB 4×5090 可用，在多卡服务器上进行。
     前置依赖：NCCL 集成（`ncclAllReduce`、`ncclSend`/`ncclRecv`），当前项目无 NCCL。
@@ -104,27 +60,36 @@
     - PP (Pipeline Parallelism)：可跑更大模型（超过单卡显存）
     - DP (Data Parallelism)：相较单卡更高吞吐量
 
+18) Speculative Decoding
+    - Prompt Lookup Decoding：从 prompt 中匹配 n-gram 作为 draft token，无需额外模型，~100 行代码，~2× 加速。性价比极高。
+    - MTP (Medusa-style)：多个预测头并行预测，需训练/加载额外参数。
+    - Eagle-style：独立 draft model，精度最高。
+    建议先实现 PLD，再考虑 MTP。
+
 20) 模型部署 + Docker
     Docker 一键部署：`docker run -p 8000:8000 llaisys-server`，方便面试演示和开源展示。
     包含模型权重挂载、CUDA 环境配置。
 
-21) Structured Output
-    JSON mode / grammar-constrained decoding，OpenAI structured output 热门 feature。
+13) Prefix Caching 增强
+    已有基础 hash-based prefix caching，需升级。
+    - Radix Tree（前缀树）管理缓存块 — 自动检测跨请求公共前缀，对标 SGLang
+    - LRU / LFU eviction — 当前只"踢掉最老的序列"，无基于访问频率的淘汰策略
+    - Cache hit rate metrics — 统计命中率、块复用率，量化缓存效果
+    - System prompt 缓存 — 多轮对话中 system prompt 只计算一次
 
-22) LoRA 适配器
-    基于 PEFT 的热插拔 LoRA，展示对模型服务生态的理解。
+17) CUDA Graph（Decode）
+    Decode 阶段 kernel launch overhead 在高 batch 下明显。CUDA Graph 将整套 kernel 序列录制为 graph，单次 launch 执行。
+    注意：paged attention 中 block_id table 动态变化，需处理 graph 的动态输入。
 
-23) Beam Search
-    当前仅支持 sampling，beam search 是基础能力的补齐。
+8) Linear 算子优化
+   Linear 耗时稳定（~27ms/step），但对整体延迟贡献大。当前使用 cuBLAS（`cublasGemmEx`）+ 独立 `add_bias` kernel。
+   - Fused QKV projection：合并 q/k/v 三次 GEMM 为一次（weight 沿 N 维拼接）
+   - Fused bias + GEMM（利用 cuBLAS 的 `beta` 参数或手写 fused kernel）
+   - 针对 decode 的 small-M GEMM 优化（M=1 时 cuBLAS launch overhead 显著）
 
-24) 多轮对话 KV Cache 复用
-    对话轮次间共享 prefix，减少重复计算。
-
----
-
-## 收尾
-
-25) 更新 README.md / README_ZN.md（补充 benchmark 数据与优化成果）
-26) 完善 .gitignore
-27) 架构设计文档：记录关键设计决策与 trade-off
-28) GPU CI（当前 CI 仅 CPU，无法验证 CUDA 算子正确性）
+9) 算子融合
+   当前每个算子独立 launch，中间结果经 global memory 往返，存在大量冗余访存。
+   - QKV Projection 融合：3× GEMM + 3× bias → 1× GEMM (weight concat) + 1× fused bias（6→2 kernel launches）
+   - RMS-Norm + Residual Add 融合：单 kernel 内完成 norm + add，省一次 global mem round-trip
+   - SwiGLU + Linear(down) 融合：单 kernel 完成 silu×up + linear(down)，省一次中间结果写回
+   - RoPE + KV Cache Move 融合：RoPE 后直接写入 KV cache block，省一次 global mem 读写
