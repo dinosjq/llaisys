@@ -51,7 +51,7 @@ def build_block_ids(values, device_name, device_id=0):
     torch_ids = torch.tensor(values, dtype=torch.int32, device=torch_device)
     block_ids = llaisys.Tensor(
         (1, len(values)),  # 2D: (batch=1, max_block_num)
-        dtype=llaisys.DataType.I32,
+        dtype=llaisys.DataType.I64,
         device=llaisys.DeviceType.NVIDIA if device_name == "nvidia" else llaisys.DeviceType.CPU,
         device_id=device_id,
     )
@@ -91,12 +91,12 @@ def test_op_paged_attention(
 
     # construct cut_idx and tot_len tensors for single-sample new-signature call
     from ctypes import c_void_p
-    cut_idx_t = torch.tensor([0, seqlen], dtype=torch.int32, device=torch_device(device_name, device_id))
-    cut_idx_ll = llaisys.Tensor((2,), dtype=llaisys.DataType.I32, device=llaisys_device(device_name), device_id=device_id)
+    cut_idx_t = torch.tensor([0, seqlen], dtype=torch.int64, device=torch_device(device_name, device_id))
+    cut_idx_ll = llaisys.Tensor((2,), dtype=llaisys.DataType.I64, device=llaisys_device(device_name), device_id=device_id)
     cut_idx_ll.load(c_void_p(cut_idx_t.data_ptr()))
 
-    totlen_t = torch.tensor([totlen], dtype=torch.int32, device=torch_device(device_name, device_id))
-    totlen_ll = llaisys.Tensor((1,), dtype=llaisys.DataType.I32, device=llaisys_device(device_name), device_id=device_id)
+    totlen_t = torch.tensor([totlen], dtype=torch.int64, device=torch_device(device_name, device_id))
+    totlen_ll = llaisys.Tensor((1,), dtype=llaisys.DataType.I64, device=llaisys_device(device_name), device_id=device_id)
     totlen_ll.load(c_void_p(totlen_t.data_ptr()))
 
     torch_paged_attention(attn_val, q, k_cache, v_cache, block_ids_values, scale)
@@ -109,12 +109,12 @@ def test_op_paged_attention(
         torch_paged_attention(wrong_ref, q, k_cache, v_cache, block_ids_values, scale, totlen=seqlen)
 
         # construct cut_idx/totlen for this shorter totlen
-        cut_idx_t2 = torch.tensor([0, seqlen], dtype=torch.int32, device=torch_device(device_name, device_id))
-        cut_idx_ll2 = llaisys.Tensor((2,), dtype=llaisys.DataType.I32, device=llaisys_device(device_name), device_id=device_id)
+        cut_idx_t2 = torch.tensor([0, seqlen], dtype=torch.int64, device=torch_device(device_name, device_id))
+        cut_idx_ll2 = llaisys.Tensor((2,), dtype=llaisys.DataType.I64, device=llaisys_device(device_name), device_id=device_id)
         cut_idx_ll2.load(c_void_p(cut_idx_t2.data_ptr()))
 
-        totlen_t2 = torch.tensor([seqlen], dtype=torch.int32, device=torch_device(device_name, device_id))
-        totlen_ll2 = llaisys.Tensor((1,), dtype=llaisys.DataType.I32, device=llaisys_device(device_name), device_id=device_id)
+        totlen_t2 = torch.tensor([seqlen], dtype=torch.int64, device=torch_device(device_name, device_id))
+        totlen_ll2 = llaisys.Tensor((1,), dtype=llaisys.DataType.I64, device=llaisys_device(device_name), device_id=device_id)
         totlen_ll2.load(c_void_p(totlen_t2.data_ptr()))
 
         llaisys.Ops.paged_attention(wrong_out_, q_, k_cache_, v_cache_, block_ids, cut_idx_ll2, totlen_ll2, seqlen, scale)
@@ -185,8 +185,8 @@ def test_op_paged_attention_batched(
     for bids in block_ids_list:
         row = list(bids) + [0] * (max_block_num - len(bids))
         torch_block_ids.append(row)
-    torch_block_ids = torch.tensor(torch_block_ids, dtype=torch.int32, device=torch_device(device_name, device_id))
-    block_ids_ll = llaisys.Tensor((batch, max_block_num), dtype=llaisys.DataType.I32, device=llaisys_device(device_name), device_id=device_id)
+    torch_block_ids = torch.tensor(torch_block_ids, dtype=torch.int64, device=torch_device(device_name, device_id))
+    block_ids_ll = llaisys.Tensor((batch, max_block_num), dtype=llaisys.DataType.I64, device=llaisys_device(device_name), device_id=device_id)
     from ctypes import c_void_p
 
     block_ids_ll.load(c_void_p(torch_block_ids.data_ptr()))
@@ -195,13 +195,13 @@ def test_op_paged_attention_batched(
     cut_idx = [0]
     for s in seqlens:
         cut_idx.append(cut_idx[-1] + s)
-    cut_idx_torch = torch.tensor(cut_idx, dtype=torch.int32, device=torch_device(device_name, device_id))
-    cut_idx_ll = llaisys.Tensor((len(cut_idx),), dtype=llaisys.DataType.I32, device=llaisys_device(device_name), device_id=device_id)
+    cut_idx_torch = torch.tensor(cut_idx, dtype=torch.int64, device=torch_device(device_name, device_id))
+    cut_idx_ll = llaisys.Tensor((len(cut_idx),), dtype=llaisys.DataType.I64, device=llaisys_device(device_name), device_id=device_id)
     cut_idx_ll.load(c_void_p(cut_idx_torch.data_ptr()))
 
     # build tot_len per-sample tensor
-    totlen_torch = torch.tensor(totlen_per_sample, dtype=torch.int32, device=torch_device(device_name, device_id))
-    totlen_ll = llaisys.Tensor((batch,), dtype=llaisys.DataType.I32, device=llaisys_device(device_name), device_id=device_id)
+    totlen_torch = torch.tensor(totlen_per_sample, dtype=torch.int64, device=torch_device(device_name, device_id))
+    totlen_ll = llaisys.Tensor((batch,), dtype=llaisys.DataType.I64, device=llaisys_device(device_name), device_id=device_id)
     totlen_ll.load(c_void_p(totlen_torch.data_ptr()))
 
     # output attn concatenated
