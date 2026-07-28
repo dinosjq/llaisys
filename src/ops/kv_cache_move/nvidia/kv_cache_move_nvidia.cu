@@ -26,7 +26,7 @@ __global__ void kv_cache_move_kernel(T *_out,
     if(offset >= seqlen) return;
     const size_t seq_id = lo + offset;
     const int64_t pos_id = pos_ids[seq_id];
-    const int64_t block_id = block_ids[batch * max_block_num + pos_id / token_num];
+    const int64_t block_id = block_ids[batch * max_block_num + pos_id / token_num + 1]; // +1 跳过每行的 count 前缀
     const int64_t token_id = pos_id % token_num;
     const size_t in_offset = seq_id * numel;
     const size_t out_offset = (block_id * token_num + token_id) * numel;
