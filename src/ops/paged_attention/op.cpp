@@ -25,7 +25,7 @@ void paged_attention(tensor_t attn_val, tensor_t q, tensor_t k_cache, tensor_t v
     ASSERT(q->ndim() == 3, "paged_attention: q must be 3D.");
     ASSERT(k_cache->ndim() == 4, "paged_attention: k_cache must be 4D.");
     ASSERT(v_cache->ndim() == 4, "paged_attention: v_cache must be 4D.");
-    ASSERT(block_ids->ndim() == 1 || block_ids->ndim() == 2, "paged_attention: block_ids must be 1D (per-sample) or 2D (batch).");
+    ASSERT(block_ids->ndim() == 2, "paged_attention: block_ids must be 2D (batch, max_block_num).");
     // 检查是否符合任务描述
     const auto attn_val_shape = attn_val->shape();
     const auto q_shape = q->shape();
@@ -48,15 +48,8 @@ void paged_attention(tensor_t attn_val, tensor_t q, tensor_t k_cache, tensor_t v
     const size_t token_num = k_shape[1];
     const size_t nkvh = k_shape[2];
     
-    size_t batch_size;
-    size_t max_block_num;
-    if (block_ids->ndim() == 1) {
-        batch_size = 1;
-        max_block_num = block_ids_shape[0];
-    } else {
-        batch_size = block_ids_shape[0];
-        max_block_num = block_ids_shape[1];
-    }
+    const size_t batch_size = block_ids_shape[0];
+    const size_t max_block_num = block_ids_shape[1];
 
 #ifdef ENABLE_NVIDIA_API
     static llaisysDeviceType_t device = attn_val->deviceType();
@@ -66,14 +59,8 @@ void paged_attention(tensor_t attn_val, tensor_t q, tensor_t k_cache, tensor_t v
     static tensor_t attn_max = Tensor::create({BATCH_MAX_BLOCK_NUM, nh, 1}, LLAISYS_DTYPE_F32, device, device_id);
 #endif
 
-    // validate cut_idx and tot_len shapes according to batch_size
-    if (batch_size == 1) {
-        ASSERT(cut_idx->ndim() == 1 && cut_idx->shape()[0] >= 2, "paged_attention: cut_idx must be 1D with length>=2 for single sample.");
-        ASSERT(tot_len->ndim() == 1 && tot_len->shape()[0] == 1, "paged_attention: tot_len must be 1D with length 1 for single sample.");
-    } else {
-        ASSERT(cut_idx->ndim() == 1 && cut_idx->shape()[0] == batch_size + 1, "paged_attention: cut_idx must be 1D with length batch+1 for batched call.");
-        ASSERT(tot_len->ndim() == 1 && tot_len->shape()[0] == batch_size, "paged_attention: tot_len must be 1D with length batch for batched call.");
-    }
+    ASSERT(cut_idx->ndim() == 1 && cut_idx->shape()[0] == batch_size + 1, "paged_attention: cut_idx must be 1D with length batch+1.");
+    ASSERT(tot_len->ndim() == 1 && tot_len->shape()[0] == batch_size, "paged_attention: tot_len must be 1D with length batch.");
 
     // 根据设备类型分发实现
     switch (attn_val->deviceType()) {
