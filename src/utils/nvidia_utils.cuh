@@ -123,6 +123,65 @@ __device__ __forceinline__ void save_4d(T *data, const float4 &flo4) {
     }
 }
 
+/**
+ * 融合向量化加载+存储：从 src 加载 4 个元素并转换为 DstT 写入 dst。
+ * 消除 load_4d+save_4d 中间的 float4 暂存，缩短关键路径。
+ *
+ * SrcT: 源类型 (float / bf16_t / fp16_t / const 变体)
+ * DstT: 目标类型 (float / bf16_t / fp16_t)
+ *
+ * 常见调用：copy_4d<T, float>(global_ptr, smem_ptr)   // 全局→共享
+ */
+template <typename SrcT, typename DstT>
+__device__ __forceinline__ void copy_4d(const SrcT *src, DstT *dst) {
+    using Src = std::remove_const_t<SrcT>;
+
+    if constexpr (std::is_same_v<Src, float> && std::is_same_v<DstT, float>) {
+        // float → float: 128-bit 直接拷贝，零开销
+        reinterpret_cast<float4 *>(dst)[0] =
+            reinterpret_cast<const float4 *>(src)[0];
+
+    } else if constexpr (std::is_same_v<SrcT, fp16_t> && std::is_same_v<DstT, float>) {
+        // fp16 → float: half2→float2 × 2  (2 指令 vs 逐元素 4 指令)
+        const half2 *s = reinterpret_cast<const half2 *>(src);
+        float2 *d = reinterpret_cast<float2 *>(dst);
+        d[0] = __half22float2(s[0]);
+        d[1] = __half22float2(s[1]);
+
+    } else if constexpr (std::is_same_v<Src, float> && std::is_same_v<DstT, fp16_t>) {
+        // float → fp16: float2→half2 × 2
+        const float2 *s = reinterpret_cast<const float2 *>(src);
+        half2 *d = reinterpret_cast<half2 *>(dst);
+        d[0] = __float22half2_rn(s[0]);
+        d[1] = __float22half2_rn(s[1]);
+
+    } else if constexpr (std::is_same_v<DstT, float>) {
+        // bf16 → float: 无可移植 2宽 intrinsic，逐元素
+        const ushort4 v4 = reinterpret_cast<const ushort4 *>(src)[0];
+        float4 flo4;
+        flo4.x = nv_bf16_to_f32(bf16_t{v4.x});
+        flo4.y = nv_bf16_to_f32(bf16_t{v4.y});
+        flo4.z = nv_bf16_to_f32(bf16_t{v4.z});
+        flo4.w = nv_bf16_to_f32(bf16_t{v4.w});
+        reinterpret_cast<float4 *>(dst)[0] = flo4;
+
+    } else if constexpr (std::is_same_v<Src, float>) {
+        // float → bf16: 逐元素
+        const float4 flo4 = reinterpret_cast<const float4 *>(src)[0];
+        ushort4 v4;
+        v4.x = nv_f32_to_bf16(flo4.x)._v;
+        v4.y = nv_f32_to_bf16(flo4.y)._v;
+        v4.z = nv_f32_to_bf16(flo4.z)._v;
+        v4.w = nv_f32_to_bf16(flo4.w)._v;
+        reinterpret_cast<ushort4 *>(dst)[0] = v4;
+
+    } else {
+        // bf16/fp16 同类型或互转: 64-bit 直接拷贝
+        reinterpret_cast<ushort4 *>(dst)[0] =
+            reinterpret_cast<const ushort4 *>(src)[0];
+    }
+}
+
 template <typename T>
 __device__ __forceinline__ T add(const T &a, const T &b) {
     if constexpr (std::is_same_v<T, float>) {

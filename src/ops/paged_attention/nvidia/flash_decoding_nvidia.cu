@@ -104,20 +104,16 @@ __global__ void flash_decoding_parallel_kernel(float *__restrict__ _attn_acc,
         // global memory
         const T *k_cache_cur = k_cache + now * _nkvhead * _d;
         const T *v_cache_cur = v_cache + now * _nkvhead * _dv;
-        const float *s_k_cur = s_k + now * _d;
-        const float *s_v_cur = s_v + now * _dv;
+        float *s_k_cur = s_k + now * _d;
+        float *s_v_cur = s_v + now * _dv;
 
         // vec load: warp init
         for (size_t col = lane_id << 2; col < _d; col += 128) {
-            const float4 flo4 = llaisys::utils::nvidia::load_4d(k_cache_cur + col);
-            // physical: [col + 0, col + 1, col + 2, col + 3]
-            llaisys::utils::nvidia::save_4d(s_k_cur + col, flo4);
+            llaisys::utils::nvidia::copy_4d(k_cache_cur + col, s_k_cur + col);
         }
 
         for (size_t col = lane_id << 2; col < _dv; col += 128) {
-            const float4 flo4 = llaisys::utils::nvidia::load_4d(v_cache_cur + col);
-            // physical: [col + 0, col + 1, col + 2, col + 3]
-            llaisys::utils::nvidia::save_4d(s_v_cur + col, flo4);
+            llaisys::utils::nvidia::copy_4d(v_cache_cur + col, s_v_cur + col);
         }
     }
 
@@ -167,20 +163,16 @@ __global__ void flash_decoding_parallel_kernel(float *__restrict__ _attn_acc,
             // global memory
             const T *k_cache_cur = k_cache + (inner_token_id + 4) * _nkvhead * _d;
             const T *v_cache_cur = v_cache + (inner_token_id + 4) * _nkvhead * _dv;
-            const float *s_k_cur = s_k + (now ^ 4) * _d;
-            const float *s_v_cur = s_v + (now ^ 4) * _dv;
-            
+            float *s_k_cur = s_k + (now ^ 4) * _d;
+            float *s_v_cur = s_v + (now ^ 4) * _dv;
+
             // vec load: warp init
             for (size_t col = lane_id << 2; col < _d; col += 128) {
-                const float4 flo4 = llaisys::utils::nvidia::load_4d(k_cache_cur + col);
-                // physical: [col + 0, col + 1, col + 2, col + 3]
-                llaisys::utils::nvidia::save_4d(s_k_cur + col, flo4);
+                llaisys::utils::nvidia::copy_4d(k_cache_cur + col, s_k_cur + col);
             }
 
             for (size_t col = lane_id << 2; col < _dv; col += 128) {
-                const float4 flo4 = llaisys::utils::nvidia::load_4d(v_cache_cur + col);
-                // physical: [col + 0, col + 1, col + 2, col + 3]
-                llaisys::utils::nvidia::save_4d(s_v_cur + col, flo4);
+                llaisys::utils::nvidia::copy_4d(v_cache_cur + col, s_v_cur + col);
             }
         }
 
@@ -396,7 +388,7 @@ void flash_decoding_launch(std::byte *attn_val,        // 输出 (tot_seqlen, nh
                             const size_t &d, 
                             const size_t &nkvh)
 {
-    assert(dv_max >= dv);
+    ASSERT(dv <= dv_max, "flash_decoding: dv is too big.");
     auto *d_attn = reinterpret_cast<T *>(attn_val);
     // (max_batch_size * max_block_num = 2048, nh, dv) => (batch_max_block_num = 191, nh, dv) 不等式计算取 max
     auto *d_attn_acc = reinterpret_cast<float *>(attn_acc);
