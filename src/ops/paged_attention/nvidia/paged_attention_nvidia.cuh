@@ -8,7 +8,7 @@ void paged_attention(std::byte *attn_val,       // 输出 (tot_seqlen, nh, dv)
                      const std::byte *q,        // q (tot_seqlen, nh, d)
                      const std::byte *k_cache,  // k底层缓存 (tot_len, nkvh, d) 
                      const std::byte *v_cache,  // q底层缓存 (tot_len, nkvh, dv)
-                     const std::byte *block_ids,// 块表 (batch, block_ids) 记录块号 (block_num, token_num, nkvh, d | dv) 
+                     const std::byte *block_ids,// 块表 (batch, block_ids_size | block_ids)  kv cache布局: (block_num, token_num, nkvh, d | dv) 
                      const std::byte *cut_idx,  // 记录对应序列起始位置，也可计算seqlen
                      const std::byte *tot_len,  // 已计算kv总长
                      const size_t token_num,    // 每个块的token数

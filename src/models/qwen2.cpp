@@ -126,7 +126,7 @@ Qwen2::Qwen2(Qwen2Meta meta,
     const size_t block_size = block_num * token_num * nkvh * dh;
     const size_t batch_max_token_num = BATCH_MAX_TOKEN_NUM;
     const size_t batch_max_seq_num = BATCH_MAX_SEQ_NUM;
-    const size_t max_block_num = std::min(MAX_TOKEN_NUM / KV_CACHE_TOKEN_NUM, KV_CACHE_BLOCK_NUM);
+    const size_t max_block_num = MAX_BLOCK_NUM;
     int device_id = device_ids[0];
     // 初始化权重数组
     init_weight_arrays(this->_weights, nlayer);
@@ -216,10 +216,10 @@ void Qwen2::start(){
             // 执行一次批处理前向传播
 #ifdef LLAISYS_ENABLE_PROFILING
             PROFILE_BEGIN(is_prefill);
-            std::vector<int64_t> token_ids = model->forward(pack, block_ids);
+            std::vector<int64_t> token_ids = model->forward(pack, block_ids, is_prefill);
             PROFILE_END(is_prefill ? 0 : ++decode_step);
 #else
-            std::vector<int64_t> token_ids = model->forward(pack, block_ids);
+            std::vector<int64_t> token_ids = model->forward(pack, block_ids, is_prefill);
 #endif
             // 后处理更新kv cache信息
             model->_scheduler->postprocess(seqs, token_ids, is_prefill);
@@ -321,17 +321,22 @@ void Qwen2::abort(int64_t *token_ids, size_t ntoken) {
  * 预处理块表 
  * 输入: 本次调度要计算的序列
  * 输出: 合并后的总块表，每个序列按照最长块表长度对齐
+ * 
+ * 重定义块表：[[row_size, block_table_index_0, ...], ...]
+ * 将每行的第一个元素定义为：行的有效块表索引数，即有效块数
  */
 std::vector<int64_t> Qwen2::prepare_block_table(const std::vector<seq_t> &seqs){
     const size_t batch_size = seqs.size();
-    size_t max_block_num = 0;
+    std::vector<int64_t> block_table(batch_size * MAX_BLOCK_NUM, -1);
     for(size_t i = 0; i < batch_size; ++ i){
-        max_block_num = std::max(max_block_num, seqs[i]->block_ids().size());
-    }
-    std::vector<int64_t> block_table(batch_size * max_block_num, -1);
-    for(size_t i = 0; i < batch_size; ++ i){
+        const size_t offset = i * MAX_BLOCK_NUM;
+        // 新增：块数
+        block_table[offset] = seqs[i]->block_ids().size();
+        if(i > 0){
+            block_table[offset] += block_table[offset - MAX_BLOCK_NUM];
+        }
         // 复制到指定位置
-        std::copy(seqs[i]->block_ids().begin(), seqs[i]->block_ids().end(), block_table.begin() + i * max_block_num);
+        std::copy(seqs[i]->block_ids().begin(), seqs[i]->block_ids().end(), block_table.begin() + offset + 1);
     }
     return block_table;
 }
@@ -351,7 +356,6 @@ Qwen2Pack Qwen2::prepare_prefill(const std::vector<seq_t> &seqs){
     std::vector<int64_t> pos_ids;   // 位置信息
     std::vector<int64_t> cut_idx(1, 0); // 切断点
     std::vector<int64_t> tot_len;       // 总长信息
-    size_t max_seq_len = 0;         // 最大序列长度
     for(size_t i = 0; i < batch_size; ++ i){
         seq_t seq = seqs[i];
         const size_t seq_len = seq->scheduled_token_num();
@@ -364,7 +368,6 @@ Qwen2Pack Qwen2::prepare_prefill(const std::vector<seq_t> &seqs){
         }
         cut_idx.push_back(cut_idx.back() + seq_len);
         tot_len.push_back(begin + seq_len);
-        max_seq_len = std::max(max_seq_len, seq_len);
     }
     // per-seq 采样参数
     std::vector<float> top_ps, temps;
@@ -372,7 +375,7 @@ Qwen2Pack Qwen2::prepare_prefill(const std::vector<seq_t> &seqs){
         top_ps.push_back(seqs[i]->top_p());
         temps.push_back(seqs[i]->temperature());
     }
-    return Qwen2Pack{token_ids, pos_ids, cut_idx, tot_len, top_ps, temps, max_seq_len};
+    return Qwen2Pack{token_ids, pos_ids, cut_idx, tot_len, top_ps, temps};
 }
 
 /**
@@ -400,10 +403,10 @@ Qwen2Pack Qwen2::prepare_decode(const std::vector<seq_t> &seqs){
         top_ps.push_back(seqs[i]->top_p());
         temps.push_back(seqs[i]->temperature());
     }
-    return Qwen2Pack{token_ids, pos_ids, cut_idx, tot_len, top_ps, temps, 1};
+    return Qwen2Pack{token_ids, pos_ids, cut_idx, tot_len, top_ps, temps};
 }
 
-std::vector<int64_t> Qwen2::forward(Qwen2Pack &pack, std::vector<int64_t> &block_ids){
+std::vector<int64_t> Qwen2::forward(Qwen2Pack &pack, std::vector<int64_t> &block_ids, bool is_prefill){
     // 加载元数据 + 权重
     const Qwen2Meta &meta = this->_meta;
     const Qwen2Weights &w = this->_weights;
@@ -414,10 +417,10 @@ std::vector<int64_t> Qwen2::forward(Qwen2Pack &pack, std::vector<int64_t> &block
     const std::vector<int64_t> &pos_ids = pack.pos_ids;
     const std::vector<int64_t> &cut_idx = pack.cut_idx;
     const std::vector<int64_t> &tot_len = pack.tot_len;
-    const size_t &max_seq_len = pack.max_seq_len; 
     const size_t tot_seq_len = token_ids.size();
     const size_t batch_size = tot_len.size();
-    const size_t max_block_num = block_ids.size() / batch_size;
+    const size_t max_seq_len = MAX_TOKEN_NUM; 
+    const size_t max_block_num = MAX_BLOCK_NUM;
 
     // 加载其他参数
     const size_t nlayer = meta.nlayer;
@@ -494,7 +497,7 @@ std::vector<int64_t> Qwen2::forward(Qwen2Pack &pack, std::vector<int64_t> &block
         ops::kv_cache_move(v_layer, v_view, dev_block_ids, dev_cut_idx, dev_pos_ids, max_seq_len);
 
         // 自注意力: paged_attention(flash v2)
-        ops::paged_attention(attn_val, q_rope, k_layer, v_layer, dev_block_ids, dev_cut_idx, dev_tot_len, max_seq_len, scale);
+        ops::paged_attention(attn_val, q_rope, k_layer, v_layer, dev_block_ids, dev_cut_idx, dev_tot_len, max_seq_len, scale, is_prefill);
 
         // 得到多头注意力输出投影
         tensor_t attn_merge = attn_val->view({tot_seq_len, nh * dh});

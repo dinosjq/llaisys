@@ -1,8 +1,11 @@
 #include "op.hpp"
+
 #include "../../core/llaisys_core.hpp"
-#include "../../utils.hpp"
-#include "nvidia/kv_cache_move_nvidia.cuh"
 #include "../../profiler/profiler.hpp"
+#include "../../utils.hpp"
+#include "../../config.hpp"
+
+#include "nvidia/kv_cache_move_nvidia.cuh"
 
 
 namespace llaisys::ops {
@@ -36,7 +39,8 @@ void kv_cache_move(tensor_t out, tensor_t in, tensor_t block_ids, tensor_t cut_i
         EXCEPTION_UNSUPPORTED_DEVICE;
 #ifdef ENABLE_NVIDIA_API
     case LLAISYS_DEVICE_NVIDIA:
-        return nvidia::kv_cache_move(out->data(), in->data(), block_ids->data(), cut_idx->data(), pos_ids->data(), token_num, batch_size, max_block_num, max_seq_len, out->dtype(), numel);
+        return nvidia::kv_cache_move(out->data(), in->data(), block_ids->data(), cut_idx->data(), pos_ids->data(),
+                                 token_num, batch_size, max_block_num, max_seq_len, out->dtype(), numel);
 #endif
     default:
         // 不支持的设备类型

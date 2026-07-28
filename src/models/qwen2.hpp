@@ -28,7 +28,6 @@ struct Qwen2Pack {
     std::vector<int64_t> tot_len;
     std::vector<float> top_p;       // per-seq 采样参数
     std::vector<float> temperature; // per-seq 采样参数
-    size_t max_seq_len;
 };
 
 using Qwen2Weights = ::LlaisysQwen2Weights;
@@ -115,7 +114,7 @@ public:
     Qwen2Pack prepare_decode(const std::vector<seq_t> &seqs);
 
     // 批次前向传播
-    std::vector<int64_t> forward(Qwen2Pack &pack, std::vector<int64_t> &block_ids);    
+    std::vector<int64_t> forward(Qwen2Pack &pack, std::vector<int64_t> &block_ids, bool is_prefill);    
 
     // 模型权重
     Qwen2Weights &weights(){ return this->_weights; }

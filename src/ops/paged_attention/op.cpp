@@ -1,14 +1,16 @@
 #include "op.hpp"
 
 #include "../../core/llaisys_core.hpp"
+#include "../../profiler/profiler.hpp"
 #include "../../utils.hpp"
+#include "../../config.hpp"
 
 #include "cpu/paged_attention_cpu.hpp"
 #include "nvidia/paged_attention_nvidia.cuh"
-#include "../../profiler/profiler.hpp"
+#include "nvidia/flash_decoding_nvidia.cuh"
 
 namespace llaisys::ops {
-void paged_attention(tensor_t attn_val, tensor_t q, tensor_t k_cache, tensor_t v_cache, tensor_t block_ids, tensor_t cut_idx, tensor_t tot_len, size_t max_seq_len, float scale)
+void paged_attention(tensor_t attn_val, tensor_t q, tensor_t k_cache, tensor_t v_cache, tensor_t block_ids, tensor_t cut_idx, tensor_t tot_len, size_t max_seq_len, float scale, bool is_prefill)
 {
     PROFILE_STEP();
     // 检查设备一致性
@@ -44,8 +46,10 @@ void paged_attention(tensor_t attn_val, tensor_t q, tensor_t k_cache, tensor_t v
     const size_t dv = attn_val_shape[2];
     const size_t d = q_shape[2];
     const size_t token_num = k_shape[1];
-    size_t batch_size = 1;
-    size_t max_block_num = 0;
+    const size_t nkvh = k_shape[2];
+    
+    size_t batch_size;
+    size_t max_block_num;
     if (block_ids->ndim() == 1) {
         batch_size = 1;
         max_block_num = block_ids_shape[0];
@@ -53,9 +57,14 @@ void paged_attention(tensor_t attn_val, tensor_t q, tensor_t k_cache, tensor_t v
         batch_size = block_ids_shape[0];
         max_block_num = block_ids_shape[1];
     }
-    const size_t nkvh = k_shape[2];
 
-    llaisys::core::context().setDevice(attn_val->deviceType(), attn_val->deviceId());
+#ifdef ENABLE_NVIDIA_API
+    static llaisysDeviceType_t device = attn_val->deviceType();
+    static int device_id = attn_val->deviceId();
+    static tensor_t attn_acc = Tensor::create({BATCH_MAX_BLOCK_NUM, nh, dv}, LLAISYS_DTYPE_F32, device, device_id);
+    static tensor_t attn_sum = Tensor::create({BATCH_MAX_BLOCK_NUM, nh, 1}, LLAISYS_DTYPE_F32, device, device_id);
+    static tensor_t attn_max = Tensor::create({BATCH_MAX_BLOCK_NUM, nh, 1}, LLAISYS_DTYPE_F32, device, device_id);
+#endif
 
     // validate cut_idx and tot_len shapes according to batch_size
     if (batch_size == 1) {
@@ -73,8 +82,14 @@ void paged_attention(tensor_t attn_val, tensor_t q, tensor_t k_cache, tensor_t v
                                         token_num, batch_size, max_block_num, max_seq_len, attn_val->dtype(), scale, nh, dv, d, nkvh);
 #ifdef ENABLE_NVIDIA_API
     case LLAISYS_DEVICE_NVIDIA:
-        return nvidia::paged_attention(attn_val->data(), q->data(), k_cache->data(), v_cache->data(), block_ids->data(), cut_idx->data(), tot_len->data(),
-                                        token_num, batch_size, max_block_num, max_seq_len, attn_val->dtype(), scale, nh, dv, d, nkvh);
+        if(is_prefill){
+            return nvidia::paged_attention(attn_val->data(), q->data(), k_cache->data(), v_cache->data(), block_ids->data(), cut_idx->data(), tot_len->data(),
+                                    token_num, batch_size, max_block_num, max_seq_len, attn_val->dtype(), scale, nh, dv, d, nkvh);
+        } else {
+            return nvidia::flash_decoding(attn_val->data(), attn_acc->data(), attn_sum->data(), attn_max->data(),  q->data(), k_cache->data(), 
+                                        v_cache->data(), block_ids->data(), cut_idx->data(), tot_len->data(), token_num, batch_size, max_block_num, 
+                                        max_seq_len, attn_val->dtype(), scale, nh, dv, d, nkvh);
+        }
 #endif
     default:
         // 不支持的设备类型
