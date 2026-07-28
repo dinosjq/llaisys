@@ -50,7 +50,7 @@ def build_block_ids(values, device_name, device_id=0):
     torch_device = torch.device(f"cuda:{device_id}") if device_name == "nvidia" else torch.device("cpu")
     torch_ids = torch.tensor(values, dtype=torch.int32, device=torch_device)
     block_ids = llaisys.Tensor(
-        (len(values),),
+        (1, len(values)),  # 2D: (batch=1, max_block_num)
         dtype=llaisys.DataType.I32,
         device=llaisys.DeviceType.NVIDIA if device_name == "nvidia" else llaisys.DeviceType.CPU,
         device_id=device_id,
@@ -124,7 +124,7 @@ def test_op_paged_attention(
     if profile:
         benchmark(
             lambda: torch_paged_attention(attn_val, q, k_cache, v_cache, block_ids_values, scale),
-            lambda: llaisys.Ops.paged_attention(attn_val_, q_, k_cache_, v_cache_, block_ids, len(block_ids_values), totlen, scale),
+            lambda: llaisys.Ops.paged_attention(attn_val_, q_, k_cache_, v_cache_, block_ids, cut_idx_ll, totlen_ll, seqlen, scale),
             device_name,
         )
 
