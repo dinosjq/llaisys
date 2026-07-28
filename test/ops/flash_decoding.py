@@ -42,10 +42,16 @@ def torch_flash_decoding(attn_val, query, k_cache, v_cache, block_ids, scale, to
 
 
 def build_block_ids(values, device_name, device_id=0):
+    """
+    Build V3-format block_ids tensor: first element = block count, then block IDs.
+    Format matches qwen2.cpp prepare_block_table: [count, id_0, id_1, ...].
+    """
     torch_device = torch.device(f"cuda:{device_id}") if device_name == "nvidia" else torch.device("cpu")
-    torch_ids = torch.tensor(values, dtype=torch.int64, device=torch_device)
+    count = len(values)
+    padded = [count] + list(values)
+    torch_ids = torch.tensor(padded, dtype=torch.int64, device=torch_device)
     block_ids = llaisys.Tensor(
-        (1, len(values)),  # 2D: (batch=1, max_block_num)
+        (1, len(padded)),  # 2D: (batch=1, count + num_blocks)
         dtype=llaisys.DataType.I64,
         device=llaisys.DeviceType.NVIDIA if device_name == "nvidia" else llaisys.DeviceType.CPU,
         device_id=device_id,
@@ -164,13 +170,16 @@ def test_op_flash_decoding_batched(
     k_cache, k_cache_ = random_tensor((max_block_num, token_num, nkvh, hd), dtype_name, device_name, device_id=device_id)
     v_cache, v_cache_ = random_tensor((max_block_num, token_num, nkvh, hd), dtype_name, device_name, device_id=device_id)
 
-    # 2D block_ids (batch, max_block_num)
+    # 2D block_ids (batch, max_block_num) — V3 format: [cumulative_count, block_ids...]
+    mb = max(len(bids) for bids in block_ids_list) + 1  # +1 for prefix
+    cum = 0
     torch_block_ids = []
     for bids in block_ids_list:
-        row = list(bids) + [0] * (max_block_num - len(bids))
+        cum += len(bids)
+        row = [cum] + list(bids) + [0] * (mb - len(bids) - 1)
         torch_block_ids.append(row)
     torch_block_ids = torch.tensor(torch_block_ids, dtype=torch.int64, device=torch_device(device_name, device_id))
-    block_ids_ll = llaisys.Tensor((batch, max_block_num), dtype=llaisys.DataType.I64, device=llaisys_device(device_name), device_id=device_id)
+    block_ids_ll = llaisys.Tensor((batch, mb), dtype=llaisys.DataType.I64, device=llaisys_device(device_name), device_id=device_id)
     block_ids_ll.load(c_void_p(torch_block_ids.data_ptr()))
 
     # cut_idx (batch+1)
@@ -186,12 +195,13 @@ def test_op_flash_decoding_batched(
     totlen_ll = llaisys.Tensor((batch,), dtype=llaisys.DataType.I64, device=llaisys_device(device_name), device_id=device_id)
     totlen_ll.load(c_void_p(totlen_torch.data_ptr()))
 
-    # flash_decoding context buffers
-    attn_acc = llaisys.Tensor((max_block_num, nh, hd), dtype=llaisys.DataType.F32,
+    # flash_decoding context buffers (total blocks across all seqs = sum of block counts)
+    total_blocks = sum(len(bids) for bids in block_ids_list)
+    attn_acc = llaisys.Tensor((total_blocks, nh, hd), dtype=llaisys.DataType.F32,
                               device=llaisys_device(device_name), device_id=device_id)
-    attn_sum = llaisys.Tensor((max_block_num, nh, 1), dtype=llaisys.DataType.F32,
+    attn_sum = llaisys.Tensor((total_blocks, nh, 1), dtype=llaisys.DataType.F32,
                               device=llaisys_device(device_name), device_id=device_id)
-    attn_max = llaisys.Tensor((max_block_num, nh, 1), dtype=llaisys.DataType.F32,
+    attn_max = llaisys.Tensor((total_blocks, nh, 1), dtype=llaisys.DataType.F32,
                               device=llaisys_device(device_name), device_id=device_id)
 
     tot_seqlen = sum(seqlens)
@@ -214,7 +224,9 @@ def test_op_flash_decoding_batched(
                                  cut_idx_ll, totlen_ll, max(seqlens), scale, False,
                                  attn_acc, attn_sum, attn_max)
 
-    assert check_equal(attn_val_ll, attn_val_torch, atol=1e-5, rtol=1e-3)
+    atol = {"f32": 1e-5, "f16": 1e-3, "bf16": 1e-2}[dtype_name]
+    rtol = {"f32": 1e-5, "f16": 1e-3, "bf16": 1e-2}[dtype_name]
+    assert check_equal(attn_val_ll, attn_val_torch, atol=atol, rtol=rtol)
 
     if profile:
         benchmark(
