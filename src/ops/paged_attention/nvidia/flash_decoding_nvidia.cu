@@ -87,9 +87,7 @@ __global__ void flash_decoding_parallel_kernel(float *__restrict__ _attn_acc,
     if (0 == warp_id) {
         // naive: warp init
         for (size_t col = lane_id << 2; col < _d; col += 128) {
-            const float4 flo4 = llaisys::utils::nvidia::load_4d(q_ptr + col);
-            // physical: [col + 0, col + 1, col + 2, col + 3]
-            llaisys::utils::nvidia::save_4d(s_q + col, flo4);
+            llaisys::utils::nvidia::copy_4d(q_ptr + col, s_q + col);
         }
     }
 
