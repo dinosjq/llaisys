@@ -71,7 +71,8 @@ void llaisysPagedAttention(llaisysTensor_t attn_val,
                            llaisysTensor_t cut_idx_tensor,
                            llaisysTensor_t tot_len_tensor,
                            size_t max_seq_len,
-                           float scale) 
+                           float scale,
+                           bool is_prefill)
 {
     llaisys::ops::paged_attention(attn_val->tensor,
                                    q->tensor,
@@ -81,7 +82,8 @@ void llaisysPagedAttention(llaisysTensor_t attn_val,
                                    cut_idx_tensor->tensor,
                                    tot_len_tensor->tensor,
                                    max_seq_len,
-                                   scale);
+                                   scale,
+                                   is_prefill);
 }
 
 void llaisysSelfAttention(llaisysTensor_t attn_val, llaisysTensor_t q, llaisysTensor_t k, llaisysTensor_t v, float scale) {
