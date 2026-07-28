@@ -10,7 +10,7 @@
 #include "nvidia/flash_decoding_nvidia.cuh"
 
 namespace llaisys::ops {
-void paged_attention(tensor_t attn_val, tensor_t q, tensor_t k_cache, tensor_t v_cache, tensor_t block_ids, tensor_t cut_idx, tensor_t tot_len, size_t max_seq_len, float scale, bool is_prefill)
+void paged_attention(tensor_t attn_val, tensor_t q, tensor_t k_cache, tensor_t v_cache, tensor_t block_ids, tensor_t cut_idx, tensor_t tot_len, size_t max_seq_len, float scale, bool is_prefill, tensor_t attn_acc, tensor_t attn_sum, tensor_t attn_max)
 {
     PROFILE_STEP();
     // 检查设备一致性
@@ -51,14 +51,6 @@ void paged_attention(tensor_t attn_val, tensor_t q, tensor_t k_cache, tensor_t v
     const size_t batch_size = block_ids_shape[0];
     const size_t max_block_num = block_ids_shape[1];
 
-#ifdef ENABLE_NVIDIA_API
-    static llaisysDeviceType_t device = attn_val->deviceType();
-    static int device_id = attn_val->deviceId();
-    static tensor_t attn_acc = Tensor::create({BATCH_MAX_BLOCK_NUM, nh, dv}, LLAISYS_DTYPE_F32, device, device_id);
-    static tensor_t attn_sum = Tensor::create({BATCH_MAX_BLOCK_NUM, nh, 1}, LLAISYS_DTYPE_F32, device, device_id);
-    static tensor_t attn_max = Tensor::create({BATCH_MAX_BLOCK_NUM, nh, 1}, LLAISYS_DTYPE_F32, device, device_id);
-#endif
-
     ASSERT(cut_idx->ndim() == 1 && cut_idx->shape()[0] == batch_size + 1, "paged_attention: cut_idx must be 1D with length batch+1.");
     ASSERT(tot_len->ndim() == 1 && tot_len->shape()[0] == batch_size, "paged_attention: tot_len must be 1D with length batch.");
 
@@ -73,7 +65,8 @@ void paged_attention(tensor_t attn_val, tensor_t q, tensor_t k_cache, tensor_t v
             return nvidia::paged_attention(attn_val->data(), q->data(), k_cache->data(), v_cache->data(), block_ids->data(), cut_idx->data(), tot_len->data(),
                                     token_num, batch_size, max_block_num, max_seq_len, attn_val->dtype(), scale, nh, dv, d, nkvh);
         } else {
-            return nvidia::flash_decoding(attn_val->data(), attn_acc->data(), attn_sum->data(), attn_max->data(),  q->data(), k_cache->data(), 
+            ASSERT(attn_acc && attn_sum && attn_max, "paged_attention: flash_decoding requires attn_acc/sum/max buffers.");
+            return nvidia::flash_decoding(attn_val->data(), attn_acc->data(), attn_sum->data(), attn_max->data(),  q->data(), k_cache->data(),
                                         v_cache->data(), block_ids->data(), cut_idx->data(), tot_len->data(), token_num, batch_size, max_block_num, 
                                         max_seq_len, attn_val->dtype(), scale, nh, dv, d, nkvh);
         }

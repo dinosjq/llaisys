@@ -62,17 +62,28 @@ class Ops:
     def paged_attention(attn_val: Tensor, q: Tensor, k_cache: Tensor, v_cache: Tensor, block_ids, *rest):
         """
         Batched call: (attn_val, q_cat, k_cache, v_cache, block_ids_ll, cut_idx_ll,
-                        totlen_ll, max_seq_len:int, scale:float[, is_prefill:bool])
+                        totlen_ll, max_seq_len:int, scale:float[, is_prefill:bool,
+                        attn_acc, attn_sum, attn_max])
 
-        Defaults is_prefill=True for backward compatibility.
+        Defaults is_prefill=True. attn_acc/sum/max are optional buffer tensors
+        for flash_decoding (required when is_prefill=False).
         """
-        # Detect calling convention: if rest[0] is a Tensor, it's the batched form
         if len(rest) >= 3 and isinstance(rest[0], Tensor):
             cut_idx = rest[0]
             tot_len = rest[1]
             max_seq_len = rest[2]
             scale = rest[3]
-            is_prefill = rest[4] if len(rest) > 4 else True
+            # is_prefill: rest[4] if present and not a Tensor, else True
+            buf_start = 4
+            if len(rest) > 4 and not isinstance(rest[4], Tensor):
+                is_prefill = rest[4]
+                buf_start = 5
+            else:
+                is_prefill = True
+            # Optional flash_decoding context buffers
+            attn_acc = rest[buf_start] if len(rest) > buf_start else None
+            attn_sum = rest[buf_start + 1] if len(rest) > buf_start + 1 else None
+            attn_max = rest[buf_start + 2] if len(rest) > buf_start + 2 else None
             LIB_LLAISYS.llaisysPagedAttention(
                 attn_val.lib_tensor(),
                 q.lib_tensor(),
@@ -84,6 +95,9 @@ class Ops:
                 c_size_t(max_seq_len),
                 c_float(scale),
                 c_bool(is_prefill),
+                attn_acc.lib_tensor() if attn_acc else None,
+                attn_sum.lib_tensor() if attn_sum else None,
+                attn_max.lib_tensor() if attn_max else None,
             )
         else:
             raise TypeError(

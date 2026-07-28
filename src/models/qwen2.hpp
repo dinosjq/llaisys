@@ -59,6 +59,9 @@ struct Qwen2Tensors{
     tensor_t _logits;
     tensor_t _top_idx;
     tensor_t _top_val;
+    tensor_t _attn_acc;   // flash_decoding: (BATCH_MAX_BLOCK_NUM, nh, dh) F32
+    tensor_t _attn_sum;   // flash_decoding: (BATCH_MAX_BLOCK_NUM, nh, 1)  F32
+    tensor_t _attn_max;   // flash_decoding: (BATCH_MAX_BLOCK_NUM, nh, 1)  F32
 };
 
 class Qwen2{

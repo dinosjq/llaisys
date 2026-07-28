@@ -157,6 +157,9 @@ Qwen2::Qwen2(Qwen2Meta meta,
     _tensors._logits = Tensor::create({batch_max_seq_num, voc}, dtype, device, device_id);
     _tensors._top_idx = Tensor::create({batch_max_seq_num, TOP_K}, LLAISYS_DTYPE_I64, device, device_id);
     _tensors._top_val = Tensor::create({batch_max_seq_num, TOP_K}, dtype, device, device_id);
+    _tensors._attn_acc = Tensor::create({BATCH_MAX_BLOCK_NUM, nh, dh}, LLAISYS_DTYPE_F32, device, device_id);
+    _tensors._attn_sum = Tensor::create({BATCH_MAX_BLOCK_NUM, nh, 1}, LLAISYS_DTYPE_F32, device, device_id);
+    _tensors._attn_max = Tensor::create({BATCH_MAX_BLOCK_NUM, nh, 1}, LLAISYS_DTYPE_F32, device, device_id);
     // 初始化分层 kv cache
     this->_k_cache = std::vector<tensor_t>(nlayer, nullptr);
     this->_v_cache = std::vector<tensor_t>(nlayer, nullptr);
@@ -497,7 +500,8 @@ std::vector<int64_t> Qwen2::forward(Qwen2Pack &pack, std::vector<int64_t> &block
         ops::kv_cache_move(v_layer, v_view, dev_block_ids, dev_cut_idx, dev_pos_ids, max_seq_len);
 
         // 自注意力: paged_attention(flash v2)
-        ops::paged_attention(attn_val, q_rope, k_layer, v_layer, dev_block_ids, dev_cut_idx, dev_tot_len, max_seq_len, scale, is_prefill);
+        ops::paged_attention(attn_val, q_rope, k_layer, v_layer, dev_block_ids, dev_cut_idx, dev_tot_len, max_seq_len, scale, is_prefill,
+                             ts._attn_acc, ts._attn_sum, ts._attn_max);
 
         // 得到多头注意力输出投影
         tensor_t attn_merge = attn_val->view({tot_seq_len, nh * dh});

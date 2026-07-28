@@ -47,6 +47,9 @@ def load_ops(lib):
         c_size_t,         # max_seq_len
         c_float,          # scale
         c_bool,           # is_prefill
+        llaisysTensor_t,  # attn_acc (flash_decoding ctx buf)
+        llaisysTensor_t,  # attn_sum (flash_decoding ctx buf)
+        llaisysTensor_t,  # attn_max (flash_decoding ctx buf)
     ]
     lib.llaisysPagedAttention.restype = None
 
