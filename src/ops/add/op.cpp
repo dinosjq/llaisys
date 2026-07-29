@@ -7,13 +7,11 @@
 #include "../../utils.hpp"
 // #include "cpu/add_cpu.hpp"
 #include "nvidia/add_nvidia.cuh"
-#include "../../profiler/profiler.hpp"
 
 namespace llaisys::ops {
 
 // add: 实现张量加法操作 c = a + b
 void add(tensor_t c, tensor_t a, tensor_t b) {
-    PROFILE_STEP();
     // 检查设备一致性
     CHECK_SAME_DEVICE(c, a, b);
     // 检查形状一致性

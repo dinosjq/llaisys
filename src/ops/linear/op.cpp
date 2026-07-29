@@ -4,12 +4,10 @@
 #include "../../utils.hpp"
 #include "cpu/linear_cpu.hpp"
 #include "nvidia/linear_nvidia.cuh"
-#include "../../profiler/profiler.hpp"
 
 namespace llaisys::ops {
 // 接受参数 out: [m, n] in: [m, k] weight: [n, k]
 void linear(tensor_t out, tensor_t in, tensor_t weight, tensor_t bias) {
-    PROFILE_STEP();
     // 检查设备一致性
     CHECK_SAME_DEVICE(out, in, weight);
     // 检查数据类型一致性

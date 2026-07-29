@@ -3,11 +3,9 @@
 #include "../../utils.hpp"
 #include "cpu/topk_cpu.hpp"
 #include "nvidia/topk_nvidia.cuh"
-#include "../../profiler/profiler.hpp"
 
 namespace llaisys::ops {
 void topk(tensor_t out_idx, tensor_t out_val, tensor_t vals, size_t k) {
-    PROFILE_STEP();
     // 检查设备一致性
     CHECK_SAME_DEVICE(out_idx, out_val, vals);
     // 检查数据类型一致

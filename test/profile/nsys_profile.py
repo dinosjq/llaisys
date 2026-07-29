@@ -1,0 +1,143 @@
+#!/usr/bin/env python3
+"""
+Minimal single-prompt inference for nsys profiling.
+Only calls the LLAISYS inference system — no HF model, no PyTorch warmup.
+
+Usage:
+  nsys profile -o results/nsys_out --force-overwrite true \\
+    python test/profile/nsys_profile.py --model /path/to/model --input-len 512 --max-steps 16
+
+  # Or with a custom prompt:
+  python test/profile/nsys_profile.py --model /path/to/model --prompt "Hello world" --max-steps 32
+"""
+
+import argparse
+import os
+import sys
+import time
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+
+import llaisys
+from transformers import AutoTokenizer
+
+# ── Prompt bank for auto-generation ──────────────────────────
+_PROMPT_SEEDS = {
+    "en": (
+        "The quick brown fox jumps over the lazy dog. "
+        "Machine learning is a subset of artificial intelligence that enables systems "
+        "to learn and improve from experience without being explicitly programmed. "
+        "Deep learning uses neural networks with many layers to model complex patterns. "
+    ),
+    "zh": (
+        "深度学习是机器学习的一个分支，它使用多层神经网络来建模复杂的模式。"
+        "大语言模型通过自注意力机制处理序列数据，能够理解上下文并生成连贯的文本。"
+        "GPU 并行计算极大地加速了神经网络的训练和推理过程。"
+    ),
+    "code": (
+        "def fibonacci(n):\n"
+        "    if n <= 1:\n"
+        "        return n\n"
+        "    return fibonacci(n-1) + fibonacci(n-2)\n\n"
+        "class Transformer:\n"
+        "    def __init__(self, d_model, n_heads):\n"
+        "        self.attention = MultiHeadAttention(d_model, n_heads)\n"
+        "        self.ffn = FeedForward(d_model)\n"
+    ),
+}
+
+
+def _build_prompt(target_len: int, lang: str = "en") -> str:
+    """Build a prompt of approximately target_len tokens by repeating seed text."""
+    seed = _PROMPT_SEEDS.get(lang, _PROMPT_SEEDS["en"])
+    # Repeat until we exceed target length, then trim
+    prompt = seed
+    while True:
+        prompt += " " + seed
+        # Rough estimate: ~4 chars per token for English, ~2 for Chinese
+        cpt = 2 if lang == "zh" else 4
+        if len(prompt) // cpt >= target_len * 1.5:
+            break
+    return prompt
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Single-prompt LLAISYS inference for nsys profiling")
+    parser.add_argument("--model", required=True, help="Path to model directory")
+    parser.add_argument("--prompt", default="", help="Custom prompt text")
+    parser.add_argument("--input-len", type=int, default=50,
+                        help="Target input token length (ignored if --prompt given)")
+    parser.add_argument("--lang", default="en", choices=["en", "zh", "code"],
+                        help="Prompt language for auto-generation")
+    parser.add_argument("--max-steps", type=int, default=16,
+                        help="Maximum new tokens to generate")
+    parser.add_argument("--no-warmup", action="store_true",
+                        help="Skip warmup (use for clean nsys traces)")
+    parser.add_argument("--device", default="nvidia", choices=["nvidia"])
+    parser.add_argument("--output", default="", help="Path to save output tokens (optional)")
+
+    args = parser.parse_args()
+
+    # ── Tokenizer (HF, load-once for encode/decode) ──────────
+    tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
+
+    # ── Prompt ───────────────────────────────────────────────
+    if args.prompt:
+        prompt = args.prompt
+        input_ids = tokenizer.encode(prompt)
+    else:
+        # Build prompt, encode, and trim to exact target length
+        seed = _build_prompt(args.input_len * 4, args.lang)  # generous seed
+        # Apply chat template to get accurate token count
+        content = tokenizer.apply_chat_template(
+            conversation=[{"role": "user", "content": seed}],
+            add_generation_prompt=True, tokenize=False,
+        )
+        input_ids = tokenizer.encode(content)
+        # Trim to target length
+        if len(input_ids) > args.input_len:
+            input_ids = input_ids[:args.input_len]
+        elif len(input_ids) < args.input_len:
+            # Pad with repeated seed tokens
+            while len(input_ids) < args.input_len:
+                extra = tokenizer.encode(" " + _build_prompt(args.input_len, args.lang))
+                input_ids = (input_ids + extra)[:args.input_len]
+        prompt = tokenizer.decode(input_ids)
+
+    input_len = len(input_ids)
+
+    # ── LLAISYS model (no HF model loaded) ───────────────────
+    device = llaisys.DeviceType.NVIDIA
+    model = llaisys.models.Qwen2(args.model, device)
+
+    # ── Warmup (skip with --no-warmup for clean nsys traces) ──
+    if not args.no_warmup:
+        _ = model.generate(input_ids, max_new_tokens=2)
+
+    # ── Timed inference ──────────────────────────────────────
+    t0 = time.perf_counter()
+    output_ids = model.generate(input_ids, max_new_tokens=args.max_steps)
+    elapsed_s = time.perf_counter() - t0
+
+    model.close()
+
+    output_tokens = len(output_ids) - input_len
+
+    # ── Summary ──────────────────────────────────────────────
+    decoded = tokenizer.decode(output_ids[input_len:], skip_special_tokens=True)
+    print(f"\n  input: {input_len} tokens  output: {output_tokens} tokens  "
+          f"elapsed: {elapsed_s:.2f}s  "
+          f"throughput: {output_tokens / elapsed_s:.1f} tok/s")
+    print(f"  ttft: N/A (use nsys timeline)")
+    print(f"\n  First 200 chars of output:\n  {decoded[:200]}...")
+
+    if args.output:
+        os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
+        with open(args.output, "w") as f:
+            f.write(decoded)
+        print(f"\n  Output saved to: {args.output}")
+
+
+if __name__ == "__main__":
+    main()

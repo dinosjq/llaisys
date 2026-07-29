@@ -81,7 +81,6 @@ private:
     std::shared_mutex _hash_lock;
     // 事件循环
     bool _running;
-    bool _profiled = false;
     std::thread _worker;
     // logprobs 下次迭代实现: 添加 mutex + 需要时 forward 中保存 logits C PU 快照
 

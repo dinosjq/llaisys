@@ -192,6 +192,7 @@ __global__ void flash_decoding_parallel_kernel(float *__restrict__ _attn_acc,
     
     // warp 0 compute then write out
     if (0 == warp_id) {
+#pragma unroll
         for (size_t i = 1; i <= 3; ++ i) {
             float sum_cur = s_sum[i];
             float max_cur = s_max[i];
@@ -338,6 +339,7 @@ __global__ void flash_decoding_reduce_kernel(T *__restrict__ _attn,
     }
     __syncthreads();
     if (warp_id == 0) {
+#pragma unroll
         for (size_t i = 1; i <= 3; ++ i) {
             float max_cur = s_max[i];
             float sum_cur = s_sum[i];

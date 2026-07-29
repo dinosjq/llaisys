@@ -5,11 +5,9 @@
 #include "../../utils.hpp"
 // #include "cpu/argmax_cpu.hpp"
 #include "nvidia/argmax_nvidia.cuh"
-#include "../../profiler/profiler.hpp"
 
 namespace llaisys::ops {
 void argmax(tensor_t max_idx, tensor_t max_val, tensor_t vals) {
-    PROFILE_STEP();
     // 检查设备一致性
     CHECK_SAME_DEVICE(max_idx, max_val, vals);
     // 检查数据类型一致

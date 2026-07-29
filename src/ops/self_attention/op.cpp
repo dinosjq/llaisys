@@ -4,11 +4,9 @@
 #include "../../utils.hpp"
 #include "cpu/self_attention_cpu.hpp"
 #include "nvidia/self_attention_nvidia.cuh"
-#include "../../profiler/profiler.hpp"
 
 namespace llaisys::ops {
 void self_attention(tensor_t attn_val, tensor_t q, tensor_t k, tensor_t v, float scale) {
-    PROFILE_STEP();
     // 检查设备一致性
     CHECK_SAME_DEVICE(attn_val, q, k, v);
     // 检查数据类型一致性

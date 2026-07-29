@@ -4,11 +4,9 @@
 #include "../../utils.hpp"
 #include "cpu/swiglu_cpu.hpp"
 #include "nvidia/swiglu_nvidia.cuh"
-#include "../../profiler/profiler.hpp"
 
 namespace llaisys::ops {
 void swiglu(tensor_t out, tensor_t gate, tensor_t up) {
-    PROFILE_STEP();
     // 检查设备一致性
     CHECK_SAME_DEVICE(out, gate, up);
     // 检查数据类型一致性

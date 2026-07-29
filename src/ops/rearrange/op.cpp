@@ -4,11 +4,9 @@
 #include "../../utils.hpp"
 #include "cpu/rearrange_cpu.hpp"
 #include "nvidia/rearrange_nvidia.cuh"
-#include "../../profiler/profiler.hpp"
 
 namespace llaisys::ops {
 void rearrange(tensor_t out, tensor_t in) {
-    PROFILE_STEP();
     // 检查设备一致性
     CHECK_SAME_DEVICE(out, in);
     // 检查形状一致性

@@ -4,11 +4,9 @@
 #include "../../utils.hpp"
 #include "cpu/rope_cpu.hpp"
 #include "nvidia/rope_nvidia.cuh"
-#include "../../profiler/profiler.hpp"
 
 namespace llaisys::ops {
 void rope(tensor_t out, tensor_t in, tensor_t pos_ids, float theta) {
-    PROFILE_STEP();
     // 检查设备一致性
     CHECK_SAME_DEVICE(out, in, pos_ids);
     // 检查数据类型一致性
