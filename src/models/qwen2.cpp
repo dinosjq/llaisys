@@ -359,6 +359,7 @@ Qwen2Pack Qwen2::prepare_prefill(const std::vector<seq_t> &seqs){
     std::vector<int64_t> pos_ids;   // 位置信息
     std::vector<int64_t> cut_idx(1, 0); // 切断点
     std::vector<int64_t> tot_len;       // 总长信息
+    size_t max_seq_len = 0;         // 最大序列长度
     for(size_t i = 0; i < batch_size; ++ i){
         seq_t seq = seqs[i];
         const size_t seq_len = seq->scheduled_token_num();
@@ -371,6 +372,7 @@ Qwen2Pack Qwen2::prepare_prefill(const std::vector<seq_t> &seqs){
         }
         cut_idx.push_back(cut_idx.back() + seq_len);
         tot_len.push_back(begin + seq_len);
+        max_seq_len = std::max(max_seq_len, seq_len);
     }
     // per-seq 采样参数
     std::vector<float> top_ps, temps;
@@ -378,7 +380,7 @@ Qwen2Pack Qwen2::prepare_prefill(const std::vector<seq_t> &seqs){
         top_ps.push_back(seqs[i]->top_p());
         temps.push_back(seqs[i]->temperature());
     }
-    return Qwen2Pack{token_ids, pos_ids, cut_idx, tot_len, top_ps, temps};
+    return Qwen2Pack{token_ids, pos_ids, cut_idx, tot_len, top_ps, temps, max_seq_len};
 }
 
 /**
@@ -406,7 +408,7 @@ Qwen2Pack Qwen2::prepare_decode(const std::vector<seq_t> &seqs){
         top_ps.push_back(seqs[i]->top_p());
         temps.push_back(seqs[i]->temperature());
     }
-    return Qwen2Pack{token_ids, pos_ids, cut_idx, tot_len, top_ps, temps};
+    return Qwen2Pack{token_ids, pos_ids, cut_idx, tot_len, top_ps, temps, 1};
 }
 
 std::vector<int64_t> Qwen2::forward(Qwen2Pack &pack, std::vector<int64_t> &block_ids, bool is_prefill){
@@ -420,9 +422,9 @@ std::vector<int64_t> Qwen2::forward(Qwen2Pack &pack, std::vector<int64_t> &block
     const std::vector<int64_t> &pos_ids = pack.pos_ids;
     const std::vector<int64_t> &cut_idx = pack.cut_idx;
     const std::vector<int64_t> &tot_len = pack.tot_len;
+    const size_t max_seq_len = pack.max_seq_len; 
     const size_t tot_seq_len = token_ids.size();
     const size_t batch_size = tot_len.size();
-    const size_t max_seq_len = MAX_TOKEN_NUM; 
     const size_t max_block_num = MAX_BLOCK_NUM;
 
     // 加载其他参数

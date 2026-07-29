@@ -98,11 +98,11 @@ void rearrange(std::byte *out, const std::byte *in, llaisysDataType_t dtype,
     // Use thread_local pre-allocated device buffers to avoid cudaMalloc/cudaFree on every call.
     // Each buffer holds at most MAX_NDIM elements (more than enough for any tensor).
     static constexpr size_t MAX_NDIM = 16;
-    static thread_local size_t *d_shape = nullptr;
-    static thread_local size_t *d_dim_prod = nullptr;
-    static thread_local ptrdiff_t *d_in_strides = nullptr;
-    static thread_local ptrdiff_t *d_out_strides = nullptr;
-    static thread_local bool bufs_inited = false;
+    static size_t *d_shape = nullptr;
+    static size_t *d_dim_prod = nullptr;
+    static ptrdiff_t *d_in_strides = nullptr;
+    static ptrdiff_t *d_out_strides = nullptr;
+    static bool bufs_inited = false;
     if (!bufs_inited) {
         CUDA_CHECK(cudaMalloc(&d_shape, MAX_NDIM * sizeof(size_t)));
         CUDA_CHECK(cudaMalloc(&d_dim_prod, MAX_NDIM * sizeof(size_t)));
