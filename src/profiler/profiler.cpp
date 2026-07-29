@@ -96,10 +96,7 @@ int OpProfiler::_get_layer_for_op_index(size_t idx) const {
 #ifdef LLAISYS_ENABLE_PROFILING
 
 cudaStream_t OpProfiler::_get_stream() {
-    auto& runtime = llaisys::core::context().runtime();
-    if (runtime.deviceType() != LLAISYS_DEVICE_NVIDIA)
-        return nullptr;
-    return static_cast<cudaStream_t>(runtime.stream());
+    return cudaStreamLegacy;
 }
 
 void OpProfiler::begin_forward(bool is_prefill) {

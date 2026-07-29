@@ -33,10 +33,7 @@ __global__ void rms_norm_kernel(T *__restrict__ out, const T *__restrict__ in, c
     for (size_t col = (tid << 2); col < m; col += 1024) {
         if (col + 3 < m) {
             const float4 flo4 = llaisys::utils::nvidia::load_4d(r_in + col);
-            sm_in[col | 0] = flo4.x;
-            sm_in[col | 1] = flo4.y;
-            sm_in[col | 2] = flo4.z;
-            sm_in[col | 3] = flo4.w;
+            llaisys::utils::nvidia::save_4d(sm_in + col, flo4);
 
             sum += flo4.x * flo4.x;
             sum += flo4.y * flo4.y;
@@ -77,11 +74,12 @@ __global__ void rms_norm_kernel(T *__restrict__ out, const T *__restrict__ in, c
     for (size_t col = (tid << 2); col < m; col += 1024) {
         if (col + 3 < m) {
             const float4 w_flo4 = llaisys::utils::nvidia::load_4d(weight + col);
+            const float4 in_flo4 = llaisys::utils::nvidia::load_4d(sm_in + col);
             const float4 flo4 = make_float4(
-                w_flo4.x * sm_in[col | 0] * inv,
-                w_flo4.y * sm_in[col | 1] * inv,
-                w_flo4.z * sm_in[col | 2] * inv,
-                w_flo4.w * sm_in[col | 3] * inv
+                w_flo4.x * in_flo4.x * inv,
+                w_flo4.y * in_flo4.y * inv,
+                w_flo4.z * in_flo4.z * inv,
+                w_flo4.w * in_flo4.w * inv
             );
             llaisys::utils::nvidia::save_4d(r_out + col, flo4);
         } else {

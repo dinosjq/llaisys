@@ -1,6 +1,10 @@
 prefill 阶段 embedding 占据大量耗时，导致 TTFT 很大，当前的 embedding 算子存在 SM 利用率过低 occupancy 过低，对算子进行优化
 
-优化之前：
+优化之后 TTFT 有明显的下降，不过 profile 系统对于 TTFT 的衡量并不是很准确，可以从 benchmark 来进行比较
+
+整体上存在一些下降，但是并不是很明显，看来还是得优化其他部分
+
+优化之前：profile 显示 337ms benchmark 显示 60.9ms
 
 (venv) songjq@SongjqMechine:~/llaisys-main$ python test/profile/profile_model.py --model /home/songjq/models/DeepSeek-R1-Distill-Qwen-1.5B --max_step 1025
   input_token: 23   output_token: 1025   elapsed: 17.50s
@@ -61,3 +65,123 @@ prefill 阶段 embedding 占据大量耗时，导致 TTFT 很大，当前的 emb
     embed:gather               0.04      1       0.04    0.1
     ─────────────────────────────────────────────────────────
     total                                       36.54  100.0
+
+(venv) songjq@SongjqMechine:~/llaisys-main$ python test/benchmark/benchmark_infer.py --model /home/songjq/models/DeepSeek-R1-Distill-Qwen-1.5B --warmup 1 --repeat 1 --num_prompts 6 --max_step 1025
+Loading HF model from local: /home/songjq/models/DeepSeek-R1-Distill-Qwen-1.5B
+Loading LLAISYS model...
+
+  Model: Qwen2-1.5B  |  GPU: NVIDIA GeForce RTX 4060 Laptop GPU  |  Prompts: 6  |  Mode: single
+
+  ═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+  prompt      input(token)  LLAISYS_output(token)   HF_output(token)  LLAISYS_latency(ms)   HF_latency(ms)  speedup
+  ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  short_0               13                    452                588               7203.8          12317.1    1.31x
+  medium_0              35                   1005               1025              16113.2          21272.0    1.29x
+  long_0               186                   1025               1025              16711.6          22997.6    1.38x
+  short_1               14                    181                172               2983.4           3911.8    1.38x
+  medium_1              30                    843               1025              13714.0          23405.5    1.40x
+  long_1               254                   1025               1025              16841.5          24858.7    1.48x
+  ═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+  Metric                  LLAISYS             HF
+  ─────────────────────────────────────────────────
+  avg latency          12261.2 ms     18127.1 ms
+  p50 latency          16113.2 ms     22997.6 ms
+  p90 latency          16711.6 ms     23405.5 ms
+  TTFT(avg)               60.9 ms        20.2 ms
+  TPOT                   16.24 ms       22.38 ms
+  Throughput             61.6 t/s       44.7 t/s
+
+  Throughput speedup: 1.38x
+  JSON saved: test/benchmark/results/run_20260729_233043/results.json
+
+优化之后：profile 显示 214.43ms benchmark 显示 59ms
+
+(venv) songjq@SongjqMechine:~/llaisys-main$ python test/profile/profile_model.py --model /home/songjq/models/DeepSeek-R1-Distill-Qwen-1.5B --max_step 256
+  input_token: 23   output_token: 256   elapsed: 4.47s
+  throughput: 57.3 tok/s   TTFT: 214.43 ms   TPOT: 17.46 ms
+
+  period: prefill   step: 0   total_ms: 214.43
+    operator                 avg_ms  count   total_ms       %
+    ─────────────────────────────────────────────────────────
+    linear:q_proj              4.18     28     116.90   54.5
+    embed                     51.14      1      51.14   23.8
+    linear:k_proj              0.31     28       8.71    4.1
+    linear:gate_proj           0.18     28       5.00    2.3
+    linear:up_proj             0.18     28       4.92    2.3
+    linear:down_proj           0.17     28       4.74    2.2
+    linear:o_proj              0.08     28       2.22    1.0
+    paged_attn                 0.07     28       2.05    1.0
+    linear:lm_head             2.04      1       2.04    1.0
+    attn_norm                  0.06     28       1.81    0.8
+    linear:v_proj              0.06     28       1.76    0.8
+    swiglu                     0.06     28       1.61    0.8
+    mlp_norm                   0.06     28       1.59    0.7
+    rope:q                     0.06     28       1.58    0.7
+    add:mlp                    0.06     28       1.57    0.7
+    rope:k                     0.06     28       1.56    0.7
+    add:attn                   0.06     28       1.55    0.7
+    kv_cache_move:k            0.05     28       1.53    0.7
+    kv_cache_move:v            0.05     28       1.50    0.7
+    top_k                      0.57      1       0.57    0.3
+    embed:gather               0.05      1       0.05    0.0
+    out_norm                   0.04      1       0.04    0.0
+    ─────────────────────────────────────────────────────────
+    total                                      214.43  100.0
+
+  period: decode   step: 1   total_ms: 39.12
+    operator                 avg_ms  count   total_ms       %
+    ─────────────────────────────────────────────────────────
+    linear:down_proj           0.17     28       4.68   12.0
+    linear:gate_proj           0.17     28       4.68   12.0
+    linear:up_proj             0.17     28       4.63   11.8
+    linear:q_proj              0.07     28       2.09    5.3
+    linear:o_proj              0.07     28       2.09    5.3
+    linear:lm_head             1.94      1       1.94    5.0
+    paged_attn                 0.07     28       1.89    4.8
+    linear:k_proj              0.06     28       1.61    4.1
+    attn_norm                  0.06     28       1.60    4.1
+    linear:v_proj              0.06     28       1.57    4.0
+    rope:q                     0.05     28       1.51    3.8
+    mlp_norm                   0.05     28       1.49    3.8
+    rope:k                     0.05     28       1.48    3.8
+    add:mlp                    0.05     28       1.47    3.8
+    swiglu                     0.05     28       1.46    3.7
+    add:attn                   0.05     28       1.44    3.7
+    kv_cache_move:v            0.05     28       1.42    3.6
+    kv_cache_move:k            0.05     28       1.40    3.6
+    top_k                      0.53      1       0.53    1.4
+    embed                      0.06      1       0.06    0.1
+    out_norm                   0.05      1       0.05    0.1
+    embed:gather               0.04      1       0.04    0.1
+    ─────────────────────────────────────────────────────────
+    total                                       39.12  100.0
+
+(venv) songjq@SongjqMechine:~/llaisys-main$ python test/benchmark/benchmark_infer.py --model /home/songjq/models/DeepSeek-R1-Distill-Qwen-1.5B --warmup 1 --repeat 1 --num_prompts 6 --max_step 1024
+Loading HF model from local: /home/songjq/models/DeepSeek-R1-Distill-Qwen-1.5B
+Loading LLAISYS model...
+
+  Model: Qwen2-1.5B  |  GPU: NVIDIA GeForce RTX 4060 Laptop GPU  |  Prompts: 6  |  Mode: single
+
+  ═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+  prompt      input(token)  LLAISYS_output(token)   HF_output(token)  LLAISYS_latency(ms)   HF_latency(ms)  speedup
+  ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  short_0               13                    452                588               7203.0          13648.7    1.46x
+  medium_0              35                   1005               1024              16200.1          23594.7    1.43x
+  long_0               186                   1024               1024              16748.0          23724.7    1.42x
+  short_1               14                    181                172               3019.4           3909.3    1.36x
+  medium_1              30                    843               1024              13575.3          23318.9    1.41x
+  long_1               254                   1024               1024              16788.9          23452.3    1.40x
+  ═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+  Metric                  LLAISYS             HF
+  ─────────────────────────────────────────────────
+  avg latency          12255.8 ms     18608.1 ms
+  p50 latency          16200.1 ms     23452.3 ms
+  p90 latency          16748.0 ms     23594.7 ms
+  TTFT(avg)               59.6 ms        21.7 ms
+  TPOT                   16.24 ms       22.99 ms
+  Throughput             61.6 t/s       43.5 t/s
+
+  Throughput speedup: 1.42x
+  JSON saved: test/benchmark/results/run_20260730_002504/results.json

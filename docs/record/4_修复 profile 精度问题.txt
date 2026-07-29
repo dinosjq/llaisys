@@ -1,0 +1,143 @@
+(venv) songjq@SongjqMechine:~/llaisys-main$ python test/profile/profile_model.py --model /home/songjq/models/DeepSeek-R1-Distill-Qwen-1.5B --max_step 256
+  input_token: 23   output_token: 256   elapsed: 4.38s
+  throughput: 58.5 tok/s   TTFT: 141.85 ms   TPOT: 17.09 ms
+
+  period: prefill   step: 0   total_ms: 141.85
+    operator                 avg_ms  count   total_ms       %
+    ─────────────────────────────────────────────────────────
+    linear:q_proj              2.86     28      80.19   56.5
+    embed                     29.65      1      29.65   20.9
+    linear:k_proj              0.48     28      13.55    9.6
+    linear:gate_proj           0.13     28       3.69    2.6
+    linear:up_proj             0.12     28       3.49    2.5
+    linear:down_proj           0.12     28       3.35    2.4
+    linear:lm_head             2.26      1       2.26    1.6
+    linear:v_proj              0.03     28       0.97    0.7
+    paged_attn                 0.03     28       0.80    0.6
+    linear:o_proj              0.03     28       0.76    0.5
+    kv_cache_move:k            0.02     28       0.60    0.4
+    top_k                      0.50      1       0.50    0.4
+    rope:q                     0.02     28       0.46    0.3
+    attn_norm                  0.01     28       0.33    0.2
+    kv_cache_move:v            0.01     28       0.31    0.2
+    rope:k                     0.01     28       0.28    0.2
+    swiglu                     0.01     28       0.18    0.1
+    mlp_norm                   0.01     28       0.17    0.1
+    add:attn                   0.01     28       0.14    0.1
+    add:mlp                    0.00     28       0.13    0.1
+    embed:gather               0.01      1       0.01    0.0
+    out_norm                   0.01      1       0.01    0.0
+    ─────────────────────────────────────────────────────────
+    total                                      141.85  100.0
+
+  period: decode   step: 1   total_ms: 17.51
+    operator                 avg_ms  count   total_ms       %
+    ─────────────────────────────────────────────────────────
+    linear:gate_proj           0.12     28       3.25   18.6
+    linear:up_proj             0.11     28       3.21   18.3
+    linear:down_proj           0.11     28       3.20   18.3
+    linear:lm_head             1.90      1       1.90   10.8
+    paged_attn                 0.03     28       0.88    5.0
+    linear:q_proj              0.03     28       0.82    4.7
+    linear:o_proj              0.03     28       0.78    4.5
+    rope:q                     0.02     28       0.65    3.7
+    top_k                      0.49      1       0.49    2.8
+    linear:v_proj              0.01     28       0.42    2.4
+    kv_cache_move:v            0.01     28       0.41    2.3
+    linear:k_proj              0.01     28       0.33    1.9
+    kv_cache_move:k            0.01     28       0.33    1.9
+    mlp_norm                   0.01     28       0.18    1.0
+    attn_norm                  0.01     28       0.15    0.8
+    rope:k                     0.01     28       0.14    0.8
+    swiglu                     0.00     28       0.12    0.7
+    add:attn                   0.00     28       0.11    0.6
+    add:mlp                    0.00     28       0.11    0.6
+    embed                      0.03      1       0.03    0.1
+    embed:gather               0.01      1       0.01    0.0
+    out_norm                   0.01      1       0.01    0.0
+    ─────────────────────────────────────────────────────────
+    total                                       17.51  100.0
+
+  period: decode   step: 32   total_ms: 17.03
+    operator                 avg_ms  count   total_ms       %
+    ─────────────────────────────────────────────────────────
+    linear:down_proj           0.12     28       3.26   19.1
+    linear:gate_proj           0.11     28       3.21   18.9
+    linear:up_proj             0.11     28       3.20   18.8
+    linear:lm_head             1.91      1       1.91   11.2
+    linear:q_proj              0.03     28       0.72    4.2
+    paged_attn                 0.03     28       0.71    4.2
+    linear:o_proj              0.02     28       0.66    3.9
+    rope:q                     0.02     28       0.54    3.2
+    kv_cache_move:k            0.02     28       0.50    2.9
+    top_k                      0.46      1       0.46    2.7
+    linear:v_proj              0.01     28       0.41    2.4
+    kv_cache_move:v            0.01     28       0.31    1.8
+    linear:k_proj              0.01     28       0.30    1.7
+    rope:k                     0.01     28       0.23    1.4
+    attn_norm                  0.00     28       0.13    0.8
+    mlp_norm                   0.00     28       0.13    0.8
+    swiglu                     0.00     28       0.11    0.6
+    add:mlp                    0.00     28       0.10    0.6
+    add:attn                   0.00     28       0.10    0.6
+    embed                      0.01      1       0.01    0.1
+    embed:gather               0.01      1       0.01    0.0
+    out_norm                   0.01      1       0.01    0.0
+    ─────────────────────────────────────────────────────────
+    total                                       17.03  100.0
+
+  period: decode   step: 64   total_ms: 17.20
+    operator                 avg_ms  count   total_ms       %
+    ─────────────────────────────────────────────────────────
+    linear:down_proj           0.12     28       3.26   19.0
+    linear:gate_proj           0.11     28       3.21   18.7
+    linear:up_proj             0.11     28       3.20   18.6
+    linear:lm_head             1.89      1       1.89   11.0
+    paged_attn                 0.03     28       0.83    4.8
+    linear:q_proj              0.03     28       0.72    4.2
+    linear:o_proj              0.02     28       0.66    3.8
+    rope:q                     0.02     28       0.58    3.4
+    kv_cache_move:k            0.02     28       0.55    3.2
+    linear:v_proj              0.02     28       0.48    2.8
+    top_k                      0.46      1       0.46    2.6
+    linear:k_proj              0.01     28       0.36    2.1
+    rope:k                     0.01     28       0.20    1.2
+    kv_cache_move:v            0.01     28       0.19    1.1
+    mlp_norm                   0.00     28       0.14    0.8
+    attn_norm                  0.00     28       0.13    0.8
+    add:attn                   0.00     28       0.11    0.6
+    swiglu                     0.00     28       0.11    0.6
+    add:mlp                    0.00     28       0.11    0.6
+    embed                      0.02      1       0.02    0.1
+    embed:gather               0.01      1       0.01    0.0
+    out_norm                   0.00      1       0.00    0.0
+    ─────────────────────────────────────────────────────────
+    total                                       17.20  100.0
+
+  period: decode   step: 128   total_ms: 18.24
+    operator                 avg_ms  count   total_ms       %
+    ─────────────────────────────────────────────────────────
+    linear:down_proj           0.12     28       3.26   17.9
+    linear:gate_proj           0.12     28       3.25   17.8
+    linear:up_proj             0.11     28       3.21   17.6
+    linear:lm_head             1.88      1       1.88   10.3
+    linear:q_proj              0.06     28       1.69    9.3
+    paged_attn                 0.03     28       0.86    4.7
+    linear:o_proj              0.02     28       0.66    3.6
+    rope:q                     0.02     28       0.63    3.5
+    linear:v_proj              0.02     28       0.49    2.7
+    top_k                      0.46      1       0.46    2.5
+    kv_cache_move:k            0.01     28       0.34    1.9
+    linear:k_proj              0.01     28       0.33    1.8
+    kv_cache_move:v            0.01     28       0.30    1.6
+    rope:k                     0.01     28       0.21    1.2
+    add:attn                   0.01     28       0.15    0.8
+    mlp_norm                   0.00     28       0.13    0.7
+    attn_norm                  0.00     28       0.13    0.7
+    swiglu                     0.00     28       0.11    0.6
+    add:mlp                    0.00     28       0.10    0.6
+    embed                      0.04      1       0.04    0.2
+    embed:gather               0.01      1       0.01    0.0
+    out_norm                   0.00      1       0.00    0.0
+    ─────────────────────────────────────────────────────────
+    total                                       18.24  100.0

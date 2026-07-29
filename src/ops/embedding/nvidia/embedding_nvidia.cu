@@ -9,25 +9,35 @@
 
 namespace llaisys::ops::nvidia {
 
+constexpr int WARP_SIZE = 32;
+constexpr int WARP_PER_BLOCK = 8;
+constexpr int BLOCK_DIM = WARP_SIZE * WARP_PER_BLOCK;
+
 template <typename T>
 __global__ void embedding_gather_kernel(T *out, const int64_t *index, const T *weight, size_t numel, size_t len, const int padding) {
-    size_t row = static_cast<size_t>(blockIdx.x) + static_cast<size_t>(blockIdx.y) * gridDim.x;
-    if (row >= numel) return;
+    const size_t tid = threadIdx.x;
+    const size_t warp_id = tid >> 5;
+    const size_t lane_id = tid & 31;
 
-    size_t idx = static_cast<size_t>(index[row] + padding);
-    const T *src = weight + idx * len;
-    T *dst = out + row * len;
+    const size_t out_row = blockIdx.x * WARP_PER_BLOCK + warp_id;
 
-    constexpr size_t VEC = 4;
-    const size_t vec_len = len & ~(VEC - 1);
-    const size_t stride = static_cast<size_t>(blockDim.x) * VEC;
+    if (out_row >= numel) return; 
 
-    for (size_t i = static_cast<size_t>(threadIdx.x) * VEC; i + (VEC - 1) < vec_len; i += stride) {
-        llaisys::utils::nvidia::copy_4d(src + i, dst + i);
-    }
+    size_t weight_row = static_cast<size_t>(index[out_row] + padding);
 
-    for (size_t i = vec_len + threadIdx.x; i < len; i += blockDim.x) {
-        dst[i] = src[i];
+    const T *src = weight + weight_row * len;
+    T *dst = out + out_row * len;
+
+    for (size_t i = lane_id << 2; i < len; i += 128) {
+        if (i + 3 < len) {
+            llaisys::utils::nvidia::copy_4d(src + i, dst + i);
+        } else {
+            for (size_t j = 0; j < 4; ++ j) {
+                if(i + j < len) {
+                    dst[i + j] = src[i + j];
+                }
+            }
+        }
     }
 }
 
@@ -35,21 +45,14 @@ template <typename T>
 void embedding_launch(std::byte *out, const std::byte *d_index, const std::byte *weight, const size_t numel, const size_t len, const int padding) {
     if (numel == 0 || len == 0) return;
 
-    const int64_t *index = reinterpret_cast<const int64_t *>(d_index);
+    auto *index = reinterpret_cast<const int64_t *>(d_index);
     auto *d_out = reinterpret_cast<T *>(out);
-    const auto *d_weight = reinterpret_cast<const T *>(weight);
+    auto *d_weight = reinterpret_cast<const T *>(weight);
 
-    const unsigned int MAX_X = 65535u;
-    size_t blocks_x = std::min(numel, (size_t)MAX_X);
-    size_t blocks_y = (numel + blocks_x - 1) / blocks_x;
-    dim3 grid((unsigned)blocks_x, (unsigned)blocks_y);
+    dim3 blockDim(BLOCK_DIM);
+    dim3 gridDim((numel + WARP_PER_BLOCK - 1) / WARP_PER_BLOCK);
 
-    int threads = 256;
-    if (len < (size_t)threads) threads = (int)len;
-    if (threads <= 0) threads = 1;
-
-    embedding_gather_kernel<<<grid, threads>>>(d_out, index, d_weight, numel, len, padding);
-    CUDA_CHECK(cudaGetLastError());
+    embedding_gather_kernel<<<gridDim, blockDim>>>(d_out, index, d_weight, numel, len, padding);
 }
 
 void embedding(std::byte *out, const std::byte *d_index, const std::byte *weight, llaisysDataType_t dtype,
