@@ -6,16 +6,66 @@
 #include <stdexcept>
 #include <type_traits>
 
-__device__ __forceinline__ float warp_reduce(float val) {
+static constexpr size_t WARP_SIZE = 32;
+static constexpr size_t BLOCK_DIM = 256;
+static constexpr size_t BLOCK_M = 8;
+static constexpr size_t COMPUTE_WARPS = 4;
+static constexpr size_t KV_TILE = 4;
+static constexpr size_t HEAD_DIM_MAX = 128;
+static constexpr size_t VEC_SIZE = 4;
+static constexpr unsigned int FULL_MASK = 0xFFFFFFFFU;
+
+__device__ __forceinline__ float warp_reduce_sum(float val) {
 #pragma unroll
-    for (size_t offset = 16; offset > 0; offset >>= 1) {
-        val += __shfl_xor_sync(0xFFFFFFFF, val, offset);
+    for (int offset = 16; offset > 0; offset >>= 1) {
+        val += __shfl_down_sync(FULL_MASK, val, offset);
     }
     return val;
 }
 
-static constexpr size_t BLOCK_M = 8;
-static constexpr size_t block_dim = 256;
+__device__ __forceinline__ float4 zero_float4() {
+    return make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+}
+
+__device__ __forceinline__ float dot_float4(const float4 &lhs, const float4 &rhs) {
+    return lhs.x * rhs.x + lhs.y * rhs.y + lhs.z * rhs.z + lhs.w * rhs.w;
+}
+
+template <typename T>
+__device__ __forceinline__ void load_paged_kv_row(
+    float *__restrict__ s_k,
+    float *__restrict__ s_v,
+    const T *__restrict__ k_cache,
+    const T *__restrict__ v_cache,
+    const int64_t *__restrict__ block_ids,
+    const size_t logical_token,
+    const size_t kv_end,
+    const size_t buffer,
+    const size_t row,
+    const size_t token_num,
+    const size_t nkvhead,
+    const size_t nkvh,
+    const size_t d,
+    const size_t dv) {
+    if (logical_token >= kv_end) {
+        return;
+    }
+
+    const int64_t block_id = block_ids[logical_token / token_num + 1];
+    const size_t block_token = logical_token % token_num;
+    const T *k_src = k_cache + ((block_id * token_num + block_token) * nkvhead + nkvh) * d;
+    const T *v_src = v_cache + ((block_id * token_num + block_token) * nkvhead + nkvh) * dv;
+    float *k_dst = s_k + (buffer * KV_TILE + row) * d;
+    float *v_dst = s_v + (buffer * KV_TILE + row) * dv;
+    const size_t col = (threadIdx.x & (WARP_SIZE - 1)) * VEC_SIZE;
+
+    if (col < d) {
+        llaisys::utils::nvidia::copy_4d(k_src + col, k_dst + col);
+    }
+    if (col < dv) {
+        llaisys::utils::nvidia::copy_4d(v_src + col, v_dst + col);
+    }
+}
 
 // 自定义 paged_attention 以 flash_attention_v2 为基础
 template <typename T>
@@ -34,156 +84,171 @@ __global__ void paged_attention_kernel(T *__restrict__ _attn,
                                        const size_t _d,
                                        const size_t _nkvhead) 
 {
-
-    extern __shared__ float smem[];
-    float *_s_acc = smem;                 // (BLOCK_M X dv) 计算的暂存值
-    float *_s_l = _s_acc + BLOCK_M * _dv; // (BLOCK_M X 1)  分母和
-    float *_s_m = _s_l + BLOCK_M;         // (BLOCK_M X 1)  最大值
-    float *_s_alpha = _s_m + BLOCK_M;     // (BLOCK_M X 1)
-    float *_s_beta = _s_alpha + BLOCK_M;  // (BLOCK_M X 1)
-    float *_s_q = _s_beta + BLOCK_M;      // (BLOCK_M X d)
-    float *_s_k = _s_q + BLOCK_M * _d;    // (BLOCK_M X d)
-    float *_s_v = _s_k + BLOCK_M * _d;    // (BLOCK_M X dv)
+    extern __shared__ float4 smem_vec[];
+    float *smem = reinterpret_cast<float *>(smem_vec);
+    float *s_k = smem;
+    float *s_v = s_k + 2 * KV_TILE * _d;
 
     const size_t tid = threadIdx.x;
-    const size_t warp_id = tid >> 5;
-    const size_t lane_id = tid & 31;
+    const size_t warp_id = tid / WARP_SIZE;
+    const size_t lane_id = tid & (WARP_SIZE - 1);
     const size_t batch_id = blockIdx.z;
+    const bool consumer_warp = warp_id < COMPUTE_WARPS;
+    const bool producer_warp = !consumer_warp;
 
-    const int64_t *batch_block_ids = _block_ids + batch_id * _max_block_num;
-    const size_t _seqlen = _cut_idx[batch_id + 1] - _cut_idx[batch_id];
-    const size_t _totlen = _tot_len[batch_id];
+    const int64_t q_start = _cut_idx[batch_id];
+    const int64_t seq_len_i64 = _cut_idx[batch_id + 1] - q_start;
+    const int64_t total_len_i64 = _tot_len[batch_id];
+    const int64_t prefix_len_i64 = total_len_i64 - seq_len_i64;
+    const size_t q_base = blockIdx.x * BLOCK_M;
 
-    const size_t q = blockIdx.x * BLOCK_M;
+    // Every predicate here is block-uniform, so returning before the first
+    // block-wide barrier is safe.
+    if (q_start < 0 || seq_len_i64 <= 0 || total_len_i64 <= 0
+        || prefix_len_i64 < 0
+        || q_base >= static_cast<size_t>(seq_len_i64)) {
+        return;
+    }
+
+    const size_t seq_len = static_cast<size_t>(seq_len_i64);
+    const size_t prefix_len = static_cast<size_t>(prefix_len_i64);
+    const size_t valid_q_end = (q_base + BLOCK_M < seq_len) ? q_base + BLOCK_M : seq_len;
+    const size_t kv_end = prefix_len + valid_q_end;
     const size_t nh = blockIdx.y;
     const size_t kv_rep = _nhead / _nkvhead;
     const size_t nkvh = nh / kv_rep;
-    const size_t extra = _totlen - _seqlen;
+    const int64_t *batch_block_ids =
+        _block_ids + batch_id * _max_block_num;
 
-    const size_t qi = q + warp_id;
-    const size_t limit = min(qi + extra, _totlen - 1);
+    float4 q_frag[2] = {zero_float4(), zero_float4()};
+    float4 acc_frag[2] = {zero_float4(), zero_float4()};
+    float running_max[2] = {-INFINITY, -INFINITY};
+    float running_sum[2] = {0.0f, 0.0f};
+    size_t query_index[2] = {0, 0};
+    bool query_valid[2] = {false, false};
+    const size_t q_col = lane_id * VEC_SIZE;
+    const size_t v_col = lane_id * VEC_SIZE;
 
-    const T *_q = _Q + ((qi + _cut_idx[batch_id]) * _nhead + nh) * _d;
-    float *s_acc = _s_acc + warp_id * _dv;
-    float *s_q = _s_q + warp_id * _d;
+    if (consumer_warp) {
+        query_index[0] = q_base + warp_id;
+        query_index[1] = query_index[0] + COMPUTE_WARPS;
+        query_valid[0] = query_index[0] < seq_len;
+        query_valid[1] = query_index[1] < seq_len;
 
-    // init acc / l / m
-    {
-        // naive: warp init
-        for (size_t i = lane_id; i < _dv; i += 32) {
-            s_acc[i] = 0.0f;
-        }
-        if (lane_id == 0) {
-            _s_l[warp_id] = 0.0f;
-            _s_m[warp_id] = -INFINITY;
-        }
-    }
-
-    // load q
-    {
-        // naive: warp init
-        if (qi < _seqlen) {
-            // vec load: assert _d = 128
-            for (size_t col = lane_id << 2; col < _d; col += 128) {
-                llaisys::utils::nvidia::copy_4d(_q + col, s_q + col);
+#pragma unroll
+        for (int slot = 0; slot < 2; ++slot) {
+            if (query_valid[slot] && q_col < _d) {
+                const size_t global_query = static_cast<size_t>(q_start) + query_index[slot];
+                const T *q_src = _Q + (global_query * _nhead + nh) * _d + q_col;
+                q_frag[slot] = llaisys::utils::nvidia::load_4d(q_src);
             }
         }
     }
 
-    __syncwarp();
-
-    for (size_t k = 0; k < _totlen; ++k) {
-        // load k / v
-        if (k % BLOCK_M == 0) {
-            __syncthreads();
-
-            size_t token_id = k + warp_id;
-
-            if(token_id < _totlen){
-                const int64_t block_id = batch_block_ids[token_id / _token_num + 1]; // 这里得 +1 每行第一个数据为该 seq 的块表大小
-                token_id %= _token_num;
-
-                // global memory
-                const T *_k = _K_cache + ((block_id * _token_num + token_id) * _nkvhead + nkvh) * _d;
-                const T *_v = _V_cache + ((block_id * _token_num + token_id) * _nkvhead + nkvh) * _dv;
-
-                // shared memory
-                float *s_k = _s_k + warp_id * _d;
-                float *s_v = _s_v + warp_id * _dv;
-
-                // vec load: warp init
-                for (size_t col = lane_id << 2; col < _d; col += 128) {
-                    llaisys::utils::nvidia::copy_4d(_k + col, s_k + col);
-                }
-
-                for (size_t col = lane_id << 2; col < _dv; col += 128) {
-                    llaisys::utils::nvidia::copy_4d(_v + col, s_v + col);
-                }
-            }
-            __syncthreads();
-        }
-
-        const float *s_k = _s_k + (k & 7) * _d;
-        const float *s_v = _s_v + (k & 7) * _dv;
-
-        // online softmax
-        {
-            // naive: warp compute
-            if (qi < _seqlen && k <= limit) {
-                float dot = 0.0f;
-                for (size_t i = lane_id; i < _d; i += 32) {
-                    dot += s_q[i] * s_k[i];
-                }
-                dot = warp_reduce(dot);
-
-                if (lane_id == 0) {
-                    const float s = dot * _scale;
-                    const float m_old = _s_m[warp_id];
-                    const float m_new = fmaxf(m_old, s);
-                    const float alpha = expf(m_old - m_new);
-                    const float beta = expf(s - m_new);
-
-                    _s_m[warp_id] = m_new;
-                    _s_l[warp_id] = _s_l[warp_id] * alpha + beta;
-                    _s_alpha[warp_id] = alpha;
-                    _s_beta[warp_id] = beta;
-                }
-            } else {
-                _s_alpha[warp_id] = 1.0f;
-                _s_beta[warp_id] = 0.0f;
-            }
-
-            __syncwarp();
-
-            // naive: warp update
-            if (qi < _seqlen && k <= limit) {
-                const float alpha = _s_alpha[warp_id];
-                const float beta = _s_beta[warp_id];
-
-                for (size_t i = lane_id; i < _dv; i += 32) {
-                    s_acc[i] = s_acc[i] * alpha + s_v[i] * beta;
-                }
-            }
-
-            __syncwarp();
-        }
+    const size_t producer_row = warp_id - COMPUTE_WARPS;
+    if (producer_warp) {
+        load_paged_kv_row(
+            s_k, s_v, _K_cache, _V_cache, batch_block_ids,
+            producer_row, kv_end, 0, producer_row, _token_num,
+            _nkvhead, nkvh, _d, _dv);
     }
 
-    // write out
-    {
-        // naive: warp load back
-        if (qi >= _seqlen) {
-            return;
+    // Publish the initial KV tile before any consumer reads it.
+    __syncthreads();
+
+    size_t buffer = 0;
+    for (size_t tile_base = 0; tile_base < kv_end;
+         tile_base += KV_TILE) {
+        if (producer_warp) {
+            const size_t next_token = tile_base + KV_TILE + producer_row;
+            load_paged_kv_row(
+                s_k, s_v, _K_cache, _V_cache, batch_block_ids,
+                next_token, kv_end, buffer ^ 1, producer_row,
+                _token_num, _nkvhead, nkvh, _d, _dv);
         }
-        const float den = _s_l[warp_id];
-        const float inv = (den > 0.0f) ? 1.0f / den : 0.0f;
-        const size_t offset = ((qi + _cut_idx[batch_id]) * _nhead + nh) * _dv;
 
-        for (size_t i = lane_id; i < _dv; i += 32) {
-            const float out = s_acc[i] * inv;
-            const size_t idx = offset + i;
+        if (consumer_warp) {
+#pragma unroll
+            for (size_t row = 0; row < KV_TILE; ++row) {
+                const size_t logical_token = tile_base + row;
+                if (logical_token >= kv_end) {
+                    break;
+                }
 
-            _attn[idx] = llaisys::utils::nvidia::cast<T>(out);
+                const float *k_row = s_k + (buffer * KV_TILE + row) * _d;
+                const float *v_row = s_v + (buffer * KV_TILE + row) * _dv;
+                float4 k_frag = zero_float4();
+                float4 v_frag = zero_float4();
+                if (q_col < _d) {
+                    k_frag = *reinterpret_cast<const float4 *>(k_row + q_col);
+                }
+                if (v_col < _dv) {
+                    v_frag = *reinterpret_cast<const float4 *>(v_row + v_col);
+                }
+
+#pragma unroll
+                for (int slot = 0; slot < 2; ++slot) {
+                    if (!query_valid[slot]) {
+                        continue;
+                    }
+                    const size_t query_kv_end = prefix_len + query_index[slot] + 1;
+                    if (logical_token >= query_kv_end) {
+                        continue;
+                    }
+
+                    float dot = dot_float4(q_frag[slot], k_frag);
+                    dot = warp_reduce_sum(dot);
+                    float alpha = 1.0f;
+                    float beta = 0.0f;
+
+                    if (lane_id == 0) {
+                        const float score = dot * _scale;
+                        const float new_max = fmaxf(running_max[slot], score);
+                        alpha = expf(running_max[slot] - new_max);
+                        beta = expf(score - new_max);
+                        running_sum[slot] = running_sum[slot] * alpha + beta;
+                        running_max[slot] = new_max;
+                    }
+
+                    alpha = __shfl_sync(FULL_MASK, alpha, 0);
+                    beta = __shfl_sync(FULL_MASK, beta, 0);
+                    if (v_col < _dv) {
+                        acc_frag[slot].x = acc_frag[slot].x * alpha + v_frag.x * beta;
+                        acc_frag[slot].y = acc_frag[slot].y * alpha + v_frag.y * beta;
+                        acc_frag[slot].z = acc_frag[slot].z * alpha + v_frag.z * beta;
+                        acc_frag[slot].w = acc_frag[slot].w * alpha + v_frag.w * beta;
+                    }
+                }
+            }
+        }
+
+        // Producers publish the next buffer and consumers finish reading the
+        // current one before their roles swap.
+        __syncthreads();
+        buffer ^= 1;
+    }
+
+    if (consumer_warp) {
+#pragma unroll
+        for (int slot = 0; slot < 2; ++slot) {
+            if (!query_valid[slot]) {
+                continue;
+            }
+
+            float inv_sum = 0.0f;
+            if (lane_id == 0 && running_sum[slot] > 0.0f) {
+                inv_sum = 1.0f / running_sum[slot];
+            }
+            inv_sum = __shfl_sync(FULL_MASK, inv_sum, 0);
+
+            if (v_col < _dv) {
+                const size_t global_query = static_cast<size_t>(q_start) + query_index[slot];
+                T *out = _attn + (global_query * _nhead + nh) * _dv + v_col;
+                out[0] = llaisys::utils::nvidia::cast<T>(acc_frag[slot].x * inv_sum);
+                out[1] = llaisys::utils::nvidia::cast<T>(acc_frag[slot].y * inv_sum);
+                out[2] = llaisys::utils::nvidia::cast<T>(acc_frag[slot].z * inv_sum);
+                out[3] = llaisys::utils::nvidia::cast<T>(acc_frag[slot].w * inv_sum);
+            }
         }
     }
 }
@@ -206,6 +271,18 @@ void paged_attention_launch(std::byte *attn_val,       // 输出 (tot_seqlen, nh
                             const size_t &d, 
                             const size_t &nkvh)
 {
+    if (d == 0 || dv == 0
+        || d > HEAD_DIM_MAX || dv > HEAD_DIM_MAX
+        || d % 32 != 0 || dv % 32 != 0
+        || token_num == 0 || nkvh == 0 || nh % nkvh != 0) {
+        throw std::invalid_argument(
+            "paged_attention requires d,dv in {32,64,96,128}, "
+            "token_num > 0, nkvh > 0, and nh divisible by nkvh");
+    }
+    if (batch_size == 0 || nh == 0 || max_seq_len == 0) {
+        return;
+    }
+
     auto *d_attn = reinterpret_cast<T *>(attn_val);
     const auto *d_q = reinterpret_cast<const T *>(q);
     const auto *d_k_cache = reinterpret_cast<const T *>(k_cache);
@@ -214,13 +291,16 @@ void paged_attention_launch(std::byte *attn_val,       // 输出 (tot_seqlen, nh
     const auto *d_cut_idx = reinterpret_cast<const int64_t *>(cut_idx);
     const auto *d_tot_len = reinterpret_cast<const int64_t *>(tot_len);
 
-    dim3 blockDim(256);
-    dim3 gridDim((max_seq_len + 7) >> 3, nh, batch_size);
+    dim3 blockDim(BLOCK_DIM);
+    dim3 gridDim(
+        (max_seq_len + BLOCK_M - 1) / BLOCK_M, nh, batch_size);
 
-    const size_t smem_bytes = sizeof(float) * (BLOCK_M * (d + dv + 4 + d + dv));
+    const size_t smem_bytes =
+        sizeof(float) * 2 * KV_TILE * (d + dv);
 
-    paged_attention_kernel<<<gridDim, blockDim, smem_bytes>>>(d_attn, d_q, d_k_cache, d_v_cache, d_block_ids, d_cut_idx, d_tot_len,
-                                                                 token_num, max_block_num, scale, nh, dv, d, nkvh);
+    paged_attention_kernel<<<gridDim, blockDim, smem_bytes>>>(
+        d_attn, d_q, d_k_cache, d_v_cache, d_block_ids, d_cut_idx,
+        d_tot_len, token_num, max_block_num, scale, nh, dv, d, nkvh);
 
     CUDA_CHECK(cudaGetLastError());
 }

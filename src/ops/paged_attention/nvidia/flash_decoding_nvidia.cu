@@ -381,7 +381,7 @@ void flash_decoding_launch(std::byte *attn_val,        // 输出 (tot_seqlen, nh
                             const size_t token_num,    // 每个块的token数 (批次无关)
                             const size_t batch_size,   // 批次大小 (批次有关)
                             const size_t max_block_num,// 单个序列的块表最多块数 (批次无关)
-                            const size_t max_seq_len,  // 最大序列长度 用于分块 (批次无关)
+                            const size_t max_seq_len,  // 最大序列长度 用于分块 (批次相关)
                             const float &scale,        // 缩放因子
                             const size_t &nh,          // 其他参数 ...
                             const size_t &dv, 
@@ -431,7 +431,7 @@ void flash_decoding(std::byte *attn_val,       // 输出 (tot_seqlen, nh, dv) =>
                     const size_t token_num,    // 每个块的token数 (批次无关)
                     const size_t batch_size,   // 批次大小 (批次有关)
                     const size_t max_block_num,// 单个序列的块表最多块数 (批次无关)
-                    const size_t max_seq_len,  // 最大序列长度 用于分块 (批次无关)
+                    const size_t max_seq_len,  // 最大序列长度 用于分块 (批次相关)
                     llaisysDataType_t dtype,   // 权重数据类型
                     const float &scale,        // 缩放因子
                     const size_t &nh,          // 其他参数 ...

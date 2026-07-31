@@ -142,66 +142,53 @@ def test_op_paged_attention_batched(
     nkvh,
     hd,
     dtype_name="f32",
+    atol=1e-5,
+    rtol=1e-5,
     device_name="nvidia",
     profile=False,
 ):
-    """
-    batch_cases: list of tuples (seqlen, block_num, block_ids_values)
-    This test will try to call the (new) single-shot batched API first. If the Python binding
-    doesn't support the new signature, it will fall back to invoking per-sample calls in a loop.
-    """
     device_id = 0
-
-    # Build per-sample tensors and aggregate for single-shot call
-    # Determine max block_num across batch
     batch = len(batch_cases)
     seqlens = [case[0] for case in batch_cases]
     block_nums = [case[1] for case in batch_cases]
     block_ids_list = [case[2] for case in batch_cases]
-
     max_block_num = max(block_nums)
     totlen_per_sample = [len(bids) * token_num for bids in block_ids_list]
-    totlen_sum = sum(totlen_per_sample)
 
-    # Print detailed per-sample info (similar style to topk tests)
     for seqlen, block_num, bids in batch_cases:
         print(f"   seqlen={seqlen} token_num={token_num} block_num={block_num} block_ids={bids} nh={nh} nkvh={nkvh} hd={hd} dtype <{dtype_name}>")
 
-    # generate per-sample q tensors and keep ll wrappers
     q_torch_list = []
-    q_ll_list = []
-    for seqlen, bids in zip(seqlens, block_ids_list):
-        q_sample_torch, q_sample_ll = random_tensor((seqlen, nh, hd), dtype_name, device_name, device_id=device_id)
+    for seqlen in seqlens:
+        q_sample_torch, _ = random_tensor(
+            (seqlen, nh, hd), dtype_name, device_name, device_id=device_id
+        )
         q_torch_list.append(q_sample_torch)
-        q_ll_list.append(q_sample_ll)
 
-    # concatenate q (torch) and create a corresponding llaisys tensor
     q_cat = torch.cat(q_torch_list, dim=0)
-    q_cat_torch, q_cat_ll = random_tensor((q_cat.shape[0], nh, hd), dtype_name, device_name, device_id=device_id)
+    _, q_cat_ll = random_tensor(
+        q_cat.shape, dtype_name, device_name, device_id=device_id
+    )
     api = llaisys.RuntimeAPI(llaisys_device(device_name))
-    api.memcpy_sync(q_cat_ll.data_ptr(), q_cat.data_ptr(), q_cat.numel() * q_cat.element_size(), llaisys.MemcpyKind.D2D)
+    api.memcpy_sync(
+        q_cat_ll.data_ptr(),
+        q_cat.data_ptr(),
+        q_cat.numel() * q_cat.element_size(),
+        llaisys.MemcpyKind.D2D,
+    )
 
-    # build global k_cache / v_cache by padding block_num to max_block_num
-    # For simplicity, reuse random blocks per (max_block_num, token_num, nkvh, hd)
     k_cache, k_cache_ = random_tensor((max_block_num, token_num, nkvh, hd), dtype_name, device_name, device_id=device_id)
     v_cache, v_cache_ = random_tensor((max_block_num, token_num, nkvh, hd), dtype_name, device_name, device_id=device_id)
 
-    # build block_ids 2D tensor (batch, max_block_num) — V3 format: [cumulative_count, block_ids...]
-    # max_block_num must accommodate 1 prefix + longest block_id list
     mb = max(len(bids) for bids in block_ids_list) + 1
-    cum = 0
     torch_block_ids = []
     for bids in block_ids_list:
-        cum += len(bids)
-        row = [cum] + list(bids) + [0] * (mb - len(bids) - 1)
+        row = [len(bids)] + list(bids) + [0] * (mb - len(bids) - 1)
         torch_block_ids.append(row)
     torch_block_ids = torch.tensor(torch_block_ids, dtype=torch.int64, device=torch_device(device_name, device_id))
     block_ids_ll = llaisys.Tensor((batch, mb), dtype=llaisys.DataType.I64, device=llaisys_device(device_name), device_id=device_id)
-    from ctypes import c_void_p
-
     block_ids_ll.load(c_void_p(torch_block_ids.data_ptr()))
 
-    # build cut_idx (batch+1) cumulative sequence offsets
     cut_idx = [0]
     for s in seqlens:
         cut_idx.append(cut_idx[-1] + s)
@@ -209,21 +196,40 @@ def test_op_paged_attention_batched(
     cut_idx_ll = llaisys.Tensor((len(cut_idx),), dtype=llaisys.DataType.I64, device=llaisys_device(device_name), device_id=device_id)
     cut_idx_ll.load(c_void_p(cut_idx_torch.data_ptr()))
 
-    # build tot_len per-sample tensor
     totlen_torch = torch.tensor(totlen_per_sample, dtype=torch.int64, device=torch_device(device_name, device_id))
     totlen_ll = llaisys.Tensor((batch,), dtype=llaisys.DataType.I64, device=llaisys_device(device_name), device_id=device_id)
     totlen_ll.load(c_void_p(totlen_torch.data_ptr()))
 
-    # output attn concatenated
     tot_seqlen = sum(seqlens)
     attn_val_ll = llaisys.Tensor((tot_seqlen, nh, hd), dtype=llaisys_dtype(dtype_name), device=llaisys_device(device_name), device_id=device_id)
-
     scale = 1.0 / (hd ** 0.5)
 
-    # Call the new single-shot batched API
     llaisys.Ops.paged_attention(attn_val_ll, q_cat_ll, k_cache_, v_cache_, block_ids_ll, cut_idx_ll, totlen_ll, max(seqlens), scale)
 
+    reference = torch.empty_like(q_cat)
+    offset = 0
+    for seqlen, block_ids_values, totlen in zip(
+        seqlens, block_ids_list, totlen_per_sample
+    ):
+        torch_paged_attention(
+            reference[offset:offset + seqlen],
+            q_cat[offset:offset + seqlen],
+            k_cache,
+            v_cache,
+            block_ids_values,
+            scale,
+            totlen=totlen,
+        )
+        offset += seqlen
 
+    attn_val = torch.empty_like(reference)
+    api.memcpy_sync(
+        attn_val.data_ptr(),
+        attn_val_ll.data_ptr(),
+        attn_val.numel() * attn_val.element_size(),
+        llaisys.MemcpyKind.D2D,
+    )
+    assert torch.allclose(attn_val, reference, atol=atol, rtol=rtol)
 
 if __name__ == "__main__":
     import argparse
@@ -233,25 +239,53 @@ if __name__ == "__main__":
     parser.add_argument("--profile", action="store_true")
     args = parser.parse_args()
 
-    testShapes = [
+    test_shapes = [
         # seqlen, token_num, block_num, block_ids, nh, nkvh, hd
-        (5, 4, 5, [4, 1, 3], 4, 2, 8),
-        (9, 4, 6, [5, 2, 4, 0], 4, 1, 8),
-        (1, 8, 10, [9, 3, 7, 1], 8, 2, 16),
-        (7, 4, 12, [11, 6, 2, 9, 0], 12, 3, 8),
+        (5, 4, 5, [4, 1, 3], 4, 2, 32),
+        (9, 4, 6, [5, 2, 4, 0], 4, 1, 64),
+        (1, 8, 10, [9, 3, 7, 1], 8, 2, 96),
+        (7, 4, 12, [11, 6, 2, 9, 0], 12, 3, 128),
     ]
-    testDtypePrec = [
+    test_dtype_prec = [
         # type, atol, rtol
         ("f32", 1e-5, 1e-5),
         ("f16", 1e-3, 1e-3),
         ("bf16", 1e-2, 1e-2),
     ]
     print(f"Testing Ops.paged_attention on {args.device}")
-    for shape in testShapes:
-        for dtype_name, atol, rtol in testDtypePrec:
-            # call the new batched single-shot API with a batch of one
+    for shape in test_shapes:
+        for dtype_name, atol, rtol in test_dtype_prec:
             seqlen, token_num, block_num, block_ids, nh, nkvh, hd = shape
             batch_cases = [(seqlen, block_num, block_ids)]
-            test_op_paged_attention_batched(batch_cases, token_num, nh, nkvh, hd, dtype_name, args.device, args.profile)
+            test_op_paged_attention_batched(
+                batch_cases,
+                token_num,
+                nh,
+                nkvh,
+                hd,
+                dtype_name,
+                atol,
+                rtol,
+                args.device,
+                args.profile,
+            )
+
+    mixed_batch_cases = [
+        (5, 6, [5, 1, 3]),
+        (9, 6, [4, 0, 2]),
+    ]
+    for dtype_name, atol, rtol in test_dtype_prec:
+        test_op_paged_attention_batched(
+            mixed_batch_cases,
+            4,
+            8,
+            2,
+            128,
+            dtype_name,
+            atol,
+            rtol,
+            args.device,
+            args.profile,
+        )
 
     print("\033[92mTest passed!\033[0m\n")
