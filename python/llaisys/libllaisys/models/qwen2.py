@@ -61,24 +61,6 @@ def load_qwen2(lib):
     lib.llaisysQwen2ModelWeights.argtypes = [llaisysQwen2Model_t]
     lib.llaisysQwen2ModelWeights.restype = POINTER(LlaisysQwen2Weights)
 
-    lib.llaisysQwen2ModelInfer.argtypes = [
-        llaisysQwen2Model_t,
-        POINTER(c_int64),
-        c_size_t,
-        c_int64,
-        c_int,     # top_k
-        c_float,   # top_p
-        c_float,   # temperature
-    ]
-    lib.llaisysQwen2ModelInfer.restype = c_int64
-
-    lib.llaisysQwen2ModelAbort.argtypes = [
-        llaisysQwen2Model_t,
-        POINTER(c_int64),
-        c_size_t,
-    ]
-    lib.llaisysQwen2ModelAbort.restype = None
-
     lib.llaisysQwen2RequestSubmit.argtypes = [
         llaisysQwen2Model_t,
         POINTER(c_int64),

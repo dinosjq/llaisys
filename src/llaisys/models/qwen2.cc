@@ -34,19 +34,6 @@ __C {
         return &model->qwen2->weights();
     }
 
-    /** 一次完整前向传播 */
-    int64_t llaisysQwen2ModelInfer(struct LlaisysQwen2Model *model, int64_t *token_ids, size_t ntoken, int64_t max_new_tokens,
-                                   int top_k, float top_p, float temperature) {
-        if (!model || !model->qwen2) return -1;
-        return model->qwen2->request(token_ids, ntoken, max_new_tokens, top_k, top_p, temperature);
-    }
-
-    /** 取消请求 */
-    void llaisysQwen2ModelAbort(struct LlaisysQwen2Model *model, int64_t *token_ids, size_t ntoken) {
-        if (!model || !model->qwen2) return;
-        model->qwen2->abort(token_ids, ntoken);
-    }
-
     struct LlaisysQwen2Request *llaisysQwen2RequestSubmit(struct LlaisysQwen2Model *model, int64_t *token_ids,
                                                             size_t ntoken, int64_t max_new_tokens, int top_k,
                                                             float top_p, float temperature) {

@@ -38,13 +38,6 @@ __C {
 
     __export struct LlaisysQwen2Weights *llaisysQwen2ModelWeights(struct LlaisysQwen2Model * model);
 
-    __export int64_t llaisysQwen2ModelInfer(struct LlaisysQwen2Model * model,
-        int64_t *token_ids, size_t ntoken, int64_t max_new_tokens,
-        int top_k, float top_p, float temperature);
-
-    __export void llaisysQwen2ModelAbort(struct LlaisysQwen2Model *model,
-        int64_t *token_ids, size_t ntoken);
-
     __export struct LlaisysQwen2Request *llaisysQwen2RequestSubmit(struct LlaisysQwen2Model *model,
         int64_t *token_ids, size_t ntoken, int64_t max_new_tokens, int top_k, float top_p, float temperature);
     __export int64_t llaisysQwen2RequestAwait(struct LlaisysQwen2Request *request);

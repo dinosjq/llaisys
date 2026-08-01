@@ -289,7 +289,7 @@ class Qwen2:
                 if next_token == -2:
                     break  # cancelled from another path
                 if next_token == -1:
-                    raise RuntimeError("llaisysQwen2ModelInfer failed")
+                    raise RuntimeError("llaisysQwen2RequestAwait failed")
 
                 tokens.append(next_token)
 

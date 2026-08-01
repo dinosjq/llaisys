@@ -6,7 +6,6 @@
 #include "../scheduler/scheduler.hpp"
 #include <mutex>
 #include <random>
-#include <shared_mutex>
 #include <thread>
 
 namespace llaisys{
@@ -87,8 +86,6 @@ private:
     scheduler_t _scheduler;
     std::vector<tensor_t> _k_cache;
     std::vector<tensor_t> _v_cache;
-    std::unordered_map<long long, std::shared_ptr<Sequence>> _hash_2_seq;
-    std::shared_mutex _hash_lock;
     std::mutex _request_lock;
     std::vector<qwen2_request_t> _active_requests;
     // 事件循环
@@ -114,18 +111,11 @@ public:
     // 终止系统
     void stop();
 
-    // 请求
-    int64_t request(int64_t *token_ids, size_t ntoken, int64_t max_new_tokens,
-                    int top_k = TOP_K, float top_p = TOP_P, float temperature = 1.0f);
-
     qwen2_request_t submit(int64_t *token_ids, size_t ntoken, int64_t max_new_tokens,
                            int top_k = TOP_K, float top_p = TOP_P, float temperature = 1.0f);
     int64_t await(const qwen2_request_t &request);
     void abort(const qwen2_request_t &request);
     void release(const qwen2_request_t &request);
-
-    // 取消请求
-    void abort(int64_t *token_ids, size_t ntoken);
 
     // 填充块表
     std::vector<int64_t> prepare_block_table(const std::vector<seq_t> &seqs);

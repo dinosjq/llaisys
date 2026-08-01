@@ -197,54 +197,6 @@ void Qwen2::stop(){
     this->_running = false;
 }
 
-// 请求方法
-int64_t Qwen2::request(int64_t *token_ids, size_t ntoken, int64_t max_new_tokens,
-                       int top_k, float top_p, float temperature){
-    // 先根据 token_ids 计算 prompt hash 尝试进行最长前缀匹配 查找对应的seq
-    long long hash = 0;
-    std::shared_ptr<Sequence> seq;
-    {
-        // 优先读锁——常见路径是前缀命中，读共享全并行
-        std::shared_lock<std::shared_mutex> read_lk(this->_hash_lock);
-        for(size_t i = 0; i < ntoken; ++ i){
-            hash = (hash * Prime + token_ids[i]) % mod;
-            if(_hash_2_seq.count(hash)){
-                seq = _hash_2_seq[hash];
-            }
-        }
-        // 匹配失败 升级为写锁新建 seq
-        if(seq == nullptr){
-            read_lk.unlock();
-            std::unique_lock<std::shared_mutex> write_lk(this->_hash_lock);
-            // double-check: 可能其他线程已创建
-            seq = _hash_2_seq.count(hash) ? _hash_2_seq[hash] : nullptr;
-            if(seq == nullptr){
-                size_t limit = (max_new_tokens < 0) ? MAX_TOKEN_NUM : (ntoken + static_cast<size_t>(max_new_tokens));
-                seq = std::make_shared<Sequence>(token_ids, ntoken, limit, top_k, top_p, temperature);
-                _hash_2_seq[seq->prompt_hash()] = seq;
-                this->_scheduler->add(seq);
-            }
-        }
-    }
-
-    // condvar 真等待 (线程休眠, 不再 busy-wait)
-    if (!seq->wait_for_token(ntoken)) {
-        // 被取消: 从查询表清除并返回 -2
-        std::unique_lock<std::shared_mutex> write_lk(this->_hash_lock);
-        this->_hash_2_seq.erase(seq->prompt_hash());
-        return -2;
-    }
-
-    // 索引找到应该返回的 token_id
-    int64_t token = seq->token_ids()[ntoken];
-    // 当请求完成 就从查询表中进行清除
-    if(token == this->_meta.end_token){
-        std::unique_lock<std::shared_mutex> write_lk(this->_hash_lock);
-        this->_hash_2_seq.erase(seq->prompt_hash());
-    }
-    return token;
-}
-
 qwen2_request_t Qwen2::submit(int64_t *token_ids, size_t ntoken, int64_t max_new_tokens,
                                int top_k, float top_p, float temperature) {
     size_t limit = (max_new_tokens < 0) ? MAX_TOKEN_NUM : ntoken + static_cast<size_t>(max_new_tokens);
@@ -287,34 +239,6 @@ void Qwen2::release(const qwen2_request_t &request) {
     auto it = std::find(this->_active_requests.begin(), this->_active_requests.end(), request);
     if (it != this->_active_requests.end()) {
         this->_active_requests.erase(it);
-    }
-}
-
-// 取消请求: 通过与 request 相同的 hash 前缀匹配定位 seq
-void Qwen2::abort(int64_t *token_ids, size_t ntoken) {
-    long long hash = 0;
-    std::shared_ptr<Sequence> seq;
-    {
-        std::shared_lock<std::shared_mutex> read_lk(this->_hash_lock);
-        for(size_t i = 0; i < ntoken; ++ i){
-            hash = (hash * Prime + token_ids[i]) % mod;
-            if(_hash_2_seq.count(hash)){
-                seq = _hash_2_seq[hash];
-            }
-        }
-    }
-    if (!seq) return;
-    // 先标记取消: 保证等待中的 request 线程一定看到 cancelled 并返回 -2,
-    // 避免 "erase 后 request 重建同名序列" 的 TOCTOU 窗口
-    // (队列清理与 kv cache 释放由 worker 线程完成)
-    this->_scheduler->abort(seq);
-    // 再从 hash 表移除 (仅当条目仍指向本序列, 防止误删同 prompt 的新序列)
-    {
-        std::unique_lock<std::shared_mutex> write_lk(this->_hash_lock);
-        auto it = this->_hash_2_seq.find(seq->prompt_hash());
-        if (it != this->_hash_2_seq.end() && it->second == seq) {
-            this->_hash_2_seq.erase(it);
-        }
     }
 }
 
