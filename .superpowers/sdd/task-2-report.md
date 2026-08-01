@@ -70,3 +70,9 @@ performance. No correctness regressions remain in the final required test suite.
 - Made `llaisysQwen2RequestSubmit` wrapper allocation exception-safe by retaining the submitted C++ handle in an
   RAII `shared_ptr` and releasing it if wrapper allocation throws.
 - Final regression command passed: core test, NVIDIA top-k, greedy inference, and full server suite on port 8343.
+- Timing command:
+  `PYTHONPATH=python:test/benchmark/ops:test python3 -c '<setup_topk/llaisys_topk CUDA-event harness>'`
+  ran shape `(1,151936)`, `K=100`, BF16 with 10 warmups and 20 synchronized repeats. Values matched
+  `torch.topk`; median was `1.2815 ms`, minimum was `1.2780 ms`.
+- `PYTHONPATH=python python3 -m unittest test/test_qwen2_invalid_submit.py` — PASS. A valid loaded model
+  rejected the null, zero-token C request with a null handle and no crash.

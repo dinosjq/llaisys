@@ -48,3 +48,7 @@ The serialized CUDA fallback was removed. The NVIDIA implementation is restored 
 `960088c` parallel radix kernel; three fresh rebuild-and-install runs of the full NVIDIA top-k suite passed for
 FP32, FP16, BF16, batched rows, and K through the existing generic coverage. Request submission now performs the
 model submit before allocating its C wrapper and releases the submitted request if wrapper construction fails.
+
+The rebuilt isolated-library BF16 smoke for `(1, 151936), K=100` used 10 warmups, 20 CUDA-event measurements,
+and explicit synchronization: values matched `torch.topk`; median latency was `1.2815 ms` and minimum latency was
+`1.2780 ms`.
