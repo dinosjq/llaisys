@@ -1,54 +1,55 @@
-# Correct batched inference semantics
+# 正确的批量推理语义
 
-## Confirmed defects
+> 交付格式说明：Markdown 是可追溯的源文档；中文 Cursor Canvas 是持续更新的可视化概览。
 
-- Prefix-cache collision verification compared every cached token with candidate index one.
-- Sampling treated nucleus candidates uniformly and did not preserve the first token crossing `top_p`.
-- Chunked prefill stopped before scheduling a queue-front prompt larger than the remaining token budget.
-- The legacy prompt-hash request API shared one `Sequence` between identical prompts.
+## 已确认缺陷
 
-## Design and API
+- 前缀缓存冲突验证将每个已缓存 token 都与候选项索引 1 进行比较。
+- 采样对 nucleus 候选项采用均匀处理，并且没有保留第一个使累计概率越过 `top_p` 的 token。
+- 当队首 prompt 大于剩余 token 预算时，chunked prefill 在调度该 prompt 之前就停止了。
+- 旧版基于 prompt hash 的请求 API 会让相同 prompt 共享同一个 `Sequence`。
 
-`sampling.hpp` centralizes bounded top-k, temperature softmax, nucleus filtering, and weighted sampling. Each
-`Sequence` owns an RNG, and a batch runs device top-k once at the maximum requested K before CPU sampling applies
-the row-specific K.
+## 设计与 API
 
-`LlaisysQwen2Request` is an opaque handle with submit, await, abort, and release entry points. It owns an
-independent `Sequence`; cached KV blocks can still be shared only through `BlockManager`.
+`sampling.hpp` 集中实现有界 top-k、temperature softmax、nucleus filtering 和 weighted sampling。
+每个 `Sequence` 拥有一个 RNG；每个 batch 先按请求中的最大 K 在设备上执行一次 top-k，
+然后由 CPU sampling 对各行应用其专属的 K。
 
-## Tests
+`LlaisysQwen2Request` 是一个 opaque handle，提供 submit、await、abort 和 release 入口。
+它拥有独立的 `Sequence`；缓存的 KV block 仍然只能通过 `BlockManager` 共享。
 
-Core regressions cover elementwise prefix matching, complete-block reuse, deterministic greedy/temperature/top-p/
-weighted sampling, and multi-round chunked prefill progress. Server integration additionally exercises concurrent
-identical prompts and cancellation isolation when a model is available.
+## 测试
 
-## Behavior and compatibility
+核心回归测试覆盖逐元素前缀匹配、完整 block 复用、确定性的 greedy/temperature/top-p/weighted sampling，
+以及多轮 chunked prefill 的推进。在模型可用时，服务端集成测试还会验证并发相同 prompt，
+以及取消操作之间的隔离。
 
-Python generation and server streaming use request handles and release them for normal completion, exceptions, and
-cancellation. The exported `llaisysQwen2ModelInfer` and `llaisysQwen2ModelAbort` APIs remain as deprecated
-prompt-keyed compatibility paths and retain their identical-prompt limitation.
+## 行为与兼容性
 
-## Performance, limitations, rollback
+Python 生成和服务端流式输出使用 request handle，并在正常完成、异常和取消时释放它们。
+导出的 `llaisysQwen2ModelInfer` 和 `llaisysQwen2ModelAbort` API 仍作为已弃用的、以 prompt 为 key
+的兼容路径保留，并继续存在相同 prompt 的限制。
 
-The NVIDIA top-k kernel now uses deterministic serial selection to correct the FP16 ordering defect discovered by
-the regression suite. This is intentionally a correctness-first trade-off and may reduce top-k throughput for large
-K. There is no public request seed API; deterministic RNG injection is internal-test-only. Roll back the Task 2
-commits to restore the previous request and sampling behavior.
+## 性能、限制与回滚
 
-## Review fixes
+NVIDIA top-k kernel 现采用确定性的串行选择，以修复回归测试套件发现的 FP16 排序缺陷。
+这是有意采取的正确性优先权衡，可能降低较大 K 时的 top-k 吞吐量。当前没有公共 request seed API；
+确定性 RNG 注入仅用于内部测试。回滚 Task 2 的 commits，即可恢复此前的请求与采样行为。
 
-Cancellation now shields the active blocking `RequestAwait` task and defers releasing its opaque C handle until
-that task finishes after abort. Explicit `temperature=0` is preserved by both server endpoints. Sequence
-construction validates a non-null, non-empty prompt before dereferencing token storage. The regression suite also
-covers mixed per-request top-k and cancellation isolation for concurrent identical prompts.
+## 评审修复
 
-## Second review fixes
+取消操作现在会 shield 正在执行的阻塞式 `RequestAwait` task，并将其 opaque C handle 的释放推迟到
+该 task 在 abort 后结束。两个服务端 endpoint 都会保留显式设置的 `temperature=0`。
+构造 Sequence 时，会在解引用 token storage 前验证 prompt 非空指针且内容非空。回归测试套件还覆盖
+每个请求使用不同 top-k 的混合场景，以及并发相同 prompt 之间的取消隔离。
 
-The serialized CUDA fallback was removed. The NVIDIA implementation is restored exactly to the reviewed
-`960088c` parallel radix kernel; three fresh rebuild-and-install runs of the full NVIDIA top-k suite passed for
-FP32, FP16, BF16, batched rows, and K through the existing generic coverage. Request submission now performs the
-model submit before allocating its C wrapper and releases the submitted request if wrapper construction fails.
+## 第二轮评审修复
 
-The rebuilt isolated-library BF16 smoke for `(1, 151936), K=100` used 10 warmups, 20 CUDA-event measurements,
-and explicit synchronization: values matched `torch.topk`; median latency was `1.2815 ms` and minimum latency was
-`1.2780 ms`.
+已移除串行 CUDA fallback。NVIDIA 实现已精确恢复为通过评审的 `960088c` 并行 radix kernel；
+完整 NVIDIA top-k 测试套件经过三次全新构建并安装后均通过，借助现有通用覆盖验证了 FP32、FP16、BF16、
+批量行以及 K。请求提交现在会先执行 model submit，再分配其 C wrapper；如果 wrapper 构造失败，
+则释放已经提交的请求。
+
+重新构建的隔离库针对 `(1, 151936), K=100` 的 BF16 smoke 测试使用了 10 次 warmup、
+20 次 CUDA event 测量，并进行了显式同步：数值与 `torch.topk` 一致；延迟中位数为 `1.2815 ms`，
+最小延迟为 `1.2780 ms`。
