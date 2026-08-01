@@ -7,6 +7,7 @@
 #include <memory>
 #include <condition_variable>
 #include <mutex>
+#include <random>
 
 namespace llaisys{
 
@@ -41,6 +42,7 @@ private:
     int _top_k;
     float _top_p;
     float _temperature;
+    std::mt19937 _rng;
 
 public:
     Sequence(int64_t *token_ids, size_t ntoken,
@@ -72,6 +74,7 @@ public:
     size_t last_block_token_num();
 
     int64_t last_token();
+    int64_t token_at(size_t index);
     std::vector<int64_t> &token_ids();
     std::vector<int64_t> &block_ids();
 
@@ -88,6 +91,7 @@ public:
     int top_k();
     float top_p();
     float temperature();
+    std::mt19937 &rng();
 
     // seq_id 计数器
     static size_t counter(){

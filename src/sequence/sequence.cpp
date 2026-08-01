@@ -1,5 +1,9 @@
 #include "sequence.hpp"
 #include "../kv_cache/block_manager.hpp"
+#include "../models/sampling.hpp"
+
+#include <algorithm>
+#include <cmath>
 
 namespace llaisys{
 Sequence::Sequence(int64_t *token_ids, size_t ntoken, size_t max_ntoken,
@@ -15,10 +19,15 @@ Sequence::Sequence(int64_t *token_ids, size_t ntoken, size_t max_ntoken,
                     _max_ntoken(max_ntoken),
                     _last_token(token_ids[ntoken - 1]),
                     _cancelled(false),
-                    _top_k(top_k),
+                    _top_k(std::min(top_k, MAX_TOP_K)),
                     _top_p(top_p),
-                    _temperature(temperature)
+                    _temperature(temperature),
+                    _rng(std::random_device{}())
 {
+    CHECK_ARGUMENT(ntoken > 0, "prompt must contain at least one token");
+    CHECK_ARGUMENT(top_k > 0, "top_k must be positive");
+    CHECK_ARGUMENT(top_p > 0.0f && top_p <= 1.0f && std::isfinite(top_p), "top_p must be in (0, 1]");
+    CHECK_ARGUMENT(std::isfinite(temperature), "temperature must be finite");
     this->_token_ids = std::vector<int64_t>(token_ids, token_ids + ntoken);
     this->_block_ids = std::vector<int64_t>();
 }
@@ -72,6 +81,12 @@ size_t Sequence::last_block_token_num() {
 
 int64_t Sequence::last_token(){
     return this->_last_token;
+}
+
+int64_t Sequence::token_at(size_t index) {
+    std::lock_guard<std::mutex> lock(this->_token_mutex);
+    CHECK_ARGUMENT(index < this->_token_ids.size(), "token index out of range");
+    return this->_token_ids[index];
 }
 
 std::vector<int64_t> &Sequence::token_ids(){
@@ -131,5 +146,6 @@ bool Sequence::cancelled() {
 int Sequence::top_k() { return this->_top_k; }
 float Sequence::top_p() { return this->_top_p; }
 float Sequence::temperature() { return this->_temperature; }
+std::mt19937 &Sequence::rng() { return this->_rng; }
 
 };

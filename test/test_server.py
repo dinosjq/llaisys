@@ -11,6 +11,7 @@ import json
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 
@@ -129,6 +130,19 @@ def test_cancellation(base):
     assert r.status_code == 200
     print("[PASS] cancellation: server alive and serving after client disconnect")
 
+def test_identical_prompt_request_isolation(base):
+    payload = {
+        "model": "qwen2-1.5b",
+        "prompt": "A request handle must isolate this prompt.",
+        "max_tokens": 8,
+        "stream": False,
+    }
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        responses = list(pool.map(lambda _: httpx.post(f"{base}/v1/completions", json=payload, timeout=120.0), range(2)))
+    assert all(response.status_code == 200 for response in responses)
+    assert all(response.json()["choices"] for response in responses)
+    print("[PASS] identical prompts: independent concurrent completions")
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -153,6 +167,7 @@ def main():
         test_chat_streaming(base)
         test_completions_non_stream(base)
         test_cancellation(base)
+        test_identical_prompt_request_isolation(base)
         print("\nAll server tests passed.")
     finally:
         proc.terminate()

@@ -30,6 +30,7 @@ __C {
     };
 
     struct LlaisysQwen2Model;
+    struct LlaisysQwen2Request;
 
     __export struct LlaisysQwen2Model *llaisysQwen2ModelCreate(LlaisysQwen2Meta *meta, llaisysDeviceType_t device, int *device_ids, int ndevice);
 
@@ -43,6 +44,12 @@ __C {
 
     __export void llaisysQwen2ModelAbort(struct LlaisysQwen2Model *model,
         int64_t *token_ids, size_t ntoken);
+
+    __export struct LlaisysQwen2Request *llaisysQwen2RequestSubmit(struct LlaisysQwen2Model *model,
+        int64_t *token_ids, size_t ntoken, int64_t max_new_tokens, int top_k, float top_p, float temperature);
+    __export int64_t llaisysQwen2RequestAwait(struct LlaisysQwen2Request *request);
+    __export void llaisysQwen2RequestAbort(struct LlaisysQwen2Request *request);
+    __export void llaisysQwen2RequestRelease(struct LlaisysQwen2Request *request);
 
 }
 #endif // LLAISYS_MODELS_QWEN2_H

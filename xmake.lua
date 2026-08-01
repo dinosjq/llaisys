@@ -151,6 +151,7 @@ target("llaisys-core-test")
     set_warnings("all", "error")
     add_includedirs("src")
     add_files("test/core/*.cpp")
+    add_files("src/sequence/*.cpp")
 
     on_install(function (target) end)
 target_end()

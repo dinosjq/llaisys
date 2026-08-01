@@ -184,6 +184,21 @@ class Qwen2:
                 self._weights.mlp_down_w[layer] = t.lib_tensor()
 
     # 生成回复
+    def _submit_request(self, tokens, max_new_tokens, top_k, top_p, temperature):
+        arr = (c_int64 * len(tokens))(*tokens)
+        request = LIB_LLAISYS.llaisysQwen2RequestSubmit(
+            self._model,
+            arr,
+            c_size_t(len(tokens)),
+            c_int64(max_new_tokens),
+            c_int(top_k),
+            c_float(top_p),
+            c_float(temperature),
+        )
+        if not request:
+            raise RuntimeError("llaisysQwen2RequestSubmit failed")
+        return request
+
     def generate(
         self,
         inputs: Sequence[int],
@@ -212,28 +227,22 @@ class Qwen2:
 
         _loop_bound = max_new_tokens if max_new_tokens >= 0 else 128
         tokens = list(int(t) for t in inputs)
-        for step in range(_loop_bound):
-            arr = (c_int64 * len(tokens))(*tokens)
-            next_token = int(
-                LIB_LLAISYS.llaisysQwen2ModelInfer(
-                    self._model,
-                    arr,
-                    c_size_t(len(tokens)),
-                    c_int64(max_new_tokens),
-                    c_int(top_k),
-                    c_float(top_p),
-                    c_float(temperature),
-                )
-            )
-            if next_token == -2:
-                break  # cancelled
-            tokens.append(next_token)
-            if callback is not None:
-                cont = callback(next_token, step, tuple(tokens))
-                if cont is False:
+        request = self._submit_request(tokens, max_new_tokens, top_k, top_p, temperature)
+        try:
+            for step in range(_loop_bound):
+                next_token = int(LIB_LLAISYS.llaisysQwen2RequestAwait(request))
+                if next_token == -2:
                     break
-            if next_token == int(self._meta.end_token):
-                break
+                if next_token == -1:
+                    raise RuntimeError("llaisysQwen2RequestAwait failed")
+                tokens.append(next_token)
+                if callback is not None and callback(next_token, step, tuple(tokens)) is False:
+                    LIB_LLAISYS.llaisysQwen2RequestAbort(request)
+                    break
+                if next_token == int(self._meta.end_token):
+                    break
+        finally:
+            LIB_LLAISYS.llaisysQwen2RequestRelease(request)
         return tokens
 
     async def generate_async(
@@ -258,27 +267,14 @@ class Qwen2:
         """
         loop_bound = max_new_tokens if max_new_tokens >= 0 else 128
         tokens = list(int(t) for t in inputs)
-        prompt_len = len(tokens)
+        request = self._submit_request(tokens, max_new_tokens, top_k, top_p, temperature)
 
         try:
             for step in range(loop_bound):
-                arr = (c_int64 * len(tokens))(*tokens)
-                ntoken = len(tokens)
+                def _await():
+                    return int(LIB_LLAISYS.llaisysQwen2RequestAwait(request))
 
-                def _infer(arr=arr, ntoken=ntoken):
-                    return int(
-                        LIB_LLAISYS.llaisysQwen2ModelInfer(
-                            self._model,
-                            arr,
-                            c_size_t(ntoken),
-                            c_int64(max_new_tokens),
-                            c_int(top_k),
-                            c_float(top_p),
-                            c_float(temperature),
-                        )
-                    )
-
-                next_token = await asyncio.to_thread(_infer)
+                next_token = await asyncio.to_thread(_await)
 
                 if next_token == -2:
                     break  # cancelled from another path
@@ -302,9 +298,9 @@ class Qwen2:
                 if is_eos:
                     break
         except asyncio.CancelledError:
-            # 客户端断开: 中止 C++ 序列 (定位用 prompt 前缀即可)
-            arr = (c_int64 * prompt_len)(*tokens[:prompt_len])
-            LIB_LLAISYS.llaisysQwen2ModelAbort(self._model, arr, c_size_t(prompt_len))
+            LIB_LLAISYS.llaisysQwen2RequestAbort(request)
             raise
+        finally:
+            LIB_LLAISYS.llaisysQwen2RequestRelease(request)
 
 

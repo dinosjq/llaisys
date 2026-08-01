@@ -7,6 +7,11 @@ struct LlaisysQwen2Model {
     llaisys::Qwen2_t qwen2;
 };
  
+struct LlaisysQwen2Request {
+    llaisys::Qwen2_t qwen2;
+    llaisys::qwen2_request_t request;
+};
+
 __C {
     /** 初始化模型 */
     struct LlaisysQwen2Model *llaisysQwen2ModelCreate(LlaisysQwen2Meta *meta, llaisysDeviceType_t device, int *device_ids, int ndevice) {
@@ -40,6 +45,39 @@ __C {
     void llaisysQwen2ModelAbort(struct LlaisysQwen2Model *model, int64_t *token_ids, size_t ntoken) {
         if (!model || !model->qwen2) return;
         model->qwen2->abort(token_ids, ntoken);
+    }
+
+    struct LlaisysQwen2Request *llaisysQwen2RequestSubmit(struct LlaisysQwen2Model *model, int64_t *token_ids,
+                                                            size_t ntoken, int64_t max_new_tokens, int top_k,
+                                                            float top_p, float temperature) {
+        if (!model || !model->qwen2) return nullptr;
+        try {
+            auto *request = new LlaisysQwen2Request();
+            request->qwen2 = model->qwen2;
+            request->request = model->qwen2->submit(token_ids, ntoken, max_new_tokens, top_k, top_p, temperature);
+            return request;
+        } catch (...) {
+            return nullptr;
+        }
+    }
+
+    int64_t llaisysQwen2RequestAwait(struct LlaisysQwen2Request *request) {
+        if (!request || !request->qwen2 || !request->request) return -1;
+        try {
+            return request->qwen2->await(request->request);
+        } catch (...) {
+            return -1;
+        }
+    }
+
+    void llaisysQwen2RequestAbort(struct LlaisysQwen2Request *request) {
+        if (request && request->qwen2 && request->request) request->qwen2->abort(request->request);
+    }
+
+    void llaisysQwen2RequestRelease(struct LlaisysQwen2Request *request) {
+        if (!request) return;
+        if (request->qwen2 && request->request) request->qwen2->release(request->request);
+        delete request;
     }
 
 }

@@ -7,7 +7,7 @@ namespace{
 template<typename T>
 bool check_equal(const T *it_0, const T *it_1, const size_t n) {
     for(size_t i = 0; i < n; ++ i){
-        if(it_0[i] != it_1[1]) return false;
+        if(it_0[i] != it_1[i]) return false;
     }
     return true;
 }

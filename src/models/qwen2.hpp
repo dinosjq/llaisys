@@ -5,6 +5,7 @@
 #include "../kv_cache/block_manager.hpp"
 #include "../scheduler/scheduler.hpp"
 #include <mutex>
+#include <random>
 #include <shared_mutex>
 #include <thread>
 
@@ -13,6 +14,13 @@ namespace llaisys{
 class Qwen2;
 class Sequence;
 using Qwen2_t = std::shared_ptr<Qwen2>;
+
+struct Qwen2Request {
+    seq_t sequence;
+    size_t observed_tokens;
+    std::mutex mutex;
+};
+using qwen2_request_t = std::shared_ptr<Qwen2Request>;
 
 struct Qwen2Meta {
     llaisysDataType_t dtype;
@@ -26,8 +34,10 @@ struct Qwen2Pack {
     std::vector<int64_t> pos_ids;
     std::vector<int64_t> cut_idx;
     std::vector<int64_t> tot_len;
+    std::vector<int> top_k;
     std::vector<float> top_p;       // per-seq 采样参数
     std::vector<float> temperature; // per-seq 采样参数
+    std::vector<std::mt19937 *> rngs;
     size_t max_seq_len;
 };
 
@@ -79,6 +89,8 @@ private:
     std::vector<tensor_t> _v_cache;
     std::unordered_map<long long, std::shared_ptr<Sequence>> _hash_2_seq;
     std::shared_mutex _hash_lock;
+    std::mutex _request_lock;
+    std::vector<qwen2_request_t> _active_requests;
     // 事件循环
     bool _running;
     std::thread _worker;
@@ -105,6 +117,12 @@ public:
     // 请求
     int64_t request(int64_t *token_ids, size_t ntoken, int64_t max_new_tokens,
                     int top_k = TOP_K, float top_p = TOP_P, float temperature = 1.0f);
+
+    qwen2_request_t submit(int64_t *token_ids, size_t ntoken, int64_t max_new_tokens,
+                           int top_k = TOP_K, float top_p = TOP_P, float temperature = 1.0f);
+    int64_t await(const qwen2_request_t &request);
+    void abort(const qwen2_request_t &request);
+    void release(const qwen2_request_t &request);
 
     // 取消请求
     void abort(int64_t *token_ids, size_t ntoken);

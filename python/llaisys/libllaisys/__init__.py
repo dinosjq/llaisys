@@ -12,7 +12,7 @@ from .llaisys_types import llaisysStream_t
 from .tensor import llaisysTensor_t
 from .tensor import load_tensor
 from .ops import load_ops
-from .models.qwen2 import LlaisysQwen2Meta, LlaisysQwen2Weights, llaisysQwen2Model_t
+from .models.qwen2 import LlaisysQwen2Meta, LlaisysQwen2Weights, llaisysQwen2Model_t, llaisysQwen2Request_t
 from .models.qwen2 import load_qwen2
 
 
@@ -58,4 +58,5 @@ __all__ = [
     "LlaisysQwen2Meta",
     "LlaisysQwen2Weights",
     "llaisysQwen2Model_t",
+    "llaisysQwen2Request_t",
 ]

@@ -43,7 +43,14 @@ def _encode_messages(tokenizer, messages) -> list[int]:
     """Tokenize chat messages using the model's own chat template."""
     conv = [{"role": m.role, "content": m.content} for m in messages]
     try:
-        return tokenizer.apply_chat_template(conv, add_generation_prompt=True, tokenize=True)
+        encoded = tokenizer.apply_chat_template(conv, add_generation_prompt=True, tokenize=True)
+        if hasattr(encoded, "keys") and "input_ids" in encoded:
+            encoded = encoded["input_ids"]
+        if hasattr(encoded, "tolist"):
+            encoded = encoded.tolist()
+        if encoded and isinstance(encoded[0], list):
+            encoded = encoded[0]
+        return encoded
     except Exception:
         # fallback: generic im_start/im_end template
         prompt_text = ""

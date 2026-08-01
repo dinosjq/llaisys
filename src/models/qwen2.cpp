@@ -15,6 +15,7 @@
 #include "../ops/top_k/op.hpp"
 #include "../config.hpp"
 #include "../ops/kv_cache_move/op.hpp"
+#include "sampling.hpp"
 
 #include <algorithm>
 #include <numeric>
@@ -79,26 +80,6 @@ static void free_weight_arrays(Qwen2Weights &w) {
     w.mlp_down_w = nullptr;
 }
 
-// 随机采样方法 保证前缀 >= top_p
-static int64_t _random_sample(const std::vector<int64_t> &candidates, const std::vector<float> &weights, float top_p){
-    const size_t n = candidates.size();
-    std::vector<std::pair<float, int64_t>> p(n);
-    for(size_t i = 0; i < n; ++ i){
-        p[i] = std::make_pair(weights[i], candidates[i]);
-    }
-    auto cmp = [](const std::pair<float, int64_t> &p1, const std::pair<float, int64_t> &p2) -> bool{
-        return p1.first > p2.first;
-    };
-    // 按照概率从大到小排列 然后计算前缀和
-    std::sort(p.begin(), p.end(), cmp);
-    for(size_t i = 1; i < n; ++ i){
-        p[i].first += p[i - 1].first;
-    }
-    // 二分查找界限大小
-    size_t lim = lower_bound(p.begin(), p.end(), std::make_pair(top_p, int64_t(0))) - p.begin() + 1;
-    // 随机取模
-    return p[rand() % lim].second;
-}
 } // namespace
 
 Qwen2::Qwen2(Qwen2Meta meta, 
@@ -154,8 +135,8 @@ Qwen2::Qwen2(Qwen2Meta meta,
     _tensors._x_part = Tensor::create({batch_max_seq_num, hs}, dtype, device, device_id);
     _tensors._x_part_norm = Tensor::create({batch_max_seq_num, hs}, dtype, device, device_id);
     _tensors._logits = Tensor::create({batch_max_seq_num, voc}, dtype, device, device_id);
-    _tensors._top_idx = Tensor::create({batch_max_seq_num, TOP_K}, LLAISYS_DTYPE_I64, device, device_id);
-    _tensors._top_val = Tensor::create({batch_max_seq_num, TOP_K}, dtype, device, device_id);
+    _tensors._top_idx = Tensor::create({batch_max_seq_num, MAX_TOP_K}, LLAISYS_DTYPE_I64, device, device_id);
+    _tensors._top_val = Tensor::create({batch_max_seq_num, MAX_TOP_K}, dtype, device, device_id);
     _tensors._attn_acc = Tensor::create({BATCH_MAX_BLOCK_NUM, nh, dh}, LLAISYS_DTYPE_F32, device, device_id);
     _tensors._attn_sum = Tensor::create({BATCH_MAX_BLOCK_NUM, nh, 1}, LLAISYS_DTYPE_F32, device, device_id);
     _tensors._attn_max = Tensor::create({BATCH_MAX_BLOCK_NUM, nh, 1}, LLAISYS_DTYPE_F32, device, device_id);
@@ -264,6 +245,51 @@ int64_t Qwen2::request(int64_t *token_ids, size_t ntoken, int64_t max_new_tokens
     return token;
 }
 
+qwen2_request_t Qwen2::submit(int64_t *token_ids, size_t ntoken, int64_t max_new_tokens,
+                               int top_k, float top_p, float temperature) {
+    size_t limit = (max_new_tokens < 0) ? MAX_TOKEN_NUM : ntoken + static_cast<size_t>(max_new_tokens);
+    auto request = std::make_shared<Qwen2Request>();
+    request->sequence = std::make_shared<Sequence>(token_ids, ntoken, limit, top_k, top_p, temperature);
+    request->observed_tokens = ntoken;
+    {
+        std::lock_guard<std::mutex> lock(this->_request_lock);
+        this->_active_requests.push_back(request);
+    }
+    this->_scheduler->add(request->sequence);
+    return request;
+}
+
+int64_t Qwen2::await(const qwen2_request_t &request) {
+    CHECK_ARGUMENT(request != nullptr && request->sequence != nullptr, "invalid request handle");
+    std::lock_guard<std::mutex> lock(request->mutex);
+    if (!request->sequence->wait_for_token(request->observed_tokens)) {
+        return -2;
+    }
+    const int64_t token = request->sequence->token_at(request->observed_tokens);
+    ++request->observed_tokens;
+    return token;
+}
+
+void Qwen2::abort(const qwen2_request_t &request) {
+    if (request && request->sequence) {
+        this->_scheduler->abort(request->sequence);
+    }
+}
+
+void Qwen2::release(const qwen2_request_t &request) {
+    if (!request) {
+        return;
+    }
+    if (request->sequence && !request->sequence->is_finish()) {
+        this->_scheduler->abort(request->sequence);
+    }
+    std::lock_guard<std::mutex> lock(this->_request_lock);
+    auto it = std::find(this->_active_requests.begin(), this->_active_requests.end(), request);
+    if (it != this->_active_requests.end()) {
+        this->_active_requests.erase(it);
+    }
+}
+
 // 取消请求: 通过与 request 相同的 hash 前缀匹配定位 seq
 void Qwen2::abort(int64_t *token_ids, size_t ntoken) {
     long long hash = 0;
@@ -347,12 +373,16 @@ Qwen2Pack Qwen2::prepare_prefill(const std::vector<seq_t> &seqs){
         max_seq_len = std::max(max_seq_len, seq_len);
     }
     // per-seq 采样参数
+    std::vector<int> top_ks;
     std::vector<float> top_ps, temps;
+    std::vector<std::mt19937 *> rngs;
     for(size_t i = 0; i < batch_size; ++ i){
+        top_ks.push_back(seqs[i]->top_k());
         top_ps.push_back(seqs[i]->top_p());
         temps.push_back(seqs[i]->temperature());
+        rngs.push_back(&seqs[i]->rng());
     }
-    return Qwen2Pack{token_ids, pos_ids, cut_idx, tot_len, top_ps, temps, max_seq_len};
+    return Qwen2Pack{token_ids, pos_ids, cut_idx, tot_len, top_ks, top_ps, temps, rngs, max_seq_len};
 }
 
 /**
@@ -375,12 +405,16 @@ Qwen2Pack Qwen2::prepare_decode(const std::vector<seq_t> &seqs){
         tot_len.push_back(seq->token_num());
     }
     // per-seq 采样参数
+    std::vector<int> top_ks;
     std::vector<float> top_ps, temps;
+    std::vector<std::mt19937 *> rngs;
     for(size_t i = 0; i < batch_size; ++ i){
+        top_ks.push_back(seqs[i]->top_k());
         top_ps.push_back(seqs[i]->top_p());
         temps.push_back(seqs[i]->temperature());
+        rngs.push_back(&seqs[i]->rng());
     }
-    return Qwen2Pack{token_ids, pos_ids, cut_idx, tot_len, top_ps, temps, 1};
+    return Qwen2Pack{token_ids, pos_ids, cut_idx, tot_len, top_ks, top_ps, temps, rngs, 1};
 }
 
 std::vector<int64_t> Qwen2::forward(Qwen2Pack &pack, std::vector<int64_t> &block_ids, bool is_prefill){
@@ -515,30 +549,27 @@ std::vector<int64_t> Qwen2::forward(Qwen2Pack &pack, std::vector<int64_t> &block
     // int64_t result = reinterpret_cast<int64_t *>(max_idx->data())[0];
 
     // top_k
-    constexpr size_t K = TOP_K;
-    tensor_t top_idx = ts._top_idx->slice(0, 0, batch_size)->view({batch_size, TOP_K});
-    tensor_t top_val = ts._top_val->slice(0, 0, batch_size)->view({batch_size, TOP_K});
+    const size_t K = static_cast<size_t>(*std::max_element(pack.top_k.begin(), pack.top_k.end()));
+    tensor_t top_idx = ts._top_idx->slice(0, 0, batch_size)->view({batch_size, MAX_TOP_K});
+    tensor_t top_val = ts._top_val->slice(0, 0, batch_size)->view({batch_size, MAX_TOP_K});
     ops::topk(top_idx, top_val, logits, K);
     // 搬到cpu
     if (device != LLAISYS_DEVICE_CPU) {
         top_idx = top_idx->to(LLAISYS_DEVICE_CPU, 0);
         top_val = top_val->to(LLAISYS_DEVICE_CPU, 0);
     }
+    const std::vector<int64_t> all_idx = top_idx->reshape({batch_size * MAX_TOP_K})->to_vector<int64_t>();
+    const std::vector<float> all_val = top_val->reshape({batch_size * MAX_TOP_K})->to_vector<float>();
     // 逐个进行随机 top_p 采样 (per-seq top_p / temperature)
     std::vector<int64_t> result(batch_size);
     for(size_t i = 0; i < batch_size; ++ i){
-        std::vector<int64_t> idx = top_idx->slice(0, i, i + 1)->reshape({K})->to_vector<int64_t>();
-        std::vector<float> val = top_val->slice(0, i, i + 1)->reshape({K})->to_vector<float>();
-        // temperature 缩放 + 重新 softmax
-        const float t = pack.temperature[i];
-        if (t > 0.0f && t != 1.0f) {
-            float m = *std::max_element(val.begin(), val.end());
-            float s = 0.0f, t_den = 1.0f / t;
-            for (auto &v : val) { v = std::exp((v - m) * t_den); s += v; }
-            float s_den = 1.0f / s;
-            for (auto &v : val) v *= s_den;
+        std::vector<SamplingCandidate> candidates;
+        candidates.reserve(K);
+        for (size_t j = 0; j < K; ++j) {
+            const size_t offset = i * K + j;
+            candidates.push_back({all_val[offset], all_idx[offset]});
         }
-        result[i] = _random_sample(idx, val, pack.top_p[i]);
+        result[i] = sample_token(candidates, pack.top_k[i], pack.top_p[i], pack.temperature[i], *pack.rngs[i]);
     }
     return result;
 }

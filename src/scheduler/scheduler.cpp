@@ -71,10 +71,6 @@ std::pair<std::vector<seq_t>, bool> Scheduler::schedule(){
         }else{
             token_num = seq->token_num() - seq->cached_token_num();
         }
-        // 如果批次容量少于要计算的部分 执行chunked prefill
-        if(remaining < token_num && !this->_waiting[cur_id].empty()){ // 对首个超限的做chunked prefill
-            break;
-        }
         // 没分配的就正式进行分配
         if(seq->block_ids().empty()){
             this->_manager->allocate(seq, cached_block_num);

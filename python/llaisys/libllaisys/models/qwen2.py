@@ -43,6 +43,7 @@ class LlaisysQwen2Weights(ctypes.Structure):
 
 
 llaisysQwen2Model_t = ctypes.c_void_p
+llaisysQwen2Request_t = ctypes.c_void_p
 
 
 def load_qwen2(lib):
@@ -78,9 +79,28 @@ def load_qwen2(lib):
     ]
     lib.llaisysQwen2ModelAbort.restype = None
 
+    lib.llaisysQwen2RequestSubmit.argtypes = [
+        llaisysQwen2Model_t,
+        POINTER(c_int64),
+        c_size_t,
+        c_int64,
+        c_int,
+        c_float,
+        c_float,
+    ]
+    lib.llaisysQwen2RequestSubmit.restype = llaisysQwen2Request_t
+
+    lib.llaisysQwen2RequestAwait.argtypes = [llaisysQwen2Request_t]
+    lib.llaisysQwen2RequestAwait.restype = c_int64
+    lib.llaisysQwen2RequestAbort.argtypes = [llaisysQwen2Request_t]
+    lib.llaisysQwen2RequestAbort.restype = None
+    lib.llaisysQwen2RequestRelease.argtypes = [llaisysQwen2Request_t]
+    lib.llaisysQwen2RequestRelease.restype = None
+
 __all__ = [
     "LlaisysQwen2Meta",
     "LlaisysQwen2Weights",
     "llaisysQwen2Model_t",
+    "llaisysQwen2Request_t",
     "load_qwen2",
 ]
