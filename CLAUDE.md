@@ -114,11 +114,11 @@ Batch operator: `top_k` — finds top-k values+indices along last dim, supports 
 
 The Qwen2 model implementation spans two directories:
 
-- **`src/models/qwen2.cpp`** — The actual C++ `Qwen2` class containing the full Transformer forward pass, an internal event loop (worker thread running schedule → prefill/decode → forward → postprocess), KV-cache management, block allocation, and Top-P sampling logic. `request(prompt)` is a synchronous blocking API: it creates/finds a `Sequence`, enqueues it via the scheduler, and spin-waits for the sequence to produce a token.
+- **`src/models/qwen2.cpp`** — The actual C++ `Qwen2` class containing the Transformer forward pass, worker loop, request-handle lifecycle, KV-cache integration, and sampling. Every submitted request owns an independent `Sequence`; reusable KV blocks are managed only by `BlockManager`.
 
 - **`src/llaisys/models/qwen2.cc`** — Thin C API bridge converting `LlaisysQwen2Model*` / `LlaisysQwen2Meta` / `LlaisysQwen2Weights` structs to calls on the C++ `Qwen2` class.
 
-- **`python/llaisys/models/qwen2.py`** — Loads safetensors weights into LLAISYS tensors via the C API, drives the generation loop by calling `llaisysQwen2ModelInfer()`.
+- **`python/llaisys/models/qwen2.py`** — Loads safetensors weights into LLAISYS tensors via the C API and drives generation through `llaisysQwen2RequestSubmit/Await/Abort/Release`.
 
 The forward pass per layer: embedding → rms_norm → linear(QKV) → rope → kv_cache_move → paged_attention → linear(O) → residual add → rms_norm → linear(gate/up) → swiglu → linear(down) → residual add.
 

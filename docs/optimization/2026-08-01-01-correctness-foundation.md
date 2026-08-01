@@ -26,9 +26,9 @@
 
 ## 行为与兼容性
 
-Python 生成和服务端流式输出使用 request handle，并在正常完成、异常和取消时释放它们。
-导出的 `llaisysQwen2ModelInfer` 和 `llaisysQwen2ModelAbort` API 仍作为已弃用的、以 prompt 为 key
-的兼容路径保留，并继续存在相同 prompt 的限制。
+Python 生成和服务端流式输出只使用 request handle，并在正常完成、异常和取消时释放它。
+旧的 `llaisysQwen2ModelInfer/Abort` 及 prompt-hash `Sequence` 复用路径已删除；Prefix Cache
+继续由 `BlockManager` 提供。
 
 ## 性能、限制与回滚
 
@@ -36,6 +36,8 @@ NVIDIA top-k 最终保留并行 radix kernel；评审期间出现过的串行 fa
 `(1, 151936), K=100` smoke 测试与 `torch.topk` 数值一致，延迟中位数为 `1.2815 ms`。
 当前没有公共 request seed API；确定性 RNG 注入仅用于内部测试。回滚 Task 2 的 commits，
 即可恢复此前的请求与采样行为。
+
+后续 API 清理主动中断了旧 `llaisysQwen2ModelInfer/Abort` C ABI，不为仓库外旧调用者提供兼容层。
 
 ## 评审修复
 
