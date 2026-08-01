@@ -34,6 +34,7 @@ __C {
         return &model->qwen2->weights();
     }
 
+    /** 提交独立请求，并将 C++ request 生命周期封装为 C handle */
     struct LlaisysQwen2Request *llaisysQwen2RequestSubmit(struct LlaisysQwen2Model *model, int64_t *token_ids,
                                                             size_t ntoken, int64_t max_new_tokens, int top_k,
                                                             float top_p, float temperature) {
@@ -51,6 +52,7 @@ __C {
         }
     }
 
+    /** 等待当前请求生成下一个 token */
     int64_t llaisysQwen2RequestAwait(struct LlaisysQwen2Request *request) {
         if (!request || !request->qwen2 || !request->request) return -1;
         try {
@@ -60,10 +62,12 @@ __C {
         }
     }
 
+    /** 取消当前请求，不影响相同 prompt 的其他请求 */
     void llaisysQwen2RequestAbort(struct LlaisysQwen2Request *request) {
         if (request && request->qwen2 && request->request) request->qwen2->abort(request->request);
     }
 
+    /** 释放 C handle 及其持有的 C++ request */
     void llaisysQwen2RequestRelease(struct LlaisysQwen2Request *request) {
         if (!request) return;
         if (request->qwen2 && request->request) request->qwen2->release(request->request);

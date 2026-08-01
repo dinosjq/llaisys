@@ -111,10 +111,14 @@ public:
     // 终止系统
     void stop();
 
+    // 提交独立请求：每个 request 持有自己的 Sequence，KV Cache 复用由 BlockManager 管理
     qwen2_request_t submit(int64_t *token_ids, size_t ntoken, int64_t max_new_tokens,
                            int top_k = TOP_K, float top_p = TOP_P, float temperature = 1.0f);
+    // 等待当前 request 生成下一个 token
     int64_t await(const qwen2_request_t &request);
+    // 取消当前 request，不影响相同 prompt 的其他请求
     void abort(const qwen2_request_t &request);
+    // 释放 request；未完成的 Sequence 会先从调度器取消
     void release(const qwen2_request_t &request);
 
     // 填充块表

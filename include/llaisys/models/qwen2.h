@@ -38,10 +38,14 @@ __C {
 
     __export struct LlaisysQwen2Weights *llaisysQwen2ModelWeights(struct LlaisysQwen2Model * model);
 
+    // 提交独立请求；返回的 handle 必须通过 llaisysQwen2RequestRelease 释放
     __export struct LlaisysQwen2Request *llaisysQwen2RequestSubmit(struct LlaisysQwen2Model *model,
         int64_t *token_ids, size_t ntoken, int64_t max_new_tokens, int top_k, float top_p, float temperature);
+    // 阻塞等待当前请求生成下一个 token；取消返回 -2，错误返回 -1
     __export int64_t llaisysQwen2RequestAwait(struct LlaisysQwen2Request *request);
+    // 取消当前请求，不影响其他请求
     __export void llaisysQwen2RequestAbort(struct LlaisysQwen2Request *request);
+    // 释放请求 handle；未完成请求会先被取消
     __export void llaisysQwen2RequestRelease(struct LlaisysQwen2Request *request);
 
 }
