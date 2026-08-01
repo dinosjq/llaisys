@@ -140,3 +140,17 @@ target("llaisys")
         end
     end)
 target_end()
+
+target("llaisys-core-test")
+    set_kind("binary")
+    set_default(false)
+    add_deps("llaisys-core")
+    add_deps("llaisys-ops")
+
+    set_languages("cxx17")
+    set_warnings("all", "error")
+    add_includedirs("src")
+    add_files("test/core/*.cpp")
+
+    on_install(function (target) end)
+target_end()

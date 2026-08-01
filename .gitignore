@@ -21,6 +21,7 @@ test/benchmark/results/
 # Superpowers scratch
 .superpowers/sdd/*.diff
 .superpowers/sdd/task-*.md
+.superpowers/sdd/task-*-artifacts/
 
 # MacOS
 .DS_Store
