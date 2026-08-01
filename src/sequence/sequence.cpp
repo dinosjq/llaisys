@@ -5,26 +5,33 @@
 #include <algorithm>
 #include <cmath>
 
+namespace {
+const int64_t *validate_prompt_tokens(const int64_t *token_ids, size_t ntoken) {
+    CHECK_ARGUMENT(token_ids != nullptr, "token_ids must not be null");
+    CHECK_ARGUMENT(ntoken > 0, "prompt must contain at least one token");
+    return token_ids;
+}
+} // namespace
+
 namespace llaisys{
 Sequence::Sequence(int64_t *token_ids, size_t ntoken, size_t max_ntoken,
                    int top_k, float top_p, float temperature):
                     _seq_id(Sequence::counter()),
                     _status(SeqStatus::WAITING),
                     _is_prefill(true),
-                    _prompt_hash(BlockManager::_compute_hash(token_ids, ntoken, -1)),
+                    _prompt_hash(BlockManager::_compute_hash(validate_prompt_tokens(token_ids, ntoken), ntoken, -1)),
                     _ntoken(ntoken),
                     _cached_ntoken(0),
                     _prompt_ntoken(ntoken),
                     _scheduled_ntoken(0),
                     _max_ntoken(max_ntoken),
-                    _last_token(token_ids[ntoken - 1]),
+                    _last_token(validate_prompt_tokens(token_ids, ntoken)[ntoken - 1]),
                     _cancelled(false),
                     _top_k(std::min(top_k, MAX_TOP_K)),
                     _top_p(top_p),
                     _temperature(temperature),
                     _rng(std::random_device{}())
 {
-    CHECK_ARGUMENT(ntoken > 0, "prompt must contain at least one token");
     CHECK_ARGUMENT(top_k > 0, "top_k must be positive");
     CHECK_ARGUMENT(top_p > 0.0f && top_p <= 1.0f && std::isfinite(top_p), "top_p must be in (0, 1]");
     CHECK_ARGUMENT(std::isfinite(temperature), "temperature must be finite");

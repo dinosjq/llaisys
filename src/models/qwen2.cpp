@@ -550,16 +550,16 @@ std::vector<int64_t> Qwen2::forward(Qwen2Pack &pack, std::vector<int64_t> &block
 
     // top_k
     const size_t K = static_cast<size_t>(*std::max_element(pack.top_k.begin(), pack.top_k.end()));
-    tensor_t top_idx = ts._top_idx->slice(0, 0, batch_size)->view({batch_size, MAX_TOP_K});
-    tensor_t top_val = ts._top_val->slice(0, 0, batch_size)->view({batch_size, MAX_TOP_K});
+    tensor_t top_idx = Tensor::create({batch_size, K}, LLAISYS_DTYPE_I64, device, this->_device_ids[0]);
+    tensor_t top_val = Tensor::create({batch_size, K}, meta.dtype, device, this->_device_ids[0]);
     ops::topk(top_idx, top_val, logits, K);
     // 搬到cpu
     if (device != LLAISYS_DEVICE_CPU) {
         top_idx = top_idx->to(LLAISYS_DEVICE_CPU, 0);
         top_val = top_val->to(LLAISYS_DEVICE_CPU, 0);
     }
-    const std::vector<int64_t> all_idx = top_idx->reshape({batch_size * MAX_TOP_K})->to_vector<int64_t>();
-    const std::vector<float> all_val = top_val->reshape({batch_size * MAX_TOP_K})->to_vector<float>();
+    const std::vector<int64_t> all_idx = top_idx->reshape({batch_size * K})->to_vector<int64_t>();
+    const std::vector<float> all_val = top_val->reshape({batch_size * K})->to_vector<float>();
     // 逐个进行随机 top_p 采样 (per-seq top_p / temperature)
     std::vector<int64_t> result(batch_size);
     for(size_t i = 0; i < batch_size; ++ i){

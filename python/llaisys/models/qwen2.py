@@ -268,13 +268,23 @@ class Qwen2:
         loop_bound = max_new_tokens if max_new_tokens >= 0 else 128
         tokens = list(int(t) for t in inputs)
         request = self._submit_request(tokens, max_new_tokens, top_k, top_p, temperature)
+        released = False
+        release_deferred = False
+        await_task = None
+
+        def release_once():
+            nonlocal released
+            if not released:
+                released = True
+                LIB_LLAISYS.llaisysQwen2RequestRelease(request)
 
         try:
             for step in range(loop_bound):
                 def _await():
                     return int(LIB_LLAISYS.llaisysQwen2RequestAwait(request))
 
-                next_token = await asyncio.to_thread(_await)
+                await_task = asyncio.create_task(asyncio.to_thread(_await))
+                next_token = await asyncio.shield(await_task)
 
                 if next_token == -2:
                     break  # cancelled from another path
@@ -299,8 +309,14 @@ class Qwen2:
                     break
         except asyncio.CancelledError:
             LIB_LLAISYS.llaisysQwen2RequestAbort(request)
+            if await_task is None or await_task.done():
+                release_once()
+            else:
+                release_deferred = True
+                await_task.add_done_callback(lambda _: release_once())
             raise
         finally:
-            LIB_LLAISYS.llaisysQwen2RequestRelease(request)
+            if not release_deferred:
+                release_once()
 
 

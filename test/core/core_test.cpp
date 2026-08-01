@@ -56,6 +56,16 @@ void test_sampling_policy() {
     require(weighted == 7, "sampling must use probability weights, not uniform candidate selection");
 }
 
+void test_mixed_top_k_uses_each_request_limit() {
+    const std::vector<llaisys::SamplingCandidate> shared_max_k_candidates{{0.0f, 101}, {0.0f, 102}, {0.0f, 103}};
+    std::mt19937 k_one_rng(1);
+    std::mt19937 k_three_rng(1);
+    const int64_t k_one_token = llaisys::sample_token(shared_max_k_candidates, 1, 1.0f, 1.0f, k_one_rng);
+    const int64_t k_three_token = llaisys::sample_token(shared_max_k_candidates, 3, 1.0f, 1.0f, k_three_rng);
+    require(k_one_token == 101, "top_k one selected outside rank one");
+    require(k_three_token != 101, "larger per-request top_k did not use its own candidate range");
+}
+
 void test_chunked_prefill_makes_progress_without_generating_early() {
     llaisys::Scheduler scheduler(64, 4, 2, 1, 999);
     std::vector<int64_t> prompt{1, 2, 3, 4, 5};
@@ -78,12 +88,24 @@ void test_chunked_prefill_makes_progress_without_generating_early() {
     require(sequence->token_num() == prompt.size() + 1, "prefill completion must add exactly one generated token");
 }
 
+void test_sequence_rejects_zero_token_prompt_before_dereference() {
+    bool rejected = false;
+    try {
+        llaisys::Sequence(nullptr, 0);
+    } catch (const std::invalid_argument &) {
+        rejected = true;
+    }
+    require(rejected, "zero-token prompt must be rejected");
+}
+
 } // namespace
 
 int main() {
     test_prefix_cache_requires_elementwise_block_match();
     test_sampling_policy();
+    test_mixed_top_k_uses_each_request_limit();
     test_chunked_prefill_makes_progress_without_generating_early();
+    test_sequence_rejects_zero_token_prompt_before_dereference();
     std::cout << "llaisys core test smoke assertion passed\n";
     return 0;
 }

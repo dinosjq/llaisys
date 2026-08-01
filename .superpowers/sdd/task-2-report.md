@@ -41,7 +41,23 @@ token, releasing the handle on normal completion, exceptions, and cancellation.
 
 ## Concerns
 
-The standalone NVIDIA top-k batched regression still fails outside this task's changed path. The final full-server
-run did not complete because its subprocess disconnected; a prior run of the same suite passed health, chat,
-streaming, completion, and cancellation before the newly added concurrent-identical-request check exposed a
-disconnect. Re-run server integration in a clean GPU-process environment before merging.
+The corrected NVIDIA top-k implementation favors deterministic correctness over parallel radix-selection
+performance. No correctness regressions remain in the final required test suite.
+
+## Review fixes
+
+- Fixed async cancellation lifetime: `generate_async()` shields the explicit `asyncio.to_thread()` await task,
+  aborts on cancellation, and releases the C request handle exactly once only after the blocking task completes.
+  `PYTHONPATH=python python3 -m unittest test/test_qwen2_request_lifetime.py` — PASS.
+- Preserved explicit zero temperature in chat and completion handlers.
+  `PYTHONPATH=python python3 -m unittest test/test_server_temperature.py` — PASS.
+- Validated null and zero-length prompts before `Sequence` initializer dereferences token storage; added the core
+  regression. `XMAKE_ROOT=y xmake build llaisys-core-test && ./build/linux/x86_64/release/llaisys-core-test` — PASS.
+- Added mixed-K sampling coverage and the concurrent-identical-prompt cancellation integration scenario.
+- Rebuilt and installed the worktree library, then replaced the FP16-incorrect NVIDIA radix selection with
+  deterministic selection. `PYTHONPATH=python python3 test/ops/topk.py --device nvidia` — PASS.
+- `PYTHONPATH=python python3 test/test_infer.py --model /home/songjq/models/DeepSeek-R1-Distill-Qwen-1.5B --device nvidia --test`
+  — PASS.
+- `PYTHONPATH=python python3 test/test_server.py --model /home/songjq/models/DeepSeek-R1-Distill-Qwen-1.5B --device nvidia --port 8341`
+  — PASS (health, chat, streaming, completion, cancellation, concurrent identical requests, and cancellation
+  isolation).

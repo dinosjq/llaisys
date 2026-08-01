@@ -10,6 +10,7 @@ import argparse
 import json
 import subprocess
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -143,6 +144,42 @@ def test_identical_prompt_request_isolation(base):
     assert all(response.json()["choices"] for response in responses)
     print("[PASS] identical prompts: independent concurrent completions")
 
+def test_identical_prompt_cancellation_isolation(base):
+    payload = {
+        "model": "qwen2-1.5b",
+        "prompt": "Keep this identical request active while its peer is cancelled.",
+        "max_tokens": 32,
+        "stream": True,
+    }
+    ready = threading.Barrier(2)
+
+    def cancel_one():
+        with httpx.stream("POST", f"{base}/v1/completions", json=payload, timeout=120.0) as response:
+            assert response.status_code == 200
+            ready.wait(timeout=30)
+            for line in response.iter_lines():
+                if line.startswith("data:"):
+                    return
+
+    def complete_other():
+        done = False
+        with httpx.stream("POST", f"{base}/v1/completions", json=payload, timeout=120.0) as response:
+            assert response.status_code == 200
+            ready.wait(timeout=30)
+            for line in response.iter_lines():
+                if line == "data: [DONE]":
+                    done = True
+                    break
+        return done
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        cancelled = pool.submit(cancel_one)
+        completed = pool.submit(complete_other)
+        cancelled.result()
+        assert completed.result(), "the uncancelled identical request did not complete"
+    assert httpx.get(f"{base}/health", timeout=5.0).status_code == 200
+    print("[PASS] identical prompts: cancelling one does not affect the other")
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -168,6 +205,7 @@ def main():
         test_completions_non_stream(base)
         test_cancellation(base)
         test_identical_prompt_request_isolation(base)
+        test_identical_prompt_cancellation_isolation(base)
         print("\nAll server tests passed.")
     finally:
         proc.terminate()

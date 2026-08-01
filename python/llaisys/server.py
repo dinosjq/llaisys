@@ -106,7 +106,7 @@ def create_app(model_path: str, device: str = "nvidia", model_name: str = "qwen2
                 max_new_tokens=req.max_tokens,
                 top_k=req.top_k,
                 top_p=req.top_p,
-                temperature=req.temperature or 0.8,
+                temperature=req.temperature if req.temperature is not None else 0.8,
             )
             generated = tokens[len(input_ids):]
             text = tokenizer.decode(generated, skip_special_tokens=True)
@@ -135,7 +135,7 @@ def create_app(model_path: str, device: str = "nvidia", model_name: str = "qwen2
                     max_new_tokens=req.max_tokens,
                     top_k=req.top_k,
                     top_p=req.top_p,
-                    temperature=req.temperature or 0.8,
+                    temperature=req.temperature if req.temperature is not None else 0.8,
                 ):
                     token_id = chunk_data["token"]
                     finish = chunk_data.get("finish_reason")
@@ -181,7 +181,7 @@ def create_app(model_path: str, device: str = "nvidia", model_name: str = "qwen2
                 max_new_tokens=req.max_tokens,
                 top_k=req.top_k,
                 top_p=req.top_p,
-                temperature=req.temperature or 0.8,
+                temperature=req.temperature if req.temperature is not None else 0.8,
             )
             generated = tokens[len(input_ids):]
             text = tokenizer.decode(generated, skip_special_tokens=True)
@@ -211,7 +211,7 @@ def create_app(model_path: str, device: str = "nvidia", model_name: str = "qwen2
                     max_new_tokens=req.max_tokens,
                     top_k=req.top_k,
                     top_p=req.top_p,
-                    temperature=req.temperature or 0.8,
+                    temperature=req.temperature if req.temperature is not None else 0.8,
                 ):
                     token_id = chunk_data["token"]
                     finish = chunk_data.get("finish_reason")

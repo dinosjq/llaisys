@@ -30,6 +30,14 @@ prompt-keyed compatibility paths and retain their identical-prompt limitation.
 
 ## Performance, limitations, rollback
 
-These changes are correctness-oriented and should be performance-neutral apart from bounded CPU sampling work.
-There is no public request seed API; deterministic RNG injection is internal-test-only. Roll back this task commit
-to restore the previous request and sampling behavior.
+The NVIDIA top-k kernel now uses deterministic serial selection to correct the FP16 ordering defect discovered by
+the regression suite. This is intentionally a correctness-first trade-off and may reduce top-k throughput for large
+K. There is no public request seed API; deterministic RNG injection is internal-test-only. Roll back the Task 2
+commits to restore the previous request and sampling behavior.
+
+## Review fixes
+
+Cancellation now shields the active blocking `RequestAwait` task and defers releasing its opaque C handle until
+that task finishes after abort. Explicit `temperature=0` is preserved by both server endpoints. Sequence
+construction validates a non-null, non-empty prompt before dereferencing token storage. The regression suite also
+covers mixed per-request top-k and cancellation isolation for concurrent identical prompts.
