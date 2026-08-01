@@ -51,12 +51,15 @@ __C {
                                                             size_t ntoken, int64_t max_new_tokens, int top_k,
                                                             float top_p, float temperature) {
         if (!model || !model->qwen2) return nullptr;
+        llaisys::qwen2_request_t submitted;
         try {
-            auto *request = new LlaisysQwen2Request();
+            submitted = model->qwen2->submit(token_ids, ntoken, max_new_tokens, top_k, top_p, temperature);
+            auto request = std::make_unique<LlaisysQwen2Request>();
             request->qwen2 = model->qwen2;
-            request->request = model->qwen2->submit(token_ids, ntoken, max_new_tokens, top_k, top_p, temperature);
-            return request;
+            request->request = std::move(submitted);
+            return request.release();
         } catch (...) {
+            if (submitted) model->qwen2->release(submitted);
             return nullptr;
         }
     }

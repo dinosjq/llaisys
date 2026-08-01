@@ -61,3 +61,12 @@ performance. No correctness regressions remain in the final required test suite.
 - `PYTHONPATH=python python3 test/test_server.py --model /home/songjq/models/DeepSeek-R1-Distill-Qwen-1.5B --device nvidia --port 8341`
   — PASS (health, chat, streaming, completion, cancellation, concurrent identical requests, and cancellation
   isolation).
+
+## Second review fixes
+
+- Restored `src/ops/top_k/nvidia/topk_nvidia.cu` exactly from `960088c`, removing the serial fallback and dead
+  code. After a fresh build/install, `PYTHONPATH=python python3 test/ops/topk.py --device nvidia` passed three
+  consecutive runs across FP32/FP16/BF16 and batched cases.
+- Made `llaisysQwen2RequestSubmit` wrapper allocation exception-safe by retaining the submitted C++ handle in an
+  RAII `shared_ptr` and releasing it if wrapper allocation throws.
+- Final regression command passed: core test, NVIDIA top-k, greedy inference, and full server suite on port 8343.

@@ -41,3 +41,10 @@ Cancellation now shields the active blocking `RequestAwait` task and defers rele
 that task finishes after abort. Explicit `temperature=0` is preserved by both server endpoints. Sequence
 construction validates a non-null, non-empty prompt before dereferencing token storage. The regression suite also
 covers mixed per-request top-k and cancellation isolation for concurrent identical prompts.
+
+## Second review fixes
+
+The serialized CUDA fallback was removed. The NVIDIA implementation is restored exactly to the reviewed
+`960088c` parallel radix kernel; three fresh rebuild-and-install runs of the full NVIDIA top-k suite passed for
+FP32, FP16, BF16, batched rows, and K through the existing generic coverage. Request submission now performs the
+model submit before allocating its C wrapper and releases the submitted request if wrapper construction fails.
