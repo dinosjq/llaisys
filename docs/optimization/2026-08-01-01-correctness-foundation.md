@@ -32,9 +32,10 @@ Python 生成和服务端流式输出使用 request handle，并在正常完成�
 
 ## 性能、限制与回滚
 
-NVIDIA top-k kernel 现采用确定性的串行选择，以修复回归测试套件发现的 FP16 排序缺陷。
-这是有意采取的正确性优先权衡，可能降低较大 K 时的 top-k 吞吐量。当前没有公共 request seed API；
-确定性 RNG 注入仅用于内部测试。回滚 Task 2 的 commits，即可恢复此前的请求与采样行为。
+NVIDIA top-k 最终保留并行 radix kernel；评审期间出现过的串行 fallback 已被移除。最终 BF16
+`(1, 151936), K=100` smoke 测试与 `torch.topk` 数值一致，延迟中位数为 `1.2815 ms`。
+当前没有公共 request seed API；确定性 RNG 注入仅用于内部测试。回滚 Task 2 的 commits，
+即可恢复此前的请求与采样行为。
 
 ## 评审修复
 
