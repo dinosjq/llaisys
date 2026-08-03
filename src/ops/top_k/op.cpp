@@ -12,23 +12,25 @@ void topk(tensor_t out_idx, tensor_t out_val, tensor_t vals, size_t k) {
     CHECK_SAME_DTYPE(out_val->dtype(), vals->dtype());
     ASSERT(out_idx->dtype() == LLAISYS_DTYPE_I64 || out_idx->dtype() == LLAISYS_DTYPE_U64,
            "topk: out_idx dtype must be int64 or uint64.");
-    ASSERT(k <= vals->numel(), "topk: k is too large.");
     // vals 是否连续
     ASSERT(vals->isContiguous() && out_idx->isContiguous() && out_val->isContiguous(), "topk: tensor must be contiguous.");
 
+    std::vector<size_t> shape = vals->shape();
+    CHECK_ARGUMENT(shape.size() == 1 || shape.size() == 2, "topk: vals must be a 1D or 2D tensor.");
+
+    const size_t batch_size = shape.size() == 1 ? 1 : shape[0];
+    const size_t numel = shape.back();
+    CHECK_ARGUMENT(batch_size > 0, "topk: batch size must be positive.");
+    CHECK_ARGUMENT(numel > 0, "topk: last dimension must be positive.");
+    CHECK_ARGUMENT(k > 0 && k <= numel, "topk: k must be in [1, vals.shape[-1]].");
+
+    std::vector<size_t> out_shape = shape;
+    out_shape.back() = k;
+    CHECK_ARGUMENT(out_idx->shape() == out_shape, "topk: out_idx shape must match vals except for the last dimension.");
+    CHECK_ARGUMENT(out_val->shape() == out_shape, "topk: out_val shape must match vals except for the last dimension.");
+
     // 设置当前设备
     llaisys::core::context().setDevice(vals->deviceType(), vals->deviceId());
-
-    std::vector<size_t> shape = vals->shape();
-    size_t batch_size = 1;
-    size_t numel = 0;
-    if (shape.size() == 1) {
-        batch_size = 1;
-        numel = shape[0];
-    } else {
-        batch_size = shape[0];
-        numel = shape[1];
-    }
 
     // 根据设备类型分发实现
     switch (vals->deviceType()) {

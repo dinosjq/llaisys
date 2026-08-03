@@ -26,10 +26,11 @@ KERNEL_GROUPS = {
     "add":            "add_kernel<llaisys",
     "add_bias":       "add_bias_kernel<llaisys",
     "topk":           "_topk_kernel<llaisys",
-    "gemm_128x128":   "ampere_bf16_s1688gemm_bf16_128x128",
-    "gemm_128x64":    "ampere_bf16_s16816gemm_bf16_128x64",
-    "gemm_64x128":    "ampere_bf16_s16816gemm_bf16_64x128",
-    "gemm_relu":      "ampere_bf16_s1688gemm_bf16_128x128_ldg8_relu",
+    # cuBLAS names vary by toolkit and matrix dimensions.  Keep these after
+    # LLAISYS-specific kernels so phase anchors retain their existing labels.
+    "gemm_reduction": "splitKreduce",
+    "gemv":           "gemv",
+    "gemm":           "gemm",
 }
 
 KERNEL_NAMES = {
@@ -42,12 +43,11 @@ KERNEL_NAMES = {
     "rope":           "rope",
     "swiglu":         "swiglu",
     "add":            "add",
-    "add_bias":       "add_bias",
+    "add_bias":       "linear (bias)",
     "topk":           "topk",
-    "gemm_128x128":   "linear (gemm)",
-    "gemm_128x64":    "linear (gemm)",
-    "gemm_64x128":    "linear (gemm)",
-    "gemm_relu":      "linear (gemm)",
+    "gemm_reduction": "linear (reduction)",
+    "gemv":           "linear (gemv)",
+    "gemm":           "linear (gemm)",
 }
 
 

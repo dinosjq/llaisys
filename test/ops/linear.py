@@ -1,5 +1,6 @@
 import sys
 import os
+from pathlib import Path
 
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, parent_dir)
@@ -10,6 +11,26 @@ from test_utils import random_tensor, check_equal, benchmark
 
 def torch_linear(out, x, w, bias):
     torch.nn.functional.linear(x, w, bias, out=out)
+
+
+def test_nvidia_linear_binds_cublas_to_runtime_stream():
+    source = (Path(__file__).parents[2] / "src/ops/linear/nvidia/linear_nvidia.cu").read_text()
+
+    assert "cublasSetStream(handle" in source
+    assert "const auto &runtime = llaisys::core::context().runtime();" in source
+    assert "static_cast<cudaStream_t>(runtime.stream())" in source
+    assert 'std::cerr << "cuBLAS error at "' in source
+
+
+def test_nvidia_linear_caches_handles_per_thread_and_device():
+    root = Path(__file__).parents[2]
+    linear_source = (root / "src/ops/linear/nvidia/linear_nvidia.cu").read_text()
+    runtime_source = (root / "src/core/runtime/runtime.cpp").read_text()
+
+    assert "thread_local std::unordered_map<int, cublasHandle_t>" in linear_source
+    assert "const int device_id = runtime.deviceId();" in linear_source
+    assert "cublasSetStream(handle, stream)" in linear_source
+    assert runtime_source.index("_api->set_device(_device_id);") < runtime_source.index("_stream = _api->create_stream();")
 
 
 def test_op_linear(
@@ -52,6 +73,9 @@ if __name__ == "__main__":
     parser.add_argument("--device", default="cpu", choices=["cpu", "nvidia"], type=str)
     parser.add_argument("--profile", action="store_true")
     args = parser.parse_args()
+    test_nvidia_linear_binds_cublas_to_runtime_stream()
+    test_nvidia_linear_caches_handles_per_thread_and_device()
+
     testShapes = [
         ((2, 3), (2, 4), (3, 4), True),
         ((512, 4096), (512, 4096), (4096, 4096), True),

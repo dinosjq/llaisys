@@ -11,6 +11,7 @@ from test_utils import random_tensor, zero_tensor, check_equal
 from benchmark_harness import (
     BenchmarkConfig, BenchmarkResult, run_benchmark, format_summary, save_results, elem_size
 )
+from shape_profiles import DEFAULT_SHAPE_PROFILES, get_shape_profile
 
 OP_NAME = "top_k"
 SHAPE_LABEL = "shape:[dims x k]"
@@ -76,15 +77,26 @@ def main():
     parser.add_argument("--ncu", nargs="?", const="detailed",
                         choices=["quick", "detailed", "full"])
     parser.add_argument("--use-ncu", action="store_true", help="Profile with NCU (--set full)")
+    parser.add_argument("--shape-profile", choices=sorted(DEFAULT_SHAPE_PROFILES),
+                        help="Use model-representative hidden and logits dimensions")
+    parser.add_argument("--model", default=None,
+                        help="Model directory or config.json overriding the selected shape profile")
     parser.add_argument("--example-index", type=str, default=None, help="Comma-separated shape indices to profile (0-based)")
     parser.add_argument("--output", default="test/benchmark/ops/results")
     args = parser.parse_args()
+
+    if args.model and not args.shape_profile:
+        parser.error("--model requires --shape-profile")
+
+    profile = (get_shape_profile(args.shape_profile, args.model)
+               if args.shape_profile else None)
+    shape_infos = profile.topk_shapes() if profile else QWEN2_SHAPES
 
     target_indices = None
     if args.example_index is not None:
         target_indices = sorted(set(
             int(p.strip()) for p in args.example_index.split(",") if p.strip()))
-        total = len(QWEN2_SHAPES)
+        total = len(shape_infos)
         for idx in target_indices:
             if idx < 0 or idx >= total:
                 print(f"  ERROR: index {idx} out of range (0-{total - 1})")
@@ -98,7 +110,7 @@ def main():
     dtype_name = args.dtype
     results = []
     _idx = 0
-    for shape_info in QWEN2_SHAPES:
+    for shape_info in shape_infos:
         this_idx = _idx
         _idx += 1
         if target_indices is not None and this_idx not in target_indices:
@@ -141,7 +153,7 @@ def main():
         result.baseline_name = "torch_topk"
         results.append(result)
 
-        if shape_info == QWEN2_SHAPES[0]:
+        if shape_info == shape_infos[0]:
             buf = setup_topk(shape, k, dtype_name)
             torch_topk(buf)
             torch_val_ref = buf["out_val_torch"].clone()

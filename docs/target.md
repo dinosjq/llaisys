@@ -12,8 +12,6 @@
 
 4) KV Cache 泄漏修复 — 通过 profile 系统识别并修复 KV cache 内存泄漏（完成）
 
-5) Top-K 优化 — 内置插入排序（小数据暴力排序即可）；外部 sample 直接顺序计算前缀（k 值不固定，涉及 SM/寄存器限制，暂不进行采样侧优化）（完成）
-
 6) OpenAI-Compatible API Server（完成）
    FastAPI + uvicorn，直接对标 vLLM / SGLang / TensorRT-LLM 产品形态。
    - `/v1/chat/completions`（SSE streaming + 非流式）、`/v1/completions`、`/v1/models`、`/health`
@@ -23,16 +21,29 @@
    - 集成测试 test/test_server.py 6/6 通过；回归测试无性能与正确性回退
    - Logprobs 已暂缓：无条件 logits 快照（D2H ~300KB/步）造成吞吐回退（1.16x→1.09x），后续以请求参数按需触发的方式重新实现
 
----
 
-## 待完成
-
-7) Paged Attention 长序列优化（核心瓶颈）
+7) Paged Attention 长序列优化（核心瓶颈）（已完成）
    链路 profile 发现长序列下 attention 耗时线性增长（2ms → 18ms @ seq_len=1024）。
    - FlashDecoding 风格 KV 分块并行：将 totlen 切分为多个 chunk，各 block 独立计算 partial softmax，最后 reduction 合并
    - 解决 decode 阶段 grid 过小（仅 12 blocks）导致 SM 利用率低的问题
    - 考虑 warp specialization（FA3 思路）进一步提升 SM 利用率
+
+---
+
+## 待完成
+
+15) Model-Agnostic Pipeline
+    当前模型层硬编码 Qwen2（28 layers, GQA ratio=6, SwiGLU+RMS-Norm+RoPE）。
+    - JSON/YAML config 描述模型结构（layer 类型、参数、连接关系）
+    - 类似 llama.cpp GGUF 格式或 vLLM model config
+    - 统一 Layer 基类，组合式构建 pipeline
+    - 新模型只需 config + safetensors 加载，无需改 C++ 代码
    
+16) 模型量化
+    权重量化：NF4 量化 + Hadamard 旋转（Tensor-Core 加速），预期跑更大模型且性能基本不变。
+    KV Cache 量化：FP8 (E4M3) 或 INT8 K/V cache。写入时 cast → 读取时 paged_attention kernel 内 dequant。
+    效果：同样显存支撑 2× 更长序列或 2× 更大 batch。对标 vLLM / TensorRT-LLM 标配技术。
+
 11) 算子通用性优化
     方便适配其他模型架构，减少硬编码假设（如 d=128、nkvh=2 等维度特化）。
 
@@ -41,17 +52,9 @@
     https://huggingface.co/meta-llama/Llama-3.2-3B-Instruct
     在此基础上推进 15) Model-Agnostic Pipeline。
 
-15) Model-Agnostic Pipeline
-    当前模型层硬编码 Qwen2（28 layers, GQA ratio=6, SwiGLU+RMS-Norm+RoPE）。
-    - JSON/YAML config 描述模型结构（layer 类型、参数、连接关系）
-    - 类似 llama.cpp GGUF 格式或 vLLM model config
-    - 统一 Layer 基类，组合式构建 pipeline
-    - 新模型只需 config + safetensors 加载，无需改 C++ 代码
-
-16) 模型量化
-    权重量化：NF4 量化 + Hadamard 旋转（Tensor-Core 加速），预期跑更大模型且性能基本不变。
-    KV Cache 量化：FP8 (E4M3) 或 INT8 K/V cache。写入时 cast → 读取时 paged_attention kernel 内 dequant。
-    效果：同样显存支撑 2× 更长序列或 2× 更大 batch。对标 vLLM / TensorRT-LLM 标配技术。
+20) 模型部署 + Docker
+    Docker 一键部署：`docker run -p 8000:8000 llaisys-server`，方便面试演示和开源展示。
+    包含模型权重挂载、CUDA 环境配置。
 
 19) 多卡并行：TP + PP + DP
     预计 128GB 4×5090 可用，在多卡服务器上进行。
@@ -65,10 +68,6 @@
     - MTP (Medusa-style)：多个预测头并行预测，需训练/加载额外参数。
     - Eagle-style：独立 draft model，精度最高。
     建议先实现 PLD，再考虑 MTP。
-
-20) 模型部署 + Docker
-    Docker 一键部署：`docker run -p 8000:8000 llaisys-server`，方便面试演示和开源展示。
-    包含模型权重挂载、CUDA 环境配置。
 
 13) Prefix Caching 增强
     已有基础 hash-based prefix caching，需升级。

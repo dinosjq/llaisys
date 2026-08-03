@@ -4,6 +4,8 @@ build/
 
 docs/
 
+MEMORY.md
+
 # Binaries
 bin/
 lib/

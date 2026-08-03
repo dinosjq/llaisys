@@ -117,8 +117,7 @@ __global__ void paged_attention_kernel(T *__restrict__ _attn,
     const size_t nh = blockIdx.y;
     const size_t kv_rep = _nhead / _nkvhead;
     const size_t nkvh = nh / kv_rep;
-    const int64_t *batch_block_ids =
-        _block_ids + batch_id * _max_block_num;
+    const int64_t *batch_block_ids = _block_ids + batch_id * _max_block_num;
 
     float4 q_frag[2] = {zero_float4(), zero_float4()};
     float4 acc_frag[2] = {zero_float4(), zero_float4()};
@@ -157,8 +156,7 @@ __global__ void paged_attention_kernel(T *__restrict__ _attn,
     __syncthreads();
 
     size_t buffer = 0;
-    for (size_t tile_base = 0; tile_base < kv_end;
-         tile_base += KV_TILE) {
+    for (size_t tile_base = 0; tile_base < kv_end; tile_base += KV_TILE) {
         if (producer_warp) {
             const size_t next_token = tile_base + KV_TILE + producer_row;
             load_paged_kv_row(
@@ -292,11 +290,9 @@ void paged_attention_launch(std::byte *attn_val,       // 输出 (tot_seqlen, nh
     const auto *d_tot_len = reinterpret_cast<const int64_t *>(tot_len);
 
     dim3 blockDim(BLOCK_DIM);
-    dim3 gridDim(
-        (max_seq_len + BLOCK_M - 1) / BLOCK_M, nh, batch_size);
+    dim3 gridDim((max_seq_len + BLOCK_M - 1) / BLOCK_M, nh, batch_size);
 
-    const size_t smem_bytes =
-        sizeof(float) * 2 * KV_TILE * (d + dv);
+    const size_t smem_bytes = sizeof(float) * 2 * KV_TILE * (d + dv);
 
     paged_attention_kernel<<<gridDim, blockDim, smem_bytes>>>(
         d_attn, d_q, d_k_cache, d_v_cache, d_block_ids, d_cut_idx,

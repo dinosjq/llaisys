@@ -6,6 +6,7 @@ sys.path.insert(0, parent_dir)
 
 import llaisys
 import torch
+from benchmark.ops.shape_profiles import DEFAULT_SHAPE_PROFILES
 from test_utils import (
     random_tensor,
     zero_tensor,
@@ -15,6 +16,8 @@ from test_utils import (
     torch_dtype,
     dtype_name as llaisys_dtype_name,
 )
+
+DEEPSEEK_VOCAB_SIZE = DEFAULT_SHAPE_PROFILES["deepseek-1.5b"].vocab_size
 
 
 def fetch_llaisys_tensor(t: llaisys.Tensor) -> torch.Tensor:
@@ -180,5 +183,16 @@ if __name__ == "__main__":
     for batch, n, k in batched_cases:
         for dtype_name in test_dtypes:
             test_op_topk_batched(batch, n, k, dtype_name, args.device, args.profile)
+
+    # Inference logits: keep this to f32 so the default CPU suite exercises the
+    # shape without multiplying its runtime and allocator footprint by dtype.
+    inference_cases = [
+        (1, DEEPSEEK_VOCAB_SIZE, 1),
+        (1, DEEPSEEK_VOCAB_SIZE, 10),
+        (4, DEEPSEEK_VOCAB_SIZE, 1),
+        (4, DEEPSEEK_VOCAB_SIZE, 10),
+    ]
+    for batch, n, k in inference_cases:
+        test_op_topk_batched(batch, n, k, "f32", args.device, args.profile)
 
     print("\033[92mTest passed!\033[0m\n")

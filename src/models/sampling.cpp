@@ -13,8 +13,7 @@ int clamp_top_k(int top_k, size_t candidate_count) {
     return std::min({top_k, MAX_TOP_K, static_cast<int>(candidate_count)});
 }
 
-int64_t sample_token(std::vector<SamplingCandidate> candidates, int top_k, float top_p, float temperature,
-                     std::mt19937 &rng) {
+int64_t sample_token(std::vector<SamplingCandidate> candidates, int top_k, float top_p, float temperature, std::mt19937 &rng) {
     CHECK_ARGUMENT(!candidates.empty(), "sampling requires at least one candidate");
     CHECK_ARGUMENT(top_p > 0.0f && top_p <= 1.0f, "top_p must be in (0, 1]");
     const int k = clamp_top_k(top_k, candidates.size());

@@ -643,7 +643,8 @@ def profile_benchmark(script: str, argv: list[str], op_name: str,
                       example_indices: Optional[list[int]] = None) -> None:
     """Profile one or more shapes under NCU.
 
-    1. Strips ``--use-ncu`` / ``--example-index`` from *argv*.
+    1. Preserves shape-profile inputs while stripping ``--use-ncu`` /
+       ``--example-index`` from *argv*.
     2. Runs the benchmark normally for each requested shape (limited via
        ``--M`` / ``--variant`` or ``--example-index``).
     3. Parses each ``.ncu-rep``, classifies the bottleneck, and writes
@@ -664,6 +665,7 @@ def profile_benchmark(script: str, argv: list[str], op_name: str,
 
     results_dir = os.path.join(script_dir, "results")
     ncu_results: list[dict] = []
+    profile_args = _profile_args(argv)
 
     # --- determine indices -------------------------------------------------
     if not example_indices:
@@ -672,7 +674,7 @@ def profile_benchmark(script: str, argv: list[str], op_name: str,
 
     for idx in example_indices:
         shape_args = _shape_args_for_index(idx, script)
-        child_cmd = [sys.executable, script] + shape_args
+        child_cmd = [sys.executable, script] + profile_args + shape_args
 
         rep_base = os.path.join(out_dir, f"{op_name}_idx{idx}")
         rep_file = rep_base + ".ncu-rep"
@@ -732,6 +734,26 @@ def profile_benchmark(script: str, argv: list[str], op_name: str,
 # ---------------------------------------------------------------------------
 # internal helpers
 # ---------------------------------------------------------------------------
+
+def _profile_args(argv: list[str]) -> list[str]:
+    """Keep model-shape options required to reproduce the parent benchmark."""
+    args = []
+    value_options = ("--shape-profile", "--model")
+    index = 1  # argv[0] is the benchmark script.
+    while index < len(argv):
+        arg = argv[index]
+        if arg in value_options:
+            if index + 1 >= len(argv):
+                raise ValueError(f"{arg} requires a value")
+            args.extend((arg, argv[index + 1]))
+            index += 2
+        elif any(arg.startswith(f"{option}=") for option in value_options):
+            args.append(arg)
+            index += 1
+        else:
+            index += 1
+    return args
+
 
 def _shape_args_for_index(index: int, script: str) -> list[str]:
     """Build CLI args to limit the benchmark to a single shape by index."""

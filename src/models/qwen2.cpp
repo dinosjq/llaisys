@@ -197,8 +197,7 @@ void Qwen2::stop(){
     this->_running = false;
 }
 
-qwen2_request_t Qwen2::submit(int64_t *token_ids, size_t ntoken, int64_t max_new_tokens,
-                               int top_k, float top_p, float temperature) {
+qwen2_request_t Qwen2::submit(int64_t *token_ids, size_t ntoken, int64_t max_new_tokens, int top_k, float top_p, float temperature) {
     size_t limit = (max_new_tokens < 0) ? MAX_TOKEN_NUM : ntoken + static_cast<size_t>(max_new_tokens);
     auto request = std::make_shared<Qwen2Request>();
     request->sequence = std::make_shared<Sequence>(token_ids, ntoken, limit, top_k, top_p, temperature);

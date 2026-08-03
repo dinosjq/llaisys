@@ -12,6 +12,7 @@ from test_utils import random_tensor, check_equal
 from benchmark_harness import (
     BenchmarkConfig, BenchmarkResult, run_benchmark, format_summary, save_results, elem_size
 )
+from shape_profiles import DEFAULT_SHAPE_PROFILES, get_shape_profile
 
 OP_NAME = "linear"
 SHAPE_LABEL = "shape:[M x N x K x variant]"
@@ -71,6 +72,10 @@ def main():
                         help="Timed iterations per shape (max 20)")
     parser.add_argument("--variant", default="all",
                         choices=["all", "q_proj", "gate_proj", "down_proj"])
+    parser.add_argument("--shape-profile", choices=sorted(DEFAULT_SHAPE_PROFILES),
+                        help="Use model-representative projection dimensions")
+    parser.add_argument("--model", default=None,
+                        help="Model directory or config.json overriding the selected shape profile")
     parser.add_argument("--M", type=int, default=0,
                         help="M dimension (0 = all M_VALUES)")
     parser.add_argument("--use-ncu", action="store_true",
@@ -80,12 +85,19 @@ def main():
     parser.add_argument("--output", default="test/benchmark/ops/results")
     args = parser.parse_args()
 
+    if args.model and not args.shape_profile:
+        parser.error("--model requires --shape-profile")
+
+    profile = (get_shape_profile(args.shape_profile, args.model)
+               if args.shape_profile else None)
+    variant_shapes = profile.linear_variants if profile else QWEN2_VARIANTS
+
     # Parse --example-index for shape filtering (used by --use-ncu subprocess)
     target_indices = None
     if args.example_index is not None:
         target_indices = sorted(set(
             int(p.strip()) for p in args.example_index.split(",") if p.strip()))
-        total = len(QWEN2_VARIANTS) * len(M_VALUES)
+        total = len(variant_shapes) * len(M_VALUES)
         for idx in target_indices:
             if idx < 0 or idx >= total:
                 print(f"  ERROR: index {idx} out of range (0-{total - 1})")
@@ -99,9 +111,9 @@ def main():
 
     # Determine variants to run
     if args.variant == "all":
-        variants = list(QWEN2_VARIANTS.items())
+        variants = list(variant_shapes.items())
     else:
-        variants = [(args.variant, QWEN2_VARIANTS[args.variant])]
+        variants = [(args.variant, variant_shapes[args.variant])]
 
     # Determine M values to run
     ms = M_VALUES if args.M == 0 else [args.M]

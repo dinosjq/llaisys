@@ -14,7 +14,7 @@ struct SamplingCandidate {
 };
 
 int clamp_top_k(int top_k, size_t candidate_count);
-int64_t sample_token(std::vector<SamplingCandidate> candidates, int top_k, float top_p, float temperature,
-                     std::mt19937 &rng);
+
+int64_t sample_token(std::vector<SamplingCandidate> candidates, int top_k, float top_p, float temperature, std::mt19937 &rng);
 
 } // namespace llaisys

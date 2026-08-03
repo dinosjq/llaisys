@@ -152,4 +152,4 @@ void topk(std::byte *out_idx, std::byte *out_val, const std::byte *vals, llaisys
         EXCEPTION_UNSUPPORTED_DATATYPE(type);
     }
 }
-} // namespace llaisys::ops::cpu
+} // namespace llaisys::ops::nvidia
