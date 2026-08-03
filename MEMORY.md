@@ -1,1 +1,0 @@
-- [WSL Execution](memory/wsl-execution.md) — how to run WSL-side Python from Windows-side Claude Code
