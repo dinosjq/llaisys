@@ -2,9 +2,10 @@
 .xmake/
 build/
 
+# Project docs & local memory (not for upload)
 docs/
-
 MEMORY.md
+memory/
 
 # Binaries
 bin/
@@ -20,16 +21,15 @@ test/benchmark/results/
 *.ncu-rep
 .ncu_metrics_cache
 
-# Superpowers scratch
-.superpowers/sdd/*.diff
-.superpowers/sdd/task-*.md
-.superpowers/sdd/task-*-artifacts/
-
 # MacOS
 .DS_Store
 
 # VSCode
 .vscode/
+
+# Claude Code / local tooling
+.superpowers/
+.claude/
 
 # Python
 __pycache__/
