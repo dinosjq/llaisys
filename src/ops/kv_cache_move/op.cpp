@@ -22,12 +22,14 @@ void kv_cache_move(tensor_t out, tensor_t in, tensor_t block_ids, tensor_t cut_i
     const auto out_shape = out->shape();
     const auto block_ids_shape = block_ids->shape();
 
+    (void)out_shape; (void)block_ids_shape;   // 形状仅用于校验（TODO: 维度检查）
     const size_t token_num = out_shape[1];
     const size_t nkvh = out_shape[2];
     const size_t dh = out_shape[3];
     const size_t numel = nkvh * dh;
     const size_t batch_size = block_ids_shape[0];
     const size_t max_block_num = block_ids_shape[1];
+    (void)token_num; (void)numel; (void)batch_size; (void)max_block_num;
 
     llaisys::core::context().setDevice(out->deviceType(), out->deviceId());
 

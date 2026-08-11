@@ -35,6 +35,7 @@ target("llaisys-ops-nvidia")
         add_cuflags("-Xcompiler=-fPIC", "-Wno-unknown-pragmas")
         add_culdflags("-Xcompiler=-fPIC")
     end
+    -- 目标 GPU (RTX 4060 = Ada sm_89)；mma/cp.async 需 sm_80+
 
     add_files("../src/ops/*/nvidia/*.cu")
 

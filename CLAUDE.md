@@ -16,7 +16,9 @@ xmake f --nv-gpu=y -cv
 xmake && xmake install
 ```
 
-Code formatting: uses `clang-format` (LLVM-based, 4-space indent, no column limit). See `.clang-format` at repo root.
+Code formatting: uses `clang-format` (LLVM-based, 4-space indent, no column limit, `InsertBraces: true`, operators placed at line start on wrap). See `.clang-format` at repo root.
+
+Python dependencies (`pip install ./python/` installs these): `torch>=2.4.0`, `transformers`, `accelerate`, `ml_dtypes`, `fastapi`, `uvicorn`, `sse-starlette`, `pydantic`.
 
 ## Test Commands
 
@@ -35,6 +37,14 @@ python test/test_infer_perf.py --model <path>     # throughput benchmark
 GPU variants: append `--device nvidia` to any test command.
 Operator tests support `--profile` for benchmarking.
 Tests use shared utilities from `test/test_utils.py` (`random_tensor`, `check_equal`, `benchmark`, etc.).
+
+Server tests:
+```bash
+python test/test_server.py --model <path>              # OpenAI-compatible API server tests
+python test/test_server_temperature.py --model <path>  # temperature sampling tests
+python test/test_qwen2_request_api.py --model <path>   # request API lifecycle tests
+python test/test_qwen2_request_lifetime.py --model <path>  # request handle lifecycle
+```
 
 ## Architecture
 
@@ -66,7 +76,7 @@ LLAISYS is an educational AI inference framework. The backend is a C++17 shared 
 | `TOP_P` | 0.9 | Cumulative probability threshold |
 | `BATCH_MAX_TOKEN_NUM` | 8192 | Max tokens per batch |
 | `BATCH_MAX_SEQ_NUM` | 64 | Max sequences per batch |
-| `MAX_TOKEN_NUM` | 8192 | Max tokens per sequence |
+| `MAX_TOKEN_NUM` | 2048 | Max tokens per sequence |
 
 ### C API → C++ bridge
 
@@ -135,6 +145,31 @@ Batch inference works by concatenating all sequences' tokens into contiguous ten
 - `tensor->debug()` — prints tensor data to stdout. Useful for comparing intermediate values against PyTorch during model inference development.
 - Test utilities in `test/test_utils.py`: `random_tensor`, `random_int_tensor`, `zero_tensor`, `arrange_tensor` (create paired PyTorch+LLAISYS tensors), `check_equal` (compare with tolerances), `benchmark` (profile ops with warmup).
 
+### Server
+
+`python/llaisys/server.py` provides an OpenAI-compatible API server:
+
+```bash
+python -m llaisys.server --model <path> --port 8000 --device nvidia
+```
+
+Endpoints: `GET /health`, `GET /v1/models`, `POST /v1/chat/completions` (streaming + non-streaming), `POST /v1/completions`. The server uses FastAPI + uvicorn with SSE for streaming. It loads the tokenizer via HuggingFace `transformers` for chat template support.
+
+### Benchmarking & Profiling
+
+**Operator benchmarks** (`test/benchmark/ops/`): CUDA Event-timed micro-benchmarks comparing LLAISYS ops against PyTorch/CUDA baselines. Supports NCU profiling (`--use-ncu`) and batch runs (`run_all_benchmarks.py`). See `test/benchmark/README.md` for full details.
+
+**Inference benchmarks** (`test/benchmark/`): End-to-end inference performance comparison against HuggingFace, supporting single-request serial and concurrent multi-request modes.
+```bash
+python test/benchmark/benchmark_infer.py --model <path> [--test]    # single-request
+python test/benchmark/benchmark_batch_infer.py --model <path>       # concurrent
+```
+
+**Model profiling** (`test/profile/`): Per-operator timing breakdown across decode steps to identify bottlenecks.
+```bash
+python test/profile/profile_model.py --model <path> [--prompt-len 500]
+```
+
 ### CI/CD
 
-GitHub Actions (`.github/workflows/build.yaml`): builds and runs tests on push/PR for both `windows-latest` and `ubuntu-latest`. CPU-only; no GPU tests in CI.
+GitHub Actions (`.github/workflows/build.yaml`): builds and runs tests on push/PR for both `windows-latest` and `ubuntu-latest`. CPU-only; no GPU tests in CI. Test stages: runtime API → tensor ops → individual operator tests (add, argmax, embedding, linear, rms_norm, rope, self_attention, swiglu) → single-request inference correctness.

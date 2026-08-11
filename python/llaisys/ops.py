@@ -62,22 +62,23 @@ class Ops:
     def paged_attention(attn_val: Tensor, q: Tensor, k_cache: Tensor, v_cache: Tensor, block_ids, *rest):
         """
         Batched call: (attn_val, q_cat, k_cache, v_cache, block_ids_ll, cut_idx_ll,
-                        totlen_ll, max_seq_len:int, scale:float[, is_prefill:bool,
-                        attn_acc, attn_sum, attn_max])
+                        totlen_ll, max_seq_len:int, tot_block_num:int, scale:float
+                        [, is_prefill:bool, attn_acc, attn_sum, attn_max])
 
         Defaults is_prefill=True. attn_acc/sum/max are optional buffer tensors
         for flash_decoding (required when is_prefill=False).
         """
-        if len(rest) >= 3 and isinstance(rest[0], Tensor):
+        if len(rest) >= 5 and isinstance(rest[0], Tensor):
             cut_idx = rest[0]
             tot_len = rest[1]
             max_seq_len = rest[2]
-            scale = rest[3]
-            # is_prefill: rest[4] if present and not a Tensor, else True
-            buf_start = 4
-            if len(rest) > 4 and not isinstance(rest[4], Tensor):
-                is_prefill = rest[4]
-                buf_start = 5
+            tot_block_num = rest[3]
+            scale = rest[4]
+            # is_prefill: rest[5] if present and not a Tensor, else True
+            buf_start = 5
+            if len(rest) > 5 and not isinstance(rest[5], Tensor):
+                is_prefill = rest[5]
+                buf_start = 6
             else:
                 is_prefill = True
             # Optional flash_decoding context buffers
@@ -93,6 +94,7 @@ class Ops:
                 cut_idx.lib_tensor(),
                 tot_len.lib_tensor(),
                 c_size_t(max_seq_len),
+                c_size_t(tot_block_num),
                 c_float(scale),
                 c_bool(is_prefill),
                 attn_acc.lib_tensor() if attn_acc else None,
@@ -103,7 +105,7 @@ class Ops:
             raise TypeError(
                 "paged_attention: legacy per-sample signature is no longer supported. "
                 "Use the batched form: (attn_val, q, k_cache, v_cache, block_ids, "
-                "cut_idx, tot_len, max_seq_len, scale[, is_prefill])"
+                "cut_idx, tot_len, max_seq_len, tot_block_num, scale[, is_prefill])"
             )
 
     @staticmethod

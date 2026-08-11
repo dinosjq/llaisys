@@ -355,6 +355,8 @@ std::vector<int64_t> Qwen2::forward(Qwen2Pack &pack, std::vector<int64_t> &block
     const size_t tot_seq_len = token_ids.size();
     const size_t batch_size = tot_len.size();
     const size_t max_block_num = MAX_BLOCK_NUM;
+    // block_ids 末行第 0 列是累计块数前缀和 = 整个批次总块数
+    const size_t tot_block_num = block_ids[(batch_size - 1) * MAX_BLOCK_NUM];
 
     // 加载其他参数
     const size_t nlayer = meta.nlayer;
@@ -431,7 +433,7 @@ std::vector<int64_t> Qwen2::forward(Qwen2Pack &pack, std::vector<int64_t> &block
         ops::kv_cache_move(v_layer, v_view, dev_block_ids, dev_cut_idx, dev_pos_ids, max_seq_len);
 
         // 自注意力: paged_attention(flash v2)
-        ops::paged_attention(attn_val, q_rope, k_layer, v_layer, dev_block_ids, dev_cut_idx, dev_tot_len, max_seq_len, scale, is_prefill,
+        ops::paged_attention(attn_val, q_rope, k_layer, v_layer, dev_block_ids, dev_cut_idx, dev_tot_len, max_seq_len, tot_block_num, scale, is_prefill,
                              ts._attn_acc, ts._attn_sum, ts._attn_max);
 
         // 得到多头注意力输出投影

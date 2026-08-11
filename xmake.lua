@@ -119,6 +119,7 @@ target("llaisys")
         add_linkdirs("/usr/local/cuda/lib64")
         add_syslinks("cublas", "cublasLt")
         add_ldflags("-Wl,-rpath=/usr/local/cuda/lib64")
+        -- 导出全部 extern "C" 符号（实验算子 C wrapper 无 C++ 引用时也保留）
     end
 
     set_languages("cxx17")

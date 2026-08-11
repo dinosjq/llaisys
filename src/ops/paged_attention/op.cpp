@@ -9,7 +9,7 @@
 #include "nvidia/flash_decoding_nvidia.cuh"
 
 namespace llaisys::ops {
-void paged_attention(tensor_t attn_val, tensor_t q, tensor_t k_cache, tensor_t v_cache, tensor_t block_ids, tensor_t cut_idx, tensor_t tot_len, size_t max_seq_len, float scale, bool is_prefill, tensor_t attn_acc, tensor_t attn_sum, tensor_t attn_max)
+void paged_attention(tensor_t attn_val, tensor_t q, tensor_t k_cache, tensor_t v_cache, tensor_t block_ids, tensor_t cut_idx, tensor_t tot_len, size_t max_seq_len, size_t tot_block_num, float scale, bool is_prefill, tensor_t attn_acc, tensor_t attn_sum, tensor_t attn_max)
 {
     // 检查设备一致性
     CHECK_SAME_DEVICE(attn_val, q, k_cache, v_cache, block_ids, cut_idx, tot_len);
@@ -65,8 +65,8 @@ void paged_attention(tensor_t attn_val, tensor_t q, tensor_t k_cache, tensor_t v
         } else {
             ASSERT(attn_acc && attn_sum && attn_max, "paged_attention: flash_decoding requires attn_acc/sum/max buffers.");
             return nvidia::flash_decoding(attn_val->data(), attn_acc->data(), attn_sum->data(), attn_max->data(),  q->data(), k_cache->data(),
-                                        v_cache->data(), block_ids->data(), cut_idx->data(), tot_len->data(), token_num, batch_size, max_block_num, 
-                                        max_seq_len, attn_val->dtype(), scale, nh, dv, d, nkvh);
+                                        v_cache->data(), block_ids->data(), cut_idx->data(), tot_len->data(), token_num, batch_size, max_block_num,
+                                        tot_block_num, max_seq_len, attn_val->dtype(), scale, nh, dv, d, nkvh);
         }
 #endif
     default:

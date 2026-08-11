@@ -45,6 +45,7 @@ def load_ops(lib):
         llaisysTensor_t,  # cut_idx
         llaisysTensor_t,  # tot_len
         c_size_t,         # max_seq_len
+        c_size_t,         # tot_block_num
         c_float,          # scale
         c_bool,           # is_prefill
         llaisysTensor_t,  # attn_acc (flash_decoding ctx buf)

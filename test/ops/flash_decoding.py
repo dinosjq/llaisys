@@ -114,8 +114,9 @@ def test_op_flash_decoding(
     torch_flash_decoding(attn_val, q, k_cache, v_cache, block_ids_values, scale, totlen)
 
     # llaisys flash_decoding (is_prefill=False)
+    tot_block_num = len(block_ids_values)
     llaisys.Ops.paged_attention(attn_val_, q_, k_cache_, v_cache_, block_ids,
-                                 cut_idx_ll, totlen_ll, seqlen, scale, False,
+                                 cut_idx_ll, totlen_ll, seqlen, tot_block_num, scale, False,
                                  attn_acc, attn_sum, attn_max)
     assert check_equal(attn_val_, attn_val, atol=atol, rtol=rtol)
 
@@ -123,7 +124,7 @@ def test_op_flash_decoding(
         benchmark(
             lambda: torch_flash_decoding(attn_val, q, k_cache, v_cache, block_ids_values, scale, totlen),
             lambda: llaisys.Ops.paged_attention(attn_val_, q_, k_cache_, v_cache_, block_ids,
-                                                  cut_idx_ll, totlen_ll, seqlen, scale, False,
+                                                  cut_idx_ll, totlen_ll, seqlen, tot_block_num, scale, False,
                                                   attn_acc, attn_sum, attn_max),
             device_name,
         )
@@ -221,7 +222,7 @@ def test_op_flash_decoding_batched(
 
     # llaisys batched flash_decoding
     llaisys.Ops.paged_attention(attn_val_ll, q_cat_ll, k_cache_, v_cache_, block_ids_ll,
-                                 cut_idx_ll, totlen_ll, max(seqlens), scale, False,
+                                 cut_idx_ll, totlen_ll, max(seqlens), total_blocks, scale, False,
                                  attn_acc, attn_sum, attn_max)
 
     atol = {"f32": 1e-5, "f16": 1e-3, "bf16": 1e-2}[dtype_name]
@@ -235,7 +236,7 @@ def test_op_flash_decoding_batched(
                 q_torch_list[i], k_cache, v_cache, bids, scale, totlen_per_sample[i])
                 for i, bids in enumerate(block_ids_list)],
             lambda: llaisys.Ops.paged_attention(attn_val_ll, q_cat_ll, k_cache_, v_cache_, block_ids_ll,
-                                                  cut_idx_ll, totlen_ll, max(seqlens), scale, False,
+                                                  cut_idx_ll, totlen_ll, max(seqlens), total_blocks, scale, False,
                                                   attn_acc, attn_sum, attn_max),
             device_name,
         )
