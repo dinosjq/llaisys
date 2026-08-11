@@ -11,19 +11,18 @@ BV2 = 2; DEV = torch.device("cuda:0")
 lib = ctypes.CDLL(llaisys.libllaisys.LIB_LLAISYS._name)
 lib.llaisysFlashDecodingV4.argtypes = [c_void_p]*10 + [c_size_t]*4 + [c_size_t, c_int, c_float] + [c_size_t]*4 + [c_int]*3
 
-# Valid configs: batch*totlen<=8192, totlen<=2048, batch*ceil(totlen/64)<=128
-def valid(b,t):
-    return b*t <= 8192 and t <= 2048 and b*((t+63)//64) <= 128
-
+# Valid configs: batch*totlen<=8192, totlen<=2048(except 1x4096), batch*ceil(totlen/64)<=128
 configs = []
 for b in [1,2,4,8,16,32]:
     for t in [256,512,1024,2048]:
-        if valid(b,t): configs.append((b,t))
-# Also add 1x4096 (valid: 1*4096<=8192, 64 blocks<=128)
-for b,t in [(1,4096)]:
-    if valid(b,t): configs.append((b,t))
+        if b*t <= 8192 and b*((t+63)//64) <= 128:
+            configs.append((b,t))
+# 1x4096: 4096>2048 but valid (1*4096<=8192, 64 blocks<=128)
+if 1*4096 <= 8192 and 1*64 <= 128:
+    configs.append((1,4096))
 
-TESTS = [(6,8,1),(2,16,1),(3,16,8)]
+# Same-H/TK controls to isolate COALESCE effect + H=2 small-batch + H=3 best-combo
+TESTS = [(6,8,1),(6,8,2),(6,8,4),(6,8,8),(2,16,1),(3,16,1),(3,16,8)]
 
 script = os.path.join(os.path.dirname(__file__), '_run_sys.py')
 with open(script, 'w') as f:
@@ -110,7 +109,7 @@ for batch, totlen in configs:
         print(f"  {batch:2d} × {totlen:5d}      {tu:8.1f}   {pu:6.1f}  {ru:6.1f}   {tflops:5.2f}   {gbs:6.1f}     H={h} TK={tk} CO={co}      {bn:4d}   {grid:6d}")
 
 # Summary: v3 default vs best
-print(f"\n{'batch×totlen':>14} {'v3(H6T8)(us)':>13} {'best(us)':>10} {'speedup':>8} {'best_cfg':>14}")
+print(f"\n{'batch×totlen':>14} {'v3(H6T8)(us)':>13} {'best(us)':>10} {'speedup':>8} {'best_cfg':>18}")
 for batch, totlen in configs:
     v3k = (batch,totlen,6,8,1); bk = None; bv = 1e9
     for h,tk,co in TESTS:
@@ -119,3 +118,20 @@ for batch, totlen in configs:
     if v3k in results and bk:
         v3t = results[v3k][2]; h,tk,co = bk
         print(f"  {batch:2d} × {totlen:5d}      {v3t:8.1f}     {bv:8.1f}    {v3t/bv:.2f}x     H={h} TK={tk} CO={co}")
+
+# Key: COALESCE effect isolated (H=6,TK=8 fixed)
+print(f"\n{'─'*80}")
+print(f"COALESCE isolated (H=6,TK=8):")
+print(f"{'batch×totlen':>14} {'CO=1':>8} {'CO=2':>8} {'CO=4':>8} {'CO=8':>8}  best")
+for batch, totlen in configs:
+    print(f"  {batch:2d} × {totlen:5d}", end="")
+    best = 1e9; best_co = 0
+    for co in [1,2,4,8]:
+        k = (batch,totlen,6,8,co)
+        if k in results:
+            t = results[k][2]
+            print(f" {t:7.1f}", end="")
+            if t < best: best = t; best_co = co
+        else:
+            print(f" {'N/A':>7}", end="")
+    print(f"  CO={best_co}")
