@@ -151,7 +151,6 @@ __global__ void flash_decoding_v5_kernel(
                 float4 k_vec, v_vec;
                 llaisys::utils::nvidia::copy_4d(kt_row + lane_id * ELEMS_PER_LANE, &k_vec.x);
                 llaisys::utils::nvidia::copy_4d(vt_row + lane_id * ELEMS_PER_LANE, &v_vec.x);
-#pragma unroll
                 for (size_t h = 0; h < HEADS; ++h) {
                     const float *qh = s_q + h * HD;
                     float4 q_vec = *reinterpret_cast<const float4 *>(qh + lane_id * ELEMS_PER_LANE);
@@ -173,8 +172,7 @@ __global__ void flash_decoding_v5_kernel(
         __syncthreads();
     }
 
-    // ── 8-warp 归约 (float4) ───────────────────────────────────
-#pragma unroll
+    // ── 8-warp 归约 (float4, 不展开以省寄存器) ─────────────────
     for (size_t h = 0; h < HEADS; ++h) {
         float *aw = s_acc + (h * NW + warp_id) * HD;
         *reinterpret_cast<float4 *>(aw + lane_id * ELEMS_PER_LANE) = reg_acc[h];
@@ -184,7 +182,6 @@ __global__ void flash_decoding_v5_kernel(
     __syncthreads();
 
     if (warp_id == 0) {
-#pragma unroll
         for (size_t h = 0; h < HEADS; ++h)
             for (size_t wi = 2; wi <= 4; ++wi) {
                 float sc = s_sum[h * NW + wi], mc = s_max[h * NW + wi];
@@ -198,7 +195,6 @@ __global__ void flash_decoding_v5_kernel(
                 reg_acc[h].w = reg_acc[h].w * a + aw.w * b2;
             }
     } else if (warp_id == 1) {
-#pragma unroll
         for (size_t h = 0; h < HEADS; ++h)
             for (size_t wi = 5; wi <= 7; ++wi) {
                 float sc = s_sum[h * NW + wi], mc = s_max[h * NW + wi];
@@ -211,7 +207,6 @@ __global__ void flash_decoding_v5_kernel(
                 reg_acc[h].z = reg_acc[h].z * a + aw.z * b2;
                 reg_acc[h].w = reg_acc[h].w * a + aw.w * b2;
             }
-#pragma unroll
         for (size_t h = 0; h < HEADS; ++h) {
             float *aw = s_acc + (h * NW + 1) * HD;
             *reinterpret_cast<float4 *>(aw + lane_id * ELEMS_PER_LANE) = reg_acc[h];
@@ -222,7 +217,6 @@ __global__ void flash_decoding_v5_kernel(
     __syncthreads();
 
     if (warp_id == 0) {
-#pragma unroll
         for (size_t h = 0; h < HEADS; ++h) {
             float sc = s_sum[h * NW + 1], mc = s_max[h * NW + 1];
             float mn = fmaxf(reg_max[h], mc);
@@ -242,7 +236,6 @@ __global__ void flash_decoding_v5_kernel(
             pc = cc;
         }
         int64_t write_base = static_cast<int64_t>(task_prefix + task_rem);
-#pragma unroll
         for (size_t h = 0; h < HEADS; ++h) {
             const size_t hd = head_base + h;
             int64_t off = (write_base * _nh + static_cast<int64_t>(hd));

@@ -7,7 +7,7 @@ import llaisys
 lib = ctypes.CDLL(llaisys.libllaisys.LIB_LLAISYS._name)
 lib.llaisysFlashDecodingV4.argtypes = [c_void_p]*10 + [c_size_t]*4 + [c_size_t, c_int, c_float] + [c_size_t]*4 + [c_int]*3
 NH,NKVH,HD,TN=12,2,128,64; DEV=torch.device('cuda:0'); BV2=2
-configs = [(1, 256), (1, 512), (1, 1024), (1, 2048), (2, 256), (2, 512), (2, 1024), (2, 2048), (4, 256), (4, 512), (4, 1024), (4, 2048), (8, 256), (8, 512), (8, 1024), (16, 256), (16, 512), (32, 256)]; tests = [(6, 8, 1), (2, 16, 1), (3, 16, 8)]
+configs = [(1, 256), (1, 512), (1, 1024), (1, 2048), (2, 256), (2, 512), (2, 1024), (2, 2048), (4, 256), (4, 512), (4, 1024), (4, 2048), (8, 256), (8, 512), (8, 1024), (16, 256), (16, 512), (32, 256), (1, 4096)]; tests = [(6, 8, 1), (6, 8, 2), (6, 8, 4), (6, 8, 8), (2, 16, 1), (3, 16, 1), (3, 16, 8)]
 for (batch, totlen) in configs:
     bn=totlen//TN; mb=bn+1; tb=batch*bn
     tbids=torch.zeros((batch,mb),dtype=torch.int64,device=DEV)
