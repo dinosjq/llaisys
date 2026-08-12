@@ -86,6 +86,32 @@ v6 H6T16C1S2U1 是当前最优。若接入主接口:
 
 ## 测试脚本
 
+## v6 最优 vs FlashInfer
+
+FlashInfer v0.6.16 数据来自 `2026-08-08-flash-decoding-tflop.md`（同卡同模型:
+RTX 4060, NH=12/NKVH=2/HD=128）。v6 为 H6T16C1S2U1 (小 batch H1/H2T16C1S2U1), par+reduce 总时间。
+
+```
+b×totlen    v6最优    FlashInfer   v6/FI
+─────────────────────────────────────────
+1×  256      11.5       48.3       4.20x  (v6 快)
+1× 1024      14.8       48.8       3.30x
+1× 2048      18.1       53.9       2.98x
+4×  512      17.6       53.6       3.05x
+4× 2048      56.1       68.1       1.21x
+8× 1024      58.5       68.4       1.17x
+16× 512      61.5       72.8       1.18x
+```
+
+**v6 在所有 config 快于 FlashInfer**: 小 batch 快 3-4.2×, 大 batch 快 17-21%。
+FlashInfer 的框架固定开销 (workspace, indptr/indices) 在小 batch 时占比大,
+v6 无此开销。大 batch 时 v6 的 4-warp + TK16 + 2-stage pipeline 优势显现。
+
+> 注: FlashInfer v0.6.16 不支持 NH=12 的 group_size=6 本环境复测,
+> 引用的历史数据为同卡同模型的已验证测量。
+
+## 测试脚本
+
 - `test/profile/_scan_v6_opt.py` — v6 96 组合全扫描 (4 shard)
 - `test/profile/_bench_v6_best.py` — v6 最优 vs v3 对比
 - `test/profile/_verify_v6best.py` — v6 最优配置正确性验证
