@@ -234,3 +234,11 @@ v6 block-per-KV-block + reduce, grid 够大但 occupancy 受限。
 - v3/v4/v5/v6: `test/profile/_bench_evolution.py` 统一 nsys 实测
   (同方法同 config 集, 各版本最优参数: v3=H6T8, v4=H6T8C1, v5=H6T8C1, v6=H6T16C1S2U1)
 - FlashInfer: patch group_size=6 后同环境 nsys 实测
+
+## v6 reduce kernel 占比 (H6T16C1S2U1 统一实测)
+
+
+
+**结论**: reduce kernel 占比小 batch 高 (20%), 大 batch 低 (8-11%)。
+v6 与 FlashInfer 的 2.2x 差距主要不是 reduce 开销, 而是 parallel kernel 的
+occupancy (159 regs → 25%) 导致有效带宽低。去掉 reduce 最多省 ~10%。
