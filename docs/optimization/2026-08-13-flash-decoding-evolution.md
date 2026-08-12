@@ -5,41 +5,47 @@
 模型: DeepSeek-R1-Distill-Qwen-1.5B, NH=12/NKVH=2/HD=128
 系统约束: TN=64, BATCH_MAX_TOKEN_NUM=8192, MAX_TOKEN_NUM=2048
 
-## 演进总览
+## 演进总览 (16×2048)
 
 | 版本 | 核心优化 | 16×2048 (us) | vs FlashInfer | 状态 |
 |------|---------|-------------|---------------|------|
-| paged_attention | 原始 block-based decode | ~800+ | — | 被 flash_decoding 取代 |
-| flash_decoding 初版 | parallel + reduce 两 kernel | ~600 | 5.4× | 初版 |
-| v1 | 原始 parallel+reduce (nkvh 派发) | ~600 | 5.4× | 基线 |
-| v2 | GQA HEADS 共享 + TILE_K 双缓冲 + 自动选参 | 337 | 2.7× | 架构确立 |
+| paged_attention | FA2 风格, query 方向并行 | ~800+ | — | decode 并行度浪费 |
+| flash_decoding 初版 | 并行度转 KV 方向 | ~600 | 5.4× | 初版 |
+| v1 | parallel+reduce, 按 nh 派发 | ~600 | 5.4× | 基线 |
+| v2 | GQA HEADS 共享 + TILE_K + 自动选参 | 327 | 2.7× | 架构确立 |
 | v3 | cp.async 全体参与流水线 | 296 | 2.4× | 主接口 |
-| v4 | COALESCE 虚拟变长 KV block | ~304 | — | 实验无效 |
-| v5 | float4 向量化 + 连续寄存器 | ~324 | — | 小 batch 有效 |
-| v6 | 4-warp + 2-stage + TK16 全参数最优 | ~110* | 1.0× | **自研最优** |
+| v4 | COALESCE 虚拟变长 KV block | 无效 | — | 实验 |
+| v5 | float4 向量化 + 连续寄存器 | 大 batch 退化 | — | 实验 |
+| v6 | 4-warp + 2-stage + TK16 全参数最优 | 快 v3 30% | — | **自研最优** |
 
-\* v6 16×2048 为 H6T16C1S2U1, 从 16×512=61.5us 和 4×2048=56.1us 推算的近似值。
+注: 16×2048 的 v1-v3 来自 v3 优化文档; v6 在 16×512/4×2048 等 config 全面优于 v3。
+v2 数据 (327us) 为文档值 (cudaEvent 测量), v3 296us 为 nsys。
 
 ## 第一阶段: paged_attention → flash_decoding
 
-### 起点: paged_attention
+### 起点: paged_attention (FA2 风格, 服务 prefill + decode)
 
-原始 `paged_attention` kernel 同时服务 prefill 和 decode。decode 阶段每个 block
-按 nkvh 派发, 每 block 处理一个 KV block 的 6 个 query head, producer/consumer
-warp 分离 (warp 6/7 加载 K/V, warp 0-5 计算), 每 token 一次 `__syncthreads()`。
+`paged_attention_kernel` 以 flash-attention-v2 为基础:
+- **grid = (query_blocks, nh, batch)**: blockIdx.z=batch, blockIdx.y=head,
+  blockIdx.x=query 分块。每 block 处理 **BLOCK_M=8 个 query × 1 个 head**
+- 256 threads = 8 warps: **4 consumer (计算) + 4 producer (加载 KV) 分离**
+- KV_TILE=4 双缓冲, 每 KV_TILE 个 token 一次 `__syncthreads()`
+- online softmax (running max/sum), float4 向量化
+- 服务 prefill 和 decode 两阶段 (is_prefill 分支)
 
-**瓶颈**:
-1. 每 token 同步一次 (同步频率过高)
-2. producer/consumer 分离 → barrier 不均衡
-3. 同步 LDG (copy_4d) 无法隐藏访存延迟
-4. 独立 reduce kernel (额外 launch + workspace)
+**decode 瓶颈**: decode 每 seq 只有 1 个 query token, 而 paged_attention 按
+query 方向并行 (BLOCK_M=8)。decode 时 8 个 query 槽只有 1 个有效 → **query 方向
+并行度大量浪费**, KV 方向只串行遍历。
 
-### flash_decoding 初版
+### flash_decoding 初版 (decode 专用, 并行度转 KV 方向)
 
 为 decode 单独设计 parallel + reduce 两 kernel:
-- **parallel**: grid=(tot_block, nkvh, batch), 每 block 算一个 KV block 的 partial
-  (attn_acc/sum/max), 写全局 workspace
-- **reduce**: 每 block 合并一个 seq×head 的所有 partial, 写最终 attn_val
+- **parallel**: grid=(tot_block, nkvh, batch), **每 KV block 一个 block** (并行度
+  从 query 方向转到 KV 方向)。每 block 服务 rep=nh/nkvh=6 个 query head
+  (共享同一 kv_head), 算该 KV block 的 attention partial (attn_acc/sum/max),
+  写全局 workspace。256 threads, warp 6/7 producer 加载 K/V, warp 0-5 consumer
+  算 6 个 head, 每 token 一次 `__syncthreads()`。
+- **reduce**: 每 block 合并一个 seq×head 的所有 KV block partial, 写最终 attn_val
 
 初版 16×2048 ≈ 600us, 比 FlashInfer 慢 5.4×。
 
@@ -82,6 +88,31 @@ producer 发 cp.async 后等真实 load, consumer 空等立即返回 → sync �
 
 **性能**: 16×2048 337→296us, vs FlashInfer 2.7×→2.4×。
 
+## 各版本统一实测数据 (v3-v6 同 nsys 方法, 各版本最优参数)
+
+v1/v2 数据来自原优化文档 (cudaEvent 测量, 与 nsys 略有差异但趋势一致):
+
+```
+b×totlen    v1      v2     v3(us)  v4(us)  v5(us)  v6(us)  v6/v3
+───────────────────────────────────────────────────────────────────
+1×  256      —      29.7    11.8    13.2    11.6    11.5   0.97x
+1× 1024      —      36.1    16.6    17.6    21.1    14.8   0.89x
+1× 2048      —      48.2    25.7    28.2    31.1    18.1   0.70x
+1× 4096      —       —      45.1    48.1    59.2    32.6   0.72x
+4×  512      —       —      24.8    28.4    31.1    17.5   0.70x
+4× 2048      —      97.9    76.3    83.3   105.2    56.7   0.74x
+8× 1024      —     100.7    77.4    85.6   108.5    58.6   0.76x
+16×  512     —       —      80.6    90.3   114.2    62.1   0.77x
+32×  256     —     110.3    87.3    98.7   125.9    67.1   0.77x
+16× 2048     ~600   327.2   296.5     —       —       —    —
+```
+
+注:
+- v1/v2 来自 `2026-08-10-flash-decoding-v3-cpasync.md` (v2 是 v3 文档的基线)
+- v3/v4/v5/v6 为本次统一 nsys 实测 (各版本最优参数):
+  v3=H6T8, v4=H6T8C1, v5=H6T8C1, v6=H6T16C1S2U1
+- v5 大 batch 退化 (105 vs v3 76) 因 float4 寄存器压力 → occupancy 减半
+
 ## 第四阶段: v4 (COALESCE 虚拟变长)
 
 **优化点**: 不改变 KV cache 布局 (TN=64), 每 grid block 处理 COALESCE 个连续
@@ -102,16 +133,21 @@ block_ids 条目 (虚拟大 block)。flatten tile 迭代 + block 指针预计算
 2. Q load / smem→reg 用 **copy_4d** 128-bit 向量化 (bf16→float4)
 3. 点积 4 元素一次, 减少 LSU 指令
 
-**性能** (v5 vs v3, H2T16):
+**性能** (v5 H6T8C1 统一实测 vs v3):
 
-| config | v3 | v5 | 提升 |
-|--------|-----|-----|------|
-| 1×256 | 7.3 | 6.5 | **+11%** |
-| 4×2048 | 105.5 | 85.1 | **+24%** |
-| 32×256 | 130.3 | 113.7 | **+15%** |
+| config | v3(us) | v5(us) | v5/v3 |
+|--------|--------|--------|-------|
+| 1×256 | 11.8 | 11.6 | 0.98x (略快) |
+| 1×2048 | 25.7 | 31.1 | 1.21x 慢 |
+| 4×2048 | 76.3 | 105.2 | **1.38x 慢** |
+| 8×1024 | 77.4 | 108.5 | **1.40x 慢** |
+| 32×256 | 87.3 | 125.9 | **1.44x 慢** |
 
-**但 H6 时退化**: float4 acc[6] 使寄存器 >192, occupancy 减半 (16% vs 31%)。
-向量化收益 < occupancy 损失。仅小 batch (H2) 有效。
+**H6 时大 batch 严重退化** (慢 v3 21-44%)。float4 acc[6] 使寄存器 >192,
+occupancy 减半 (16% vs 31%), 向量化收益 < occupancy 损失。
+
+v5 早期测试在小 batch H2T16 场景有 +11-24% 收益 (低 HEADS 寄存器充裕),
+但 H6 大 batch 是主场景, v5 不接入。
 
 ## 第六阶段: v6 (最终最优)
 
