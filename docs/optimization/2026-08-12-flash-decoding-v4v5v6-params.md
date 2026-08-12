@@ -155,3 +155,17 @@ v6 大 block × 低 occupancy (靠 block 内 ILP + 深 pipeline)。对带宽受�
 - `test/profile/_scan_v6_opt.py` — v6 96 组合全扫描 (4 shard)
 - `test/profile/_bench_v6_best.py` — v6 最优 vs v3 对比
 - `test/profile/_verify_v6best.py` — v6 最优配置正确性验证
+
+## unroll 全去实验 (用户提问)
+
+去掉 v6 全部 5 处  后 (含 compute HEADS 循环), benchmark:
+
+
+
+**结论: 全去 unroll 严重变差 2.6-3.6x。**
+
+- warp_reduce/初始化/block 指针的 unroll 影响小 (UR1 ≈ 原版)
+- **compute HEADS 循环必须 unroll**: 不 unroll 时每 token 6 个 head 串行计算,
+  损失 ILP, 无法复用 k_vec/v_vec, 循环地址开销大
+
+unroll 的寄存器代价是必要的 (ILP > occupancy 收益), 应保留 compute unroll。
