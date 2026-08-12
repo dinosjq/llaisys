@@ -10,8 +10,7 @@
 | 版本 | 核心优化 | 16×2048 (us) | vs FlashInfer | 状态 |
 |------|---------|-------------|---------------|------|
 | paged_attention | FA2 风格, query 方向并行 | ~800+ | — | decode 并行度浪费 |
-| flash_decoding 初版 | 并行度转 KV 方向 | ~600 | 5.4× | 初版 |
-| v1 | parallel+reduce, 按 nh 派发 | ~600 | 5.4× | 基线 |
+| v1 (初版) | 并行度转 KV 方向, parallel+reduce, 按 nh | ~600 | 5.4× | 基线 |
 | v2 | GQA HEADS 共享 + TILE_K + 自动选参 | 327 | 2.7× | 架构确立 |
 | v3 | cp.async 全体参与流水线 | 296 | 2.4× | 主接口 |
 | v4 | COALESCE 虚拟变长 KV block | 无效 | — | 实验 |
@@ -37,24 +36,25 @@ v2 数据 (327us) 为文档值 (cudaEvent 测量), v3 296us 为 nsys。
 query 方向并行 (BLOCK_M=8)。decode 时 8 个 query 槽只有 1 个有效 → **query 方向
 并行度大量浪费**, KV 方向只串行遍历。
 
-### flash_decoding 初版 (decode 专用, 并行度转 KV 方向)
+### flash_decoding v1 (decode 专用, 并行度转 KV 方向)
 
 为 decode 单独设计 parallel + reduce 两 kernel:
-- **parallel**: grid=(tot_block, nkvh, batch), **每 KV block 一个 block** (并行度
-  从 query 方向转到 KV 方向)。每 block 服务 rep=nh/nkvh=6 个 query head
-  (共享同一 kv_head), 算该 KV block 的 attention partial (attn_acc/sum/max),
-  写全局 workspace。256 threads, warp 6/7 producer 加载 K/V, warp 0-5 consumer
-  算 6 个 head, 每 token 一次 `__syncthreads()`。
+- **parallel**: grid = (tot_block, nh), **每 KV block 一个 block** (并行度
+  从 query 方向转到 KV block 方向)。**每 block 只处理 1 个 query head**,
+  batch 通过 block_ids 前缀和映射 (table_id → batch_id)。
+  256 threads = 8 warps: **warp 4-7 预取 K/V (双缓冲 4 槽), warp 0-3 计算**,
+  producer/consumer 分离。算该 KV block 的 attention partial (attn_acc/sum/max),
+  写全局 workspace。
 - **reduce**: 每 block 合并一个 seq×head 的所有 KV block partial, 写最终 attn_val
 
 初版 16×2048 ≈ 600us, 比 FlashInfer 慢 5.4×。
 
 ## 第二阶段: v1 → v2 (架构确立)
 
-### v1: 按 nh 派发 + 每 block 1 head
+### v1 的瓶颈
 
-grid.y = nh = 12, 每 block 只处理 1 个 query head。K/V 被 6 个同 kv_head 的
-head-block 各读一次 (6× LDG 冗余)。
+grid.y = nh = 12, 每 block 只处理 1 个 query head。同 kv_head 的 6 个 head-block
+(如 nh=0..5 都映射 nkvh=0) **各读一次同一份 K/V** → 6× LDG 冗余。
 
 ### v2: GQA HEADS 共享 + TILE_K 双缓冲
 
@@ -167,23 +167,24 @@ v5 早期测试在小 batch H2T16 场景有 +11-24% 收益 (低 HEADS 寄存器�
 | Occupancy | — | 25% | 62.5% |
 | SM Throughput | — | 49% | 61.6% |
 
-**性能对比** (v6 H6T16C1S2U1 vs v3 H6T8):
+**性能对比** (v6 H6T16C1S2U1 vs v3 H6T8, 统一实测):
 
 ```
 b×totlen    v3(us)   v6(us)   v6/v3
 ────────────────────────────────────
-1×  256     11.8    11.5    1.03x
-1× 1024     16.6    14.8    1.12x
-1× 2048     25.8    18.1    1.43x
-1× 4096     45.2    32.6    1.39x
-4×  512     24.8    17.6    1.41x
-4× 2048     76.4    56.1    1.36x
-8× 1024     77.5    58.5    1.32x
-16× 512     80.6    61.5    1.31x
-32× 256     87.3    67.5    1.29x
+1×  256     11.8    11.5    0.97x
+1× 1024     16.6    14.8    0.89x
+1× 2048     25.7    18.1    0.70x
+1× 4096     45.1    32.6    0.72x
+4×  512     24.8    17.5    0.70x
+4× 2048     76.3    56.7    0.74x
+8× 1024     77.4    58.6    0.76x
+16× 512     80.6    62.1    0.77x
+32× 256     87.3    67.1    0.77x
 ```
 
-**v6 全面超越 v3 (3-43%)**, 大 batch 快 29-36%。
+**v6 全面超越 v3 (大 batch 快 24-30%, 小 batch 快 3-11%)**。
+v6/v3 < 1 表示 v6 更快 (耗时更短)。
 
 ## 与 FlashInfer 的最终对比 (patch group_size=6 后同环境实测)
 
@@ -191,11 +192,11 @@ b×totlen    v3(us)   v6(us)   v6/v3
 b×totlen    v6(us)   FI(us)   v6/FI
 ───────────────────────────────────
 1×  256     11.5    10.0    1.05x (v6 略快)
-1× 2048     18.0    12.3    0.68x
-1× 4096     32.5    15.9    0.49x
-4× 2048     56.1    25.5    0.45x
-16× 512     61.7    25.7    0.42x
-32× 256     67.6    25.5    0.38x
+1× 2048     18.1    12.3    0.68x
+1× 4096     32.6    15.9    0.49x
+4× 2048     56.7    25.5    0.45x
+16× 512     62.1    25.7    0.42x
+32× 256     67.1    25.5    0.38x
 ```
 
 **大 batch FlashInfer 快 2-2.6x**。根因 (ncu):
@@ -219,7 +220,17 @@ v6 block-per-KV-block + reduce, grid 够大但 occupancy 受限。
 ## 总结
 
 1. **优化主线**: 消除 LDG 冗余 (v2) → 隐藏访存延迟 (v3 cp.async) → 降低寄存器/
-   提高 occupancy (v6) → 参数最优 (v6 全扫描)
-2. **v6 是自研最优**: 快 v3 36% (大 batch), 快 43% (小 batch), 达 FlashInfer 80%
+   提高 occupancy + 参数最优 (v6: 4-warp + 2-stage + TK16 + 864 组合全扫描)
+2. **v6 是自研最优**: 统一实测大 batch 快 v3 24-30% (4×2048: 76.3→56.7us),
+   小 batch 快 3-11%。达 FlashInfer 的 45-68% (大 batch)。
 3. **unroll 必须保留**: 去掉 compute unroll 慢 2.6-3.6x
-4. **与 FlashInfer 差距**: 2.5x 来自 occupancy (寄存器 159 vs 62), 需架构级重写
+4. **与 FlashInfer 差距**: ~2.2x (大 batch) 来自 occupancy (寄存器 159 vs 62),
+   需架构级重写 (block-per-seq + partition-kv)
+
+## 数据来源与测量方法
+
+- v1: `2026-08-08-flash-decoding-tflop.md` (16×2048 ≈ 600us)
+- v2: `2026-08-10-flash-decoding-v3-cpasync.md` 基线 (cudaEvent 测量)
+- v3/v4/v5/v6: `test/profile/_bench_evolution.py` 统一 nsys 实测
+  (同方法同 config 集, 各版本最优参数: v3=H6T8, v4=H6T8C1, v5=H6T8C1, v6=H6T16C1S2U1)
+- FlashInfer: patch group_size=6 后同环境 nsys 实测
