@@ -71,20 +71,63 @@ __global__ void flash_decoding_v8_kernel(
     for (size_t i = 0; i < ELEMS_PER_THREAD_V8; ++i)
         acc[i] = 0.0f;
 
-    // 遍历该 seq 的所有 KV block × token
-    size_t global_tok = 0;  // seq 内绝对 token 位置
-    for (size_t bi = 0; bi < bn; ++bi) {
+    // ── cp.async 双缓冲 pipeline ─────────────────────────────────
+    // s_k/s_v 存 tile (NUM_STAGES 双缓冲), 隐藏全局 KV 延迟
+    constexpr size_t NUM_STAGES = 2;
+    constexpr size_t TILE_K = 8;
+    constexpr size_t ELEMS_PER_BLK = 16 / sizeof(T);
+    constexpr size_t BLOCKS_PER_ROW = HD / ELEMS_PER_BLK;
+    extern __shared__ __align__(16) char _smem[];
+    T *s_k = reinterpret_cast<T *>(_smem);
+    T *s_v = s_k + NUM_STAGES * TILE_K * HD;
+    const size_t BLOCK_DIM = 16 * REP;
+
+    const size_t tiles_per_block = (_token_num + TILE_K - 1) / TILE_K;
+    const size_t total_tiles = bn * tiles_per_block;
+
+    // 预取 tile g 到 stage (g 全局 tile 索引)
+    auto cp_tile = [&](size_t stage, size_t g) {
+        size_t bi = g / tiles_per_block;   // KV block 索引
+        size_t ti = g % tiles_per_block;   // block 内 tile
+        if (bi >= bn) return;
         const int64_t block_id = bids[bi + 1];
         const T *k_base = _k_cache + (static_cast<size_t>(block_id) * _token_num * _nkvh + kv_head) * HD;
         const T *v_base = _v_cache + (static_cast<size_t>(block_id) * _token_num * _nkvh + kv_head) * HD;
-        for (size_t tok = 0; tok < _token_num; ++tok, ++global_tok) {
-            if (global_tok > limit) break;
-            const T *kp = k_base + tok * _nkvh * HD + xseg * ELEMS_PER_THREAD_V8;
-            const T *vp = v_base + tok * _nkvh * HD + xseg * ELEMS_PER_THREAD_V8;
+        for (size_t idx = tid; idx < TILE_K * BLOCKS_PER_ROW; idx += BLOCK_DIM) {
+            size_t t = idx / BLOCKS_PER_ROW, b = idx % BLOCKS_PER_ROW;
+            size_t inner = ti * TILE_K + t;
+            if (inner < _token_num) {
+                size_t off = b * ELEMS_PER_BLK;
+                __pipeline_memcpy_async(s_k + (stage * TILE_K + t) * HD + off,
+                                        k_base + inner * _nkvh * HD + off, 16);
+                __pipeline_memcpy_async(s_v + (stage * TILE_K + t) * HD + off,
+                                        v_base + inner * _nkvh * HD + off, 16);
+            }
+        }
+    };
+
+    // 预取 tile 0
+    cp_tile(0, 0);
+    __pipeline_commit();
+
+    size_t global_tok = 0;  // seq 内绝对 token 位置 (跨 block 累计)
+    for (size_t g = 0; g < total_tiles; ++g) {
+        // 预取 tile g+1
+        if (g + 1 < total_tiles)
+            cp_tile((g + 1) % NUM_STAGES, g + 1);
+        __pipeline_commit();
+        __pipeline_wait_prior((g + 1 < total_tiles) ? 1 : 0);
+        __syncthreads();
+
+        const size_t so = (g % NUM_STAGES) * TILE_K;
+        for (size_t t = 0; t < TILE_K; ++t, ++global_tok) {
+            if (global_tok > limit) continue;
+            const T *kt = s_k + (so + t) * HD + xseg * ELEMS_PER_THREAD_V8;
+            const T *vt = s_v + (so + t) * HD + xseg * ELEMS_PER_THREAD_V8;
             float dot = 0.0f;
 #pragma unroll
             for (size_t i = 0; i < ELEMS_PER_THREAD_V8; ++i)
-                dot += q_reg[i] * llaisys::utils::nvidia::cast<float>(kp[i]);
+                dot += q_reg[i] * llaisys::utils::nvidia::cast<float>(kt[i]);
             dot = subwarp_reduce_16(dot) * _scale;
             float mn = fmaxf(reg_max, dot);
             float a  = __expf(reg_max - mn);
@@ -93,8 +136,9 @@ __global__ void flash_decoding_v8_kernel(
             reg_sum = a * reg_sum + b2;
 #pragma unroll
             for (size_t i = 0; i < ELEMS_PER_THREAD_V8; ++i)
-                acc[i] = a * acc[i] + b2 * llaisys::utils::nvidia::cast<float>(vp[i]);
+                acc[i] = a * acc[i] + b2 * llaisys::utils::nvidia::cast<float>(vt[i]);
         }
+        __syncthreads();  // stage g 读完, 下一轮才覆盖
     }
 
     // ── 写最终结果 ──────────────────────────────────────────────
@@ -123,8 +167,17 @@ void launch_v8(std::byte *attn_val,
     dim3 grid0(batch_size, nkvh);
     dim3 blockDim(16, REP);
 
+    constexpr size_t NUM_STAGES = 2;
+    constexpr size_t TILE_K = 8;
+    const size_t smem = NUM_STAGES * TILE_K * HD * sizeof(T) * 2;  // s_k + s_v
+
     auto *kernel = flash_decoding_v8_kernel<T, HD, REP>;
-    kernel<<<grid0, blockDim>>>(d_attn, dq, dk, dv, db, dt, token_num, max_block_num, scale, nkvh);
+    static bool attr_set = false;
+    if (!attr_set) {
+        cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smem);
+        attr_set = true;
+    }
+    kernel<<<grid0, blockDim, smem>>>(d_attn, dq, dk, dv, db, dt, token_num, max_block_num, scale, nkvh);
     CUDA_CHECK(cudaGetLastError());
 }
 
