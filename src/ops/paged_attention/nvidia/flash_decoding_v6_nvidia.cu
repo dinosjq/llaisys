@@ -24,7 +24,8 @@ static constexpr size_t ELEMS_PER_LANE = 4;    // HD=128 / 32 lanes
 // v5 的 ncu 分析显示 Block Limit Registers=1 (occupancy 16%)。
 // 将 block 从 256→128 threads，每 SM 可驻留更多 block，提高 occupancy。
 // 每个 warp 处理 TILE_K/4 token（stride NW=4），Q load 用 for(h=warp_id; h<HEADS; h+=NW)。
-template <typename T, size_t HD, size_t HEADS, size_t TILE_K, size_t COALESCE>
+template <typename T, size_t HD, size_t HEADS, size_t TILE_K, size_t COALESCE,
+          size_t NUM_STAGES = 2, bool UNROLL = false>
 __global__ void flash_decoding_v6_kernel(
     float *__restrict__ _attn_acc, float *__restrict__ _attn_sum, float *__restrict__ _attn_max,
     const T *__restrict__ _q, const T *__restrict__ _k_cache, const T *__restrict__ _v_cache,
@@ -36,7 +37,6 @@ __global__ void flash_decoding_v6_kernel(
     const size_t head_base = HEADS * blockIdx.y;
     const size_t kv_head = head_base / rep;
 
-    constexpr size_t NUM_STAGES = 2;   // 2-stage 双缓冲省 smem, 目标 4 blocks/SM
     extern __shared__ __align__(16) char _smem[];
     T     *s_k   = reinterpret_cast<T *>(_smem);
     T     *s_v   = s_k + NUM_STAGES * TILE_K * HD;
@@ -152,7 +152,8 @@ __global__ void flash_decoding_v6_kernel(
                 float4 k_vec, v_vec;
                 llaisys::utils::nvidia::copy_4d(kt_row + lane_id * ELEMS_PER_LANE, &k_vec.x);
                 llaisys::utils::nvidia::copy_4d(vt_row + lane_id * ELEMS_PER_LANE, &v_vec.x);
-                for (size_t h = 0; h < HEADS; ++h) {   // 不 unroll: 降寄存器
+#pragma unroll (UNROLL ? HEADS : 1)
+                for (size_t h = 0; h < HEADS; ++h) {
                     const T *qh = s_q + h * HD;
                     float4 q_vec;
                     llaisys::utils::nvidia::copy_4d(qh + lane_id * ELEMS_PER_LANE, &q_vec.x);
@@ -303,7 +304,8 @@ __global__ void flash_decoding_v6_reduce(
 }
 
 // ── Host launch ────────────────────────────────────────────────────
-template <typename T, size_t HD, size_t HEADS, size_t TILE_K, size_t COALESCE>
+template <typename T, size_t HD, size_t HEADS, size_t TILE_K, size_t COALESCE,
+          size_t NUM_STAGES = 2, bool UNROLL = false>
 void launch_v6_kernel(std::byte *attn_val, std::byte *attn_acc, std::byte *attn_sum, std::byte *attn_max,
                       const std::byte *q, const std::byte *k_cache, const std::byte *v_cache,
                       const std::byte *block_ids, const std::byte *cut_idx, const std::byte *tot_len,
@@ -327,13 +329,12 @@ void launch_v6_kernel(std::byte *attn_val, std::byte *attn_acc, std::byte *attn_
     dim3 blockDim(BLOCK_DIM_V6);        // 128 threads (4 warps) — parallel
     dim3 blockDimRed(256);              // 256 threads (8 warps) — reduce 需要 8 warp 归约
 
-    constexpr size_t NUM_STAGES = 2;   // 与 kernel 一致
     const size_t smem = NUM_STAGES * TILE_K * HD * sizeof(T) * 2      // s_k + s_v (T)
         + HEADS * HD * sizeof(T)                        // s_q (T, 省一半)
         + HEADS * NW * HD * sizeof(float)               // s_acc (float, 累加需要)
         + 2 * HEADS * NW * sizeof(float);               // s_sum + s_max
 
-    auto *kernel = flash_decoding_v6_kernel<T, HD, HEADS, TILE_K, COALESCE>;
+    auto *kernel = flash_decoding_v6_kernel<T, HD, HEADS, TILE_K, COALESCE, NUM_STAGES, UNROLL>;
     static bool attr_set = false;
     if (!attr_set) {
         cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smem);
@@ -346,6 +347,30 @@ void launch_v6_kernel(std::byte *attn_val, std::byte *attn_acc, std::byte *attn_
     CUDA_CHECK(cudaGetLastError());
 }
 
+// ── NUM_STAGES/UNROLL 运行时分发 helper ─────────────────────────
+template <typename T, size_t HD, size_t H, size_t TK, size_t CO>
+static void launch_v6_dispatch(
+    std::byte *attn_val, std::byte *attn_acc, std::byte *attn_sum, std::byte *attn_max,
+    const std::byte *q, const std::byte *k_cache, const std::byte *v_cache,
+    const std::byte *block_ids, const std::byte *cut_idx, const std::byte *tot_len,
+    size_t token_num, size_t batch_size, size_t max_block_num,
+    size_t tot_block_num, size_t tot_task_num,
+    float scale, size_t nh, size_t nkvh, int ns, int ur)
+{
+    if (ns == 2 && !ur) launch_v6_kernel<T, HD, H, TK, CO, 2, false>(attn_val, attn_acc, attn_sum, attn_max,
+        q, k_cache, v_cache, block_ids, cut_idx, tot_len, token_num, batch_size, max_block_num,
+        tot_block_num, tot_task_num, scale, nh, nkvh);
+    else if (ns == 2 && ur) launch_v6_kernel<T, HD, H, TK, CO, 2, true>(attn_val, attn_acc, attn_sum, attn_max,
+        q, k_cache, v_cache, block_ids, cut_idx, tot_len, token_num, batch_size, max_block_num,
+        tot_block_num, tot_task_num, scale, nh, nkvh);
+    else if (ns == 3 && !ur) launch_v6_kernel<T, HD, H, TK, CO, 3, false>(attn_val, attn_acc, attn_sum, attn_max,
+        q, k_cache, v_cache, block_ids, cut_idx, tot_len, token_num, batch_size, max_block_num,
+        tot_block_num, tot_task_num, scale, nh, nkvh);
+    else launch_v6_kernel<T, HD, H, TK, CO, 3, true>(attn_val, attn_acc, attn_sum, attn_max,
+        q, k_cache, v_cache, block_ids, cut_idx, tot_len, token_num, batch_size, max_block_num,
+        tot_block_num, tot_task_num, scale, nh, nkvh);
+}
+
 // ── 模板分发: 4 HEADS × 2 TILE_K × 6 COALESCE = 48 路 ─────────
 template <typename T, size_t HD>
 static void flash_decoding_v6_impl(
@@ -354,12 +379,12 @@ static void flash_decoding_v6_impl(
     const std::byte *block_ids, const std::byte *cut_idx, const std::byte *tot_len,
     size_t token_num, size_t batch_size, size_t max_block_num,
     size_t tot_block_num, size_t tot_task_num,
-    float scale, size_t nh, size_t nkvh, int heads, int tile_k, int coalesce)
+    float scale, size_t nh, size_t nkvh, int heads, int tile_k, int coalesce, int ns, int ur)
 {
 #define V6_LAUNCH(H, TK, CO)                                                          \
-    launch_v6_kernel<T, HD, H, TK, CO>(attn_val, attn_acc, attn_sum, attn_max,       \
+    launch_v6_dispatch<T, HD, H, TK, CO>(attn_val, attn_acc, attn_sum, attn_max,     \
         q, k_cache, v_cache, block_ids, cut_idx, tot_len,                             \
-        token_num, batch_size, max_block_num, tot_block_num, tot_task_num, scale, nh, nkvh)
+        token_num, batch_size, max_block_num, tot_block_num, tot_task_num, scale, nh, nkvh, ns, ur)
 
     if (heads == 6 && tile_k == 8  && coalesce == 1) V6_LAUNCH(6, 8, 1);
     else if (heads == 6 && tile_k == 8  && coalesce == 2) V6_LAUNCH(6, 8, 2);
@@ -423,14 +448,14 @@ static void flash_decoding_v6_dispatch(
     size_t token_num, size_t batch_size, size_t max_block_num,
     size_t tot_block_num, size_t tot_task_num,
     float scale, size_t nh, size_t dv, size_t d, size_t nkvh,
-    int heads, int tile_k, int coalesce)
+    int heads, int tile_k, int coalesce, int ns, int ur)
 {
     ASSERT(d == dv, "flash_decoding_v6: d must equal dv.");
 #define V6_IMPL(HD)                                                                   \
     flash_decoding_v6_impl<T, HD>(attn_val, attn_acc, attn_sum, attn_max,            \
         q, k_cache, v_cache, block_ids, cut_idx, tot_len,                             \
         token_num, batch_size, max_block_num, tot_block_num, tot_task_num,            \
-        scale, nh, nkvh, heads, tile_k, coalesce)
+        scale, nh, nkvh, heads, tile_k, coalesce, ns, ur)
     switch (d) {
     case 128: V6_IMPL(128); break;
     case 64:  V6_IMPL(64);  break;
@@ -449,7 +474,7 @@ extern "C" __export void llaisysFlashDecodingV6(
     void *block_ids, void *cut_idx, void *tot_len,
     size_t token_num, size_t batch_size, size_t max_block_num, size_t tot_block_num,
     size_t max_seq_len, int dtype, float scale, size_t nh, size_t dv, size_t d, size_t nkvh,
-    int heads, int tile_k, int coalesce)
+    int heads, int tile_k, int coalesce, int num_stages, int unroll)
 {
     auto *ba  = reinterpret_cast<std::byte *>(attn_val);
     auto *bac = reinterpret_cast<std::byte *>(attn_acc);
@@ -469,13 +494,15 @@ extern "C" __export void llaisysFlashDecodingV6(
     for (size_t i = 0; i < batch_size; ++i)
         { int64_t c = h_bids[i * max_block_num]; ttn += static_cast<size_t>((static_cast<uint64_t>(c - p) + co - 1) / co); p = c; }
 
+    int ns = (num_stages == 2 || num_stages == 3) ? num_stages : 2;
+    int ur = unroll ? 1 : 0;
     switch (dtype) {
     case 0: flash_decoding_v6_dispatch<float>(ba, bac, bas, bam, bq, bkc, bvc, bb, bc, bt,
-        token_num, batch_size, max_block_num, tot_block_num, ttn, scale, nh, dv, d, nkvh, heads, tile_k, coalesce); break;
+        token_num, batch_size, max_block_num, tot_block_num, ttn, scale, nh, dv, d, nkvh, heads, tile_k, coalesce, ns, ur); break;
     case 1: flash_decoding_v6_dispatch<llaisys::fp16_t>(ba, bac, bas, bam, bq, bkc, bvc, bb, bc, bt,
-        token_num, batch_size, max_block_num, tot_block_num, ttn, scale, nh, dv, d, nkvh, heads, tile_k, coalesce); break;
+        token_num, batch_size, max_block_num, tot_block_num, ttn, scale, nh, dv, d, nkvh, heads, tile_k, coalesce, ns, ur); break;
     case 2: flash_decoding_v6_dispatch<llaisys::bf16_t>(ba, bac, bas, bam, bq, bkc, bvc, bb, bc, bt,
-        token_num, batch_size, max_block_num, tot_block_num, ttn, scale, nh, dv, d, nkvh, heads, tile_k, coalesce); break;
+        token_num, batch_size, max_block_num, tot_block_num, ttn, scale, nh, dv, d, nkvh, heads, tile_k, coalesce, ns, ur); break;
     default: ASSERT(false, "flash_decoding_v6: bad dtype");
     }
     CUDA_CHECK(cudaGetLastError());
