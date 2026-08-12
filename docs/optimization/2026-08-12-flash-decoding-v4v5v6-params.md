@@ -86,29 +86,46 @@ v6 H6T16C1S2U1 是当前最优。若接入主接口:
 
 ## 测试脚本
 
-## v6 最优 vs FlashInfer
+## v6 最优 vs FlashInfer (同环境实测)
 
-FlashInfer v0.6.16 数据来自 `2026-08-08-flash-decoding-tflop.md`（同卡同模型:
-RTX 4060, NH=12/NKVH=2/HD=128）。v6 为 H6T16C1S2U1 (小 batch H1/H2T16C1S2U1), par+reduce 总时间。
+**patch FlashInfer 支持 NH=12 group_size=6**: 修改 `flashinfer/data/include/flashinfer/utils.cuh`
+的 `DISPATCH_GQA_GROUP_SIZE` 宏, 加入 `group_size==6` 分支。清 JIT cache 后用
+`CC=gcc-12 CXX=g++-12` 编译运行成功。同环境 nsys 实测 (par+reduce vs 单 kernel):
 
 ```
-b×totlen    v6最优    FlashInfer   v6/FI
-─────────────────────────────────────────
-1×  256      11.5       48.3       4.20x  (v6 快)
-1× 1024      14.8       48.8       3.30x
-1× 2048      18.1       53.9       2.98x
-4×  512      17.6       53.6       3.05x
-4× 2048      56.1       68.1       1.21x
-8× 1024      58.5       68.4       1.17x
-16× 512      61.5       72.8       1.18x
+b×totlen    v6(us)    FlashInfer(us)   v6/FI
+─────────────────────────────────────────────
+1×  256       9.5        10.0          1.05x  (v6 略快)
+1× 1024      12.7        10.0          0.79x
+1× 2048      18.0        12.3          0.68x
+1× 4096      32.5        15.9          0.49x
+4×  512      17.5        12.3          0.70x
+4× 2048      56.1        25.5          0.45x
+8× 1024      58.4        25.6          0.44x
+16× 512      61.7        25.6          0.42x
+32× 256      67.6        25.4          0.38x
 ```
 
-**v6 在所有 config 快于 FlashInfer**: 小 batch 快 3-4.2×, 大 batch 快 17-21%。
-FlashInfer 的框架固定开销 (workspace, indptr/indices) 在小 batch 时占比大,
-v6 无此开销。大 batch 时 v6 的 4-warp + TK16 + 2-stage pipeline 优势显现。
+**大 batch FlashInfer 快 2-2.6x**, 仅 1×256 v6 略快 5%。
 
-> 注: FlashInfer v0.6.16 不支持 NH=12 的 group_size=6 本环境复测,
-> 引用的历史数据为同卡同模型的已验证测量。
+> 修正: 此前文档用 2026-08-08 历史 FlashInfer 数据 (1×256=48.3us) 得出
+> "v6 全面快于 FlashInfer" 的结论**不准确** — 那批数据在 NH=12 group_size=6
+> 无法运行的环境下取得, 不可靠。patch 后同环境实测为准。
+
+### 差距根因
+
+FlashInfer 架构: **block-per-seq×kv_head**, grid=(batch, nkvh), 单 kernel 完成全部
+KV token 计算, online softmax 直接出结果, 无 reduce kernel。
+
+v6 架构: **block-per-KV-block + reduce kernel**, 需要 partial 写出 + 二次归约。
+reduce kernel 的额外 launch + workspace R/W 在大 batch (大量 partial) 时开销显著。
+
+FlashInfer 大 batch 25us vs v6 56us, 差距 ~2.2x 主要来自:
+1. reduce kernel 额外开销 (大 batch partial 数多)
+2. FlashInfer 单 kernel 无跨 kernel 数据交换
+
+**v6 的价值**: 小 batch (1×256) 反超, 且架构更简单 (无 FlashInfer 的 workspace/indptr)。
+若需逼近 FlashInfer 大 batch 性能, 需架构级改动 (block-per-seq 单 kernel)。
 
 ## 测试脚本
 
