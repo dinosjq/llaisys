@@ -36,7 +36,7 @@ __global__ void flash_decoding_v6_kernel(
     const size_t head_base = HEADS * blockIdx.y;
     const size_t kv_head = head_base / rep;
 
-    constexpr size_t NUM_STAGES = 3;
+    constexpr size_t NUM_STAGES = 2;   // 2-stage 双缓冲省 smem, 目标 4 blocks/SM
     extern __shared__ __align__(16) char _smem[];
     T     *s_k   = reinterpret_cast<T *>(_smem);
     T     *s_v   = s_k + NUM_STAGES * TILE_K * HD;
@@ -129,15 +129,14 @@ __global__ void flash_decoding_v6_kernel(
         }
     };
 
-    // ── 预取 + flatten tile 循环 ───────────────────────────────
+    // ── 预取 + flatten tile 循环 (NUM_STAGES=2, lookahead 1) ──
     cp_tile(0, 0); __pipeline_commit();
-    if (total_tiles > 1) { cp_tile(1, 1); __pipeline_commit(); }
 
     for (size_t g = 0; g < total_tiles; ++g) {
-        if (g + 2 < total_tiles)
-            cp_tile((g + 2) % NUM_STAGES, g + 2);
+        if (g + 1 < total_tiles)
+            cp_tile((g + 1) % NUM_STAGES, g + 1);
         __pipeline_commit();
-        __pipeline_wait_prior((g + 2 < total_tiles) ? 1 : 0);
+        __pipeline_wait_prior((g + 1 < total_tiles) ? 1 : 0);
         __syncthreads();
 
         size_t cb = g / tiles_per_block;
@@ -153,8 +152,7 @@ __global__ void flash_decoding_v6_kernel(
                 float4 k_vec, v_vec;
                 llaisys::utils::nvidia::copy_4d(kt_row + lane_id * ELEMS_PER_LANE, &k_vec.x);
                 llaisys::utils::nvidia::copy_4d(vt_row + lane_id * ELEMS_PER_LANE, &v_vec.x);
-#pragma unroll
-                for (size_t h = 0; h < HEADS; ++h) {
+                for (size_t h = 0; h < HEADS; ++h) {   // 不 unroll: 降寄存器
                     const T *qh = s_q + h * HD;
                     float4 q_vec;
                     llaisys::utils::nvidia::copy_4d(qh + lane_id * ELEMS_PER_LANE, &q_vec.x);
@@ -329,7 +327,7 @@ void launch_v6_kernel(std::byte *attn_val, std::byte *attn_acc, std::byte *attn_
     dim3 blockDim(BLOCK_DIM_V6);        // 128 threads (4 warps) — parallel
     dim3 blockDimRed(256);              // 256 threads (8 warps) — reduce 需要 8 warp 归约
 
-    constexpr size_t NUM_STAGES = 3;
+    constexpr size_t NUM_STAGES = 2;   // 与 kernel 一致
     const size_t smem = NUM_STAGES * TILE_K * HD * sizeof(T) * 2      // s_k + s_v (T)
         + HEADS * HD * sizeof(T)                        // s_q (T, 省一半)
         + HEADS * NW * HD * sizeof(float)               // s_acc (float, 累加需要)

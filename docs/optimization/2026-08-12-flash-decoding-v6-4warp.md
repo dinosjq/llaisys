@@ -91,14 +91,58 @@ b×totlen   v3_H6T8   v6_C1(6,8)  v6_C1(2,16)  v6_best   cfg        v6/v3
 v6 的价值: **小 batch (batch=1, ≤512) 场景显著优于 v3**，这是 4-warp 高 occupancy
 + float4 向量化的协同收益。大 batch 场景 v3 的 H6T8 K/V 共享仍占优。
 
+## NUM_STAGES 实验 (用户指出三路缓冲占用 smem)
+
+3-stage pipeline (lookahead 2) 的 s_k+s_v 占 12KB smem。改为 **2-stage (lookahead 1)**:
+
+| 指标 | 3-stage | 2-stage |
+|------|---------|---------|
+| SMEM/block | 26.30KB | **22.21KB** |
+| Block Limit Shared Mem | 3 | **4** |
+| Duration (16×2048) | 286us | **265us (-7%)** |
+
+**2-stage 双缓冲省 4KB smem，突破 4 blocks/SM 的 smem 限制，Duration 降 7%。**
+pipeline 重叠变浅 (lookahead 2→1) 的损失 < occupancy 提升的收益。
+
+2-stage pipeline 逻辑: 进入循环前预取 stage 0, 每轮发 cp_tile(g+1)→stage (g+1)%2,
+wait_prior(1) 等 stage g 就绪。g%2 与 (g+1)%2 恒不同 → 无写读冲突。
+
+## unroll 实验 (用户指出不应全加)
+
+去掉 compute 内层 HEADS 循环的 `#pragma unroll`:
+
+| 指标 | unroll | no unroll |
+|------|--------|-----------|
+| Duration (16×2048) | 265us | **264us** |
+| Registers/Thread | 144 | 144 |
+| Block Limit Registers | 3 | 3 |
+
+**unroll 对寄存器分配无影响** — nvcc 自主决定 144 regs/thread, 与 pragma 无关。
+寄存器瓶颈来自 float4 acc + pipeline 状态, 非循环展开。已保留 no-unroll 版本。
+
+## 最终 ncu 指标 (2-stage + no compute unroll, 16×2048)
+
+```
+Registers/Thread: 144
+Achieved Occupancy: 23.5%  (theoretical 25%, 受寄存器 3-block 限制)
+Block Limit Registers: 3
+Block Limit Shared Mem: 4   ← smem 瓶颈已破
+SMEM/block: 22.21 KB
+Duration: 264us  (vs v3 ~304us, 快 13%)
+Stall 分解: Wait 1.46, Long Scoreboard 1.15, Short Scoreboard 0.88
+```
+
+smem 已不是瓶颈, 剩余限制是**寄存器 144 regs → 3 blocks**。要让 occupancy 到 33% (4 blocks),
+需 reg ≤128。float4 acc (HEADS×4) + pipeline 状态是主要占用, 需结构性改动。
+
 ## 后续优化方向
 
-1. **突破 smem 3-block 瓶颈**: s_acc (12KB float) 是剩余最大数组。可考虑
-   s_acc 与 s_q/s_k 复用 smem (归约阶段才用 acc), 或减少归约临时空间。
-   目标: 26.3→25KB, 达到 4 blocks/SM (occupancy 33%)。
-2. **H6T8 大 batch 优化**: v6 H6T8C1 比 v3 慢 40%, 需调查 (可能 reduce kernel
-   的 256-thread block 与 128-thread parallel 不匹配导致 wave 效率差)。
-3. **v7 方向**: 若解决 s_acc smem 复用, 4-warp + float4 + 4 blocks/SM 有望全面超越 v3。
+1. **寄存器降至 ≤128 达到 4 blocks/SM**: 需减 ~16 regs/thread。
+   - float4 reg_acc 保留 (占用 24 regs 是必需)
+   - 可优化 cp.async 地址计算 (减少 pipeline 状态寄存器)
+2. **大 batch 慢 40% 根因**: v6 4-warp 每 block ILP 减半 (4 warps vs v3 8 warps)。
+   block 数大时 occupancy 由 warp 数决定, 4-warp 不如 8-warp。需 block 内更多并行
+   (如每 warp 处理多 token 但 ILP 更高) 或混合策略。
 
 ## 测试脚本
 
