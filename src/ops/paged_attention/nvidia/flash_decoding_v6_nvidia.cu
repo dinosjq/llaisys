@@ -40,8 +40,8 @@ __global__ void flash_decoding_v6_kernel(
     extern __shared__ __align__(16) char _smem[];
     T     *s_k   = reinterpret_cast<T *>(_smem);
     T     *s_v   = s_k + NUM_STAGES * TILE_K * HD;
-    float *s_q   = reinterpret_cast<float *>(s_v + NUM_STAGES * TILE_K * HD);
-    float *s_acc = s_q + HEADS * HD;
+    T     *s_q   = reinterpret_cast<T *>(s_v + NUM_STAGES * TILE_K * HD);  // T 类型省 smem
+    float *s_acc = reinterpret_cast<float *>(s_q + HEADS * HD);
     float *s_sum = s_acc + HEADS * NW * HD;
     float *s_max = s_sum + HEADS * NW;
 
@@ -80,11 +80,11 @@ __global__ void flash_decoding_v6_kernel(
     size_t num_blocks_in_task = min(static_cast<size_t>(COALESCE), block_num - start_block);
     if (num_blocks_in_task == 0) return;
 
-    // ── Q load: copy_4d 向量化 (bf16→float4), NW 个 warp 分 HEADS 个 head ──
+    // ── Q load: copy_4d T→T 直拷 (bf16 存 smem), 计算时再转 ──
     // NW=4 可能 < HEADS(6), 用 for(h=warp_id; h<HEADS; h+=NW) 循环
     for (size_t h = warp_id; h < HEADS; h += NW) {
         const T *qp = _q + (_cut_idx[batch_id] * _nh + head_base + h) * HD;
-        float *sq = s_q + h * HD;
+        T *sq = s_q + h * HD;
         llaisys::utils::nvidia::copy_4d(qp + lane_id * ELEMS_PER_LANE,
                                          sq + lane_id * ELEMS_PER_LANE);
     }
@@ -153,9 +153,11 @@ __global__ void flash_decoding_v6_kernel(
                 float4 k_vec, v_vec;
                 llaisys::utils::nvidia::copy_4d(kt_row + lane_id * ELEMS_PER_LANE, &k_vec.x);
                 llaisys::utils::nvidia::copy_4d(vt_row + lane_id * ELEMS_PER_LANE, &v_vec.x);
+#pragma unroll
                 for (size_t h = 0; h < HEADS; ++h) {
-                    const float *qh = s_q + h * HD;
-                    float4 q_vec = *reinterpret_cast<const float4 *>(qh + lane_id * ELEMS_PER_LANE);
+                    const T *qh = s_q + h * HD;
+                    float4 q_vec;
+                    llaisys::utils::nvidia::copy_4d(qh + lane_id * ELEMS_PER_LANE, &q_vec.x);
                     float dot = q_vec.x * k_vec.x + q_vec.y * k_vec.y
                               + q_vec.z * k_vec.z + q_vec.w * k_vec.w;
                     dot = warp_reduce_v6(dot) * _scale;
@@ -328,10 +330,10 @@ void launch_v6_kernel(std::byte *attn_val, std::byte *attn_acc, std::byte *attn_
     dim3 blockDimRed(256);              // 256 threads (8 warps) — reduce 需要 8 warp 归约
 
     constexpr size_t NUM_STAGES = 3;
-    const size_t smem = NUM_STAGES * TILE_K * HD * sizeof(T) * 2
-        + HEADS * HD * sizeof(float)
-        + HEADS * NW * HD * sizeof(float)
-        + 2 * HEADS * NW * sizeof(float);
+    const size_t smem = NUM_STAGES * TILE_K * HD * sizeof(T) * 2      // s_k + s_v (T)
+        + HEADS * HD * sizeof(T)                        // s_q (T, 省一半)
+        + HEADS * NW * HD * sizeof(float)               // s_acc (float, 累加需要)
+        + 2 * HEADS * NW * sizeof(float);               // s_sum + s_max
 
     auto *kernel = flash_decoding_v6_kernel<T, HD, HEADS, TILE_K, COALESCE>;
     static bool attr_set = false;
