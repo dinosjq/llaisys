@@ -347,6 +347,9 @@ void launch_v6_kernel(std::byte *attn_val, std::byte *attn_acc, std::byte *attn_
     CUDA_CHECK(cudaGetLastError());
 }
 
+// Archived parameter sweep. Retain it for research, but do not instantiate
+// thousands of CUDA variants in the experimental build.
+#if 0
 // ── NUM_STAGES/UNROLL 运行时分发 helper ─────────────────────────
 template <typename T, size_t HD, size_t H, size_t TK, size_t CO>
 static void launch_v6_dispatch(
@@ -466,6 +469,21 @@ static void flash_decoding_v6_dispatch(
     }
 #undef V6_IMPL
 }
+#endif
+
+// The only retained experimental configuration. It is the documented optimum
+// for the RTX 4060 / Qwen2-1.5B BF16 profile: H6/T16/C1/S2/U1.
+static void flash_decoding_v6_best(
+    std::byte *attn_val, std::byte *attn_acc, std::byte *attn_sum, std::byte *attn_max,
+    const std::byte *q, const std::byte *k_cache, const std::byte *v_cache,
+    const std::byte *block_ids, const std::byte *cut_idx, const std::byte *tot_len,
+    size_t token_num, size_t batch_size, size_t max_block_num, size_t tot_block_num,
+    float scale, size_t nh, size_t nkvh)
+{
+    launch_v6_kernel<llaisys::bf16_t, 128, 6, 16, 1, 2, true>(
+        attn_val, attn_acc, attn_sum, attn_max, q, k_cache, v_cache, block_ids, cut_idx, tot_len,
+        token_num, batch_size, max_block_num, tot_block_num, tot_block_num, scale, nh, nkvh);
+}
 
 // ── C wrapper ───────────────────────────────────────────────────────
 extern "C" __export void llaisysFlashDecodingV6(
@@ -487,23 +505,17 @@ extern "C" __export void llaisysFlashDecodingV6(
     auto *bc  = reinterpret_cast<const std::byte *>(cut_idx);
     auto *bt  = reinterpret_cast<const std::byte *>(tot_len);
 
-    // tot_task_num from GPU block_ids
-    std::vector<int64_t> h_bids(batch_size * max_block_num);
-    cudaMemcpy(h_bids.data(), block_ids, batch_size * max_block_num * sizeof(int64_t), cudaMemcpyDeviceToHost);
-    size_t ttn = 0; int64_t p = 0; size_t co = static_cast<size_t>(coalesce > 0 ? coalesce : 1);
-    for (size_t i = 0; i < batch_size; ++i)
-        { int64_t c = h_bids[i * max_block_num]; ttn += static_cast<size_t>((static_cast<uint64_t>(c - p) + co - 1) / co); p = c; }
+    ASSERT(dtype == 2, "flash_decoding_v6: experiment supports BF16 only");
+    ASSERT(d == 128 && dv == 128, "flash_decoding_v6: experiment supports head_dim 128 only");
+    ASSERT(nh / nkvh == 6, "flash_decoding_v6: experiment supports GQA ratio 6 only");
+    ASSERT((heads == 0 || heads == 6) && (tile_k == 0 || tile_k == 16)
+               && (coalesce == 0 || coalesce == 1)
+               && (num_stages == 0 || num_stages == 2)
+               && (unroll == 0 || unroll == 1),
+           "flash_decoding_v6: only H6/T16/C1/S2/U1 is retained");
 
-    int ns = (num_stages == 2 || num_stages == 3) ? num_stages : 2;
-    int ur = unroll ? 1 : 0;
-    switch (dtype) {
-    case 0: flash_decoding_v6_dispatch<float>(ba, bac, bas, bam, bq, bkc, bvc, bb, bc, bt,
-        token_num, batch_size, max_block_num, tot_block_num, ttn, scale, nh, dv, d, nkvh, heads, tile_k, coalesce, ns, ur); break;
-    case 1: flash_decoding_v6_dispatch<llaisys::fp16_t>(ba, bac, bas, bam, bq, bkc, bvc, bb, bc, bt,
-        token_num, batch_size, max_block_num, tot_block_num, ttn, scale, nh, dv, d, nkvh, heads, tile_k, coalesce, ns, ur); break;
-    case 2: flash_decoding_v6_dispatch<llaisys::bf16_t>(ba, bac, bas, bam, bq, bkc, bvc, bb, bc, bt,
-        token_num, batch_size, max_block_num, tot_block_num, ttn, scale, nh, dv, d, nkvh, heads, tile_k, coalesce, ns, ur); break;
-    default: ASSERT(false, "flash_decoding_v6: bad dtype");
-    }
+    flash_decoding_v6_best(ba, bac, bas, bam, bq, bkc, bvc, bb, bc, bt,
+                            token_num, batch_size, max_block_num, tot_block_num,
+                            scale, nh, nkvh);
     CUDA_CHECK(cudaGetLastError());
 }

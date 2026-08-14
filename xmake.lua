@@ -13,6 +13,12 @@ option("nv-gpu")
     set_description("Whether to compile implementations for Nvidia GPU")
 option_end()
 
+option("flash-v6-experiment")
+    set_default(false)
+    set_showmenu(true)
+    set_description("Whether to compile the retained Flash Decoding v6 experiment")
+option_end()
+
 if has_config("nv-gpu") then
     add_defines("ENABLE_NVIDIA_API")
     includes("xmake/nvidia.lua")
