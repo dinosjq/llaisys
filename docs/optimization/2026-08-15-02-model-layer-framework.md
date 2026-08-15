@@ -99,3 +99,11 @@ src/models/layers/qwen2/
 | `bdc536b` | fix: stabilize model-layer captures and restructure Model weights |
 | `5e24a87` | docs: record task-3 follow-up commit hash in report |
 | （本交付） | docs: deliver model layer framework phase report |
+
+## 状态更新（2026-08-16）
+
+本节为 **§3 骨架期快照**，文件布局与「不接生产」约定已被后续迁移取代：
+
+- 代码迁到 `src/models/core/`、`src/layers/`；命名空间 `llaisys::core`
+- 生产已切 Layer（见 `2026-08-15-03-qwen2-framework-migration.md`）
+- 对外 ABI 与 Llama 终态见 `2026-08-16-05-unified-model-api.md`

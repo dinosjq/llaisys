@@ -46,6 +46,13 @@ LLAISYS_QWEN2_LAYER_FORWARD=0   # 强制 legacy
 # unset / 其它值 → Layer（默认）
 ```
 
+## 状态更新（2026-08-16）
+
+- `forward_legacy` 与 `LLAISYS_QWEN2_LAYER_FORWARD` **已删除**；上表回滚方式失效。
+- Scheme A（填 `LlaisysQwen2Weights` 再 sync）**已删除**；改为 `llaisysModelSetWeight(role, layer, tensor)`。
+- 层组装在 `Qwen2::forward` 内完成，不再调用 `run_qwen2_layer_stack`。
+- 终态说明：`docs/optimization/2026-08-16-05-unified-model-api.md`。
+
 ## 复现
 
 ```bash

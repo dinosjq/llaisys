@@ -37,3 +37,10 @@ PYTHONPATH=./python:$PYTHONPATH python test/test_llama_smoke.py \
 unset LLAISYS_LAYER_STACK          # 默认 Qwen2 stack
 # Llama Python 构造器会设置 LLAISYS_LAYER_STACK=llama
 ```
+
+## 状态更新（2026-08-16）
+
+- `LLAISYS_LAYER_STACK` **已删除**。
+- C++：`src/models/llama/`，`class Llama : public Qwen2`，`override forward` 组装 Llama Layer。
+- C/Python：`llaisysModelCreate(LLAMA, …)` + `SetWeight`；不再借用 Qwen2 Weights ABI。
+- 终态说明：`docs/optimization/2026-08-16-05-unified-model-api.md`。
