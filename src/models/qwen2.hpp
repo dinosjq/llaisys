@@ -84,6 +84,7 @@ private:
     // 分层框架上下文（权重/KV/workspace 绑定；默认走 layer stack）
     framework::ModelContext _ctx;
     bool use_layer_forward_ = true;
+    bool use_llama_stack_ = false; // LLAISYS_LAYER_STACK=llama
     // logprobs 下次迭代实现: 添加 mutex + 需要时 forward 中保存 logits C PU 快照
 
     // 方案 A：从 legacy Weights 经 WeightRole/set_weight 同步到 ModelContext（加载结束 / start 前）

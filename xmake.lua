@@ -76,6 +76,7 @@ target("llaisys-core")
     -- framework: model.cpp (set_weight + prepare_* stubs); weight_set.cpp removed
     add_files("src/models/framework/*.cpp")
     add_files("src/models/layers/qwen2/*.cpp")
+    add_files("src/models/layers/llama/*.cpp")
 
     on_install(function (target) end)
 target_end()

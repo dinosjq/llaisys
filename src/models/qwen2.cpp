@@ -3,6 +3,7 @@
 #include "qwen2.hpp"
 #include "framework/model.hpp"
 #include "layers/qwen2/stack.hpp"
+#include "layers/llama/stack.hpp"
 #include "../llaisys/llaisys_tensor.hpp"
 #include "../ops/add/op.hpp"
 #include "../ops/argmax/op.hpp"
@@ -93,6 +94,12 @@ static bool env_use_layer_forward() {
     return std::strcmp(value, "0") != 0;
 }
 
+// LLAISYS_LAYER_STACK=llama → Llama Embedding/Attn/FFN stack (no-bias).
+static bool env_use_llama_stack() {
+    const char *value = std::getenv("LLAISYS_LAYER_STACK");
+    return value != nullptr && std::strcmp(value, "llama") == 0;
+}
+
 } // namespace
 
 Qwen2::Qwen2(Qwen2Meta meta, 
@@ -172,7 +179,9 @@ Qwen2::Qwen2(Qwen2Meta meta,
     this->_ctx.ffns.resize(nlayer);
     this->_ctx.k_caches.resize(nlayer);
     this->_ctx.v_caches.resize(nlayer);
-    this->use_layer_forward_ = env_use_layer_forward();
+    this->use_llama_stack_ = env_use_llama_stack();
+    // Llama stack requires layer path (legacy hard-codes Qwen2 biases).
+    this->use_layer_forward_ = this->use_llama_stack_ ? true : env_use_layer_forward();
     // 不在构造时 start：等 Python 填完 legacy Weights；首次 submit 时 sync + start
 }
 
@@ -431,7 +440,11 @@ std::vector<int64_t> Qwen2::forward_layers(Qwen2Pack &pack, std::vector<int64_t>
     sync_weights_from_legacy_struct();
     bind_context_runtime(pack, block_ids, is_prefill);
     // 执行分层 stack（产出 logits；layer0 capture 默认关闭，避免跨线程 Runtime 悬挂）
-    framework::run_qwen2_layer_stack(this->_ctx, is_prefill);
+    if (this->use_llama_stack_) {
+        framework::run_llama_layer_stack(this->_ctx, is_prefill);
+    } else {
+        framework::run_qwen2_layer_stack(this->_ctx, is_prefill);
+    }
     // 与 legacy 相同的 topk + sample 后处理
     return sample_from_logits(this->_ctx.workspace.logits, pack);
 }

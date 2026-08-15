@@ -187,7 +187,7 @@ HF 对比只打印差异，不 fail。
 - [x] **Step 1: 采 baseline（legacy）与 layer 各至少 3 次 median。**
 - [x] **Step 2: 写交付文档（目标/对照数据/commits/回滚）。**
 - [x] **Step 3: 更新 Canvas 第 4 部分状态。**
-- [ ] **Step 4: Commit** `docs: report qwen2 framework migration gates`
+- [x] **Step 4: Commit** `docs: report qwen2 framework migration gates`
 
 ---
 
@@ -200,8 +200,8 @@ HF 对比只打印差异，不 fail。
 
 **Acceptance:** 不改 `Scheduler`/`Sequence`/`BlockManager`；第三模型仅 Layer + 映射。
 
-- [ ] **Step 1–N:** 按 TDD 接 Llama；交付 `docs/optimization/2026-08-15-04-llama-vertical-slice.md`
-- [ ] **Commit** `feat: run llama through model layer framework`
+- [x] **Step 1–N:** 按 TDD 接 Llama；交付 `docs/optimization/2026-08-15-04-llama-vertical-slice.md`
+- [x] **Commit** `feat: run llama through model layer framework`
 
 ---
 
