@@ -101,7 +101,7 @@ std::unique_ptr<Qwen2> make_model() {
     auto model = std::make_unique<Qwen2>(tiny_meta(), kDevice, &device_id, 1);
     model->stop();
     fill_tiny_weights(*model);
-    // Dual-path test always exercises layer path explicitly; default remains legacy.
+    // Explicit layer path for dual-path logits compare (default is already layer).
     model->set_use_layer_forward(true);
     require(model->use_layer_forward(), "layer forward flag should be true when enabled");
     return model;
@@ -184,18 +184,28 @@ void test_decode_after_prefill_layer_matches_legacy() {
     require_close(layered->last_logits(1), legacy->last_logits(1), "decode logits differ");
 }
 
-void test_default_flag_is_legacy() {
+void test_default_flag_is_layer() {
     unsetenv("LLAISYS_QWEN2_LAYER_FORWARD");
     int device_id = kDeviceId;
     Qwen2 model(tiny_meta(), kDevice, &device_id, 1);
     model.stop();
-    require(!model.use_layer_forward(), "default use_layer_forward_ must be false");
+    require(model.use_layer_forward(), "default use_layer_forward_ must be true");
+}
+
+void test_env_zero_forces_legacy() {
+    setenv("LLAISYS_QWEN2_LAYER_FORWARD", "0", 1);
+    int device_id = kDeviceId;
+    Qwen2 model(tiny_meta(), kDevice, &device_id, 1);
+    model.stop();
+    require(!model.use_layer_forward(), "LLAISYS_QWEN2_LAYER_FORWARD=0 must force legacy");
+    unsetenv("LLAISYS_QWEN2_LAYER_FORWARD");
 }
 
 } // namespace
 
 int main() {
-    test_default_flag_is_legacy();
+    test_default_flag_is_layer();
+    test_env_zero_forces_legacy();
     test_prefill_layer_matches_legacy();
     test_decode_after_prefill_layer_matches_legacy();
     std::cout << "qwen2 dual path NVIDIA test passed\n";

@@ -2,6 +2,9 @@
 
 Usage:
     python -m llaisys.server --model /path/to/model --port 8000 --device nvidia
+
+Qwen2 forward defaults to the layer stack. Rollback to legacy hard-coded forward:
+    LLAISYS_QWEN2_LAYER_FORWARD=0 python -m llaisys.server ...
 """
 import time
 import uuid

@@ -83,11 +83,12 @@ static void free_weight_arrays(Qwen2Weights &w) {
     w.mlp_down_w = nullptr;
 }
 
-// LLAISYS_QWEN2_LAYER_FORWARD unset/0 → legacy；非 0 → layer stack
+// Default: layer stack. Rollback: LLAISYS_QWEN2_LAYER_FORWARD=0 → legacy.
+// Unset/empty/any value other than "0" → layer stack.
 static bool env_use_layer_forward() {
     const char *value = std::getenv("LLAISYS_QWEN2_LAYER_FORWARD");
     if (value == nullptr || value[0] == '\0') {
-        return false;
+        return true;
     }
     return std::strcmp(value, "0") != 0;
 }
@@ -206,7 +207,7 @@ void Qwen2::start(){
             auto block_ids = model->prepare_block_table(seqs);
             // 根据是 prefill 还是 decode 分别进行预处理
             Qwen2Pack pack = is_prefill ? model->prepare_prefill(seqs) : model->prepare_decode(seqs);
-            // 执行一次批处理前向传播（默认 legacy；LLAISYS_QWEN2_LAYER_FORWARD 开启时走 layer）
+            // 默认 layer；LLAISYS_QWEN2_LAYER_FORWARD=0 回滚 legacy
             std::vector<int64_t> token_ids = model->use_layer_forward_
                                                 ? model->forward_layers(pack, block_ids, is_prefill)
                                                 : model->forward_legacy(pack, block_ids, is_prefill);

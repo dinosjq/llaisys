@@ -81,9 +81,9 @@ private:
     // 事件循环
     bool _running;
     std::thread _worker;
-    // 分层框架上下文（权重/KV/workspace 绑定；默认仍走硬编码 forward）
+    // 分层框架上下文（权重/KV/workspace 绑定；默认走 layer stack）
     framework::ModelContext _ctx;
-    bool use_layer_forward_ = false;
+    bool use_layer_forward_ = true;
     // logprobs 下次迭代实现: 添加 mutex + 需要时 forward 中保存 logits C PU 快照
 
     // 方案 A：从 legacy Weights 经 WeightRole/set_weight 同步到 ModelContext（加载结束 / start 前）
@@ -129,9 +129,9 @@ public:
 
     // 批次前向传播（按 use_layer_forward_ 分发）
     std::vector<int64_t> forward(Qwen2Pack &pack, std::vector<int64_t> &block_ids, bool is_prefill);
-    // 硬编码循环（默认路径）
+    // 硬编码循环（回滚路径：LLAISYS_QWEN2_LAYER_FORWARD=0）
     std::vector<int64_t> forward_legacy(Qwen2Pack &pack, std::vector<int64_t> &block_ids, bool is_prefill);
-    // Layer 组装路径：填 Context → run_qwen2_layer_stack → 同 legacy 采样
+    // Layer 组装路径（默认）：填 Context → run_qwen2_layer_stack → 同 legacy 采样
     std::vector<int64_t> forward_layers(Qwen2Pack &pack, std::vector<int64_t> &block_ids, bool is_prefill);
 
     bool use_layer_forward() const { return use_layer_forward_; }
