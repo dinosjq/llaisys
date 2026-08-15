@@ -182,3 +182,27 @@ target("llaisys-model-layer-cpu-test")
 
     on_install(function (target) end)
 target_end()
+
+if has_config("nv-gpu") then
+    target("llaisys-model-layer-nvidia-test")
+        set_kind("binary")
+        set_default(false)
+        add_deps("llaisys-core")
+        add_deps("llaisys-ops")
+        add_packages("cuda")
+        add_rules("cuda")
+        set_policy("build.cuda.devlink", true)
+        add_linkdirs("/usr/local/cuda/lib64")
+        add_syslinks("cublas", "cublasLt")
+        add_ldflags("-Wl,-rpath=/usr/local/cuda/lib64")
+
+        set_languages("cxx17")
+        set_warnings("all", "error")
+        add_includedirs("src")
+        add_files("test/models/qwen2_layer_nvidia_test.cpp")
+        add_files("src/llaisys/runtime.cc")
+        add_files("src/ops/rearrange/op.cpp")
+
+        on_install(function (target) end)
+    target_end()
+end
