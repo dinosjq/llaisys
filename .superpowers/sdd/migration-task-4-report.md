@@ -4,7 +4,7 @@
 **Worktree:** `/home/songjq/.cursor/worktrees/llaisys-main/model-layer-framework`  
 **Branch:** `feat/model-layer-framework`  
 **Base:** `f4edc23`  
-**Commit:** `b868f0d` — `feat: sync qwen2 weights into model context via roles`
+**Commit:** `933e3b5` — `feat: sync qwen2 weights into model context via roles`
 
 ## Summary
 

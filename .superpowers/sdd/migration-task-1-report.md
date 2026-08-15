@@ -4,7 +4,7 @@
 **Worktree:** `/home/songjq/.cursor/worktrees/llaisys-main/model-layer-framework`  
 **Branch:** `feat/model-layer-framework`  
 **Base:** `100d324`  
-**Commit:** `refactor: lift qwen2 prepare helpers into Model`
+**Commit:** `70898c4` — `refactor: lift qwen2 prepare helpers into Model`
 
 ## Summary
 

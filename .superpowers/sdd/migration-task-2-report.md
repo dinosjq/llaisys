@@ -4,7 +4,7 @@
 **Worktree:** `/home/songjq/.cursor/worktrees/llaisys-main/model-layer-framework`  
 **Branch:** `feat/model-layer-framework`  
 **Base:** `70898c4`  
-**Commit:** `c3fb5e6` — `feat: add qwen2 dual forward path behind flag`
+**Commit:** `1ee414f` — `feat: add qwen2 dual forward path behind flag`
 
 ## Summary
 

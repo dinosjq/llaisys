@@ -4,7 +4,7 @@
 **Worktree:** `/home/songjq/.cursor/worktrees/llaisys-main/model-layer-framework`  
 **Branch:** `feat/model-layer-framework`  
 **Base:** `1ee414f`  
-**Commit:** (see git log) `test: enforce qwen2 legacy vs layer greedy parity`
+**Commit:** `f4edc23` — `test: enforce qwen2 legacy vs layer greedy parity`
 
 ## Summary
 
