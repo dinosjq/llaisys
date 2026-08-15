@@ -2,8 +2,11 @@
 
 #include "model_context.hpp"
 #include "weight_role.hpp"
+#include "../qwen2_pack.hpp"
+#include "../../sequence/sequence.hpp"
 
 #include <cstddef>
+#include <vector>
 
 namespace llaisys::framework {
 
@@ -14,11 +17,10 @@ public:
     // Upload-boundary helper: map a public WeightRole into the layered ModelContext slots.
     static void set_weight(ModelContext &ctx, WeightRole role, size_t layer, tensor_t tensor);
 
-    // TODO: lift prepare_block_table / prepare_prefill / prepare_decode from Qwen2 into Model.
-    // These stubs reserve the Model API surface for the later production migration.
-    // void prepare_block_table(...);
-    // void prepare_prefill(...);
-    // void prepare_decode(...);
+    // Shared batch prepare helpers (lifted from Qwen2; return Qwen2Pack this migration task).
+    static std::vector<int64_t> prepare_block_table(const std::vector<seq_t> &seqs, size_t block_table_width);
+    static Qwen2Pack prepare_prefill(const std::vector<seq_t> &seqs);
+    static Qwen2Pack prepare_decode(const std::vector<seq_t> &seqs);
 };
 
 } // namespace llaisys::framework

@@ -176,6 +176,31 @@ target("llaisys-core-test")
     on_install(function (target) end)
 target_end()
 
+target("llaisys-prepare-parity-test")
+    set_kind("binary")
+    set_default(false)
+    add_deps("llaisys-core")
+    add_deps("llaisys-ops")
+    if has_config("nv-gpu") then
+        add_packages("cuda")
+        add_rules("cuda")
+        set_policy("build.cuda.devlink", true)
+        add_linkdirs("/usr/local/cuda/lib64")
+        add_syslinks("cublas", "cublasLt")
+        add_ldflags("-Wl,-rpath=/usr/local/cuda/lib64")
+    end
+
+    set_languages("cxx17")
+    set_warnings("all", "error")
+    add_includedirs("src")
+    add_files("test/models/prepare_parity_test.cpp")
+    add_files("src/llaisys/runtime.cc")
+    add_files("src/ops/rearrange/op.cpp")
+    add_files("src/sequence/*.cpp")
+
+    on_install(function (target) end)
+target_end()
+
 target("llaisys-model-layer-cpu-test")
     set_kind("binary")
     set_default(false)

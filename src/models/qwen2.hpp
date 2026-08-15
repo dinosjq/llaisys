@@ -4,6 +4,7 @@
 #include "../tensor/tensor.hpp"
 #include "../kv_cache/block_manager.hpp"
 #include "../scheduler/scheduler.hpp"
+#include "qwen2_pack.hpp"
 #include <mutex>
 #include <random>
 #include <thread>
@@ -26,18 +27,6 @@ struct Qwen2Meta {
     size_t nlayer, hs, nh, nkvh, dh, di, maxseq, voc;
     float epsilon, theta;
     int64_t end_token;
-};
-
-struct Qwen2Pack {
-    std::vector<int64_t> token_ids;
-    std::vector<int64_t> pos_ids;
-    std::vector<int64_t> cut_idx;
-    std::vector<int64_t> tot_len;
-    std::vector<int> top_k;
-    std::vector<float> top_p;       // per-seq 采样参数
-    std::vector<float> temperature; // per-seq 采样参数
-    std::vector<std::mt19937 *> rngs;
-    size_t max_seq_len;
 };
 
 using Qwen2Weights = ::LlaisysQwen2Weights;
