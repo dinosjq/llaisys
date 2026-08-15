@@ -72,6 +72,9 @@ struct ModelContext {
     std::vector<tensor_t> k_caches;
     std::vector<tensor_t> v_caches;
     tensor_t in_embed, out_embed, out_norm_w;
+    // Off by default: stable_capture allocates host Storage via the calling
+    // thread's Runtime; worker-thread captures must not outlive that thread.
+    bool enable_layer0_capture = false;
 };
 
 } // namespace llaisys::framework

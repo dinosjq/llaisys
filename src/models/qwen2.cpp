@@ -177,6 +177,10 @@ Qwen2::Qwen2(Qwen2Meta meta,
 }
 
 Qwen2::~Qwen2() {
+    // Drop any worker-Runtime-backed captures before the worker thread (and its
+    // thread_local Context/Runtime) is destroyed.
+    this->_ctx.workspace.capture_post_attn0.reset();
+    this->_ctx.workspace.capture_post_ffn0.reset();
     // 先终止事件循环
     this->stop();
     // 暂停对应的生产者线程
@@ -422,7 +426,7 @@ std::vector<int64_t> Qwen2::forward_layers(Qwen2Pack &pack, std::vector<int64_t>
     // 绑定权重 / KV，再写入本步 runtime + workspace
     bind_context_weights();
     bind_context_runtime(pack, block_ids, is_prefill);
-    // 执行分层 stack（产出 logits；层内 residual 后 CPU stable_capture）
+    // 执行分层 stack（产出 logits；layer0 capture 默认关闭，避免跨线程 Runtime 悬挂）
     framework::run_qwen2_layer_stack(this->_ctx, is_prefill);
     // 与 legacy 相同的 topk + sample 后处理
     return sample_from_logits(this->_ctx.workspace.logits, pack);

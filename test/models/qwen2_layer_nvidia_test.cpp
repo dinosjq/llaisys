@@ -253,6 +253,7 @@ void require_layer0_snapshots(const ModelContext &ctx, const char *message) {
 void test_stack_matches_production_capture_points() {
     auto actual = make_prefill_context();
     auto expected = make_prefill_context();
+    actual.enable_layer0_capture = true;
     llaisys::framework::run_qwen2_layer_stack(actual, true);
     legacy_qwen2_forward_copy(expected, true);
 
@@ -267,6 +268,7 @@ void test_stack_decode_uses_flash_decoding_workspace() {
     // Prefill first on the same context/caches so flash-decoding has real KV content.
     auto actual = make_prefill_context();
     auto expected = make_prefill_context();
+    actual.enable_layer0_capture = true;
     llaisys::framework::run_qwen2_layer_stack(actual, true);
     legacy_qwen2_forward_copy(expected, true);
 

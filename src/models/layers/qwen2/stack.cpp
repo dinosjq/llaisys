@@ -32,12 +32,12 @@ void run_qwen2_layer_stack(ModelContext &ctx, bool is_prefill) {
     Qwen2Embedding{}.forward(ctx);
     for (size_t layer = 0; layer < ctx.meta.nlayer; ++layer) {
         Qwen2Attention(&ctx.attns[layer], layer).forward(ctx);
-        if (layer == 0) {
+        if (layer == 0 && ctx.enable_layer0_capture) {
             // Capture after attention residual swap into current x.
             ctx.workspace.capture_post_attn0 = stable_capture(ctx.workspace.x);
         }
         Qwen2FFN(&ctx.ffns[layer], layer).forward(ctx);
-        if (layer == 0) {
+        if (layer == 0 && ctx.enable_layer0_capture) {
             // Capture after FFN residual swap into current x.
             ctx.workspace.capture_post_ffn0 = stable_capture(ctx.workspace.x);
         }
