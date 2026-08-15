@@ -1,6 +1,10 @@
 #include "../../src/kv_cache/block_manager.hpp"
 #include "../../src/models/sampling.hpp"
+#include "../../src/models/framework/model_context.hpp"
+#include "../../src/models/framework/weight_role.hpp"
+#include "../../src/models/framework/weight_set.hpp"
 #include "../../src/scheduler/scheduler.hpp"
+#include "../../src/tensor/tensor.hpp"
 
 #include <cstdint>
 #include <iostream>
@@ -98,6 +102,33 @@ void test_sequence_rejects_zero_token_prompt_before_dereference() {
     require(rejected, "zero-token prompt must be rejected");
 }
 
+void test_set_weight_fills_attn_slot() {
+    llaisys::framework::ModelContext ctx;
+    ctx.meta.nlayer = 2;
+    ctx.meta.hs = 4;
+    ctx.attns.resize(2);
+    ctx.ffns.resize(2);
+    auto w = llaisys::Tensor::create({4, 4}, LLAISYS_DTYPE_F32, LLAISYS_DEVICE_CPU, 0);
+    llaisys::framework::set_weight(ctx, llaisys::framework::WeightRole::AttnQ_W, 1, w);
+    require(ctx.attns[1].q_w.get() == w.get(), "AttnQ_W must land in attns[layer].q_w");
+    require(ctx.attns[0].q_w.get() == nullptr, "other layer slot must stay empty");
+}
+
+void test_set_weight_rejects_oob_layer() {
+    llaisys::framework::ModelContext ctx;
+    ctx.meta.nlayer = 1;
+    ctx.attns.resize(1);
+    ctx.ffns.resize(1);
+    auto w = llaisys::Tensor::create({1}, LLAISYS_DTYPE_F32, LLAISYS_DEVICE_CPU, 0);
+    bool threw = false;
+    try {
+        llaisys::framework::set_weight(ctx, llaisys::framework::WeightRole::MlpGate_W, 3, w);
+    } catch (const std::invalid_argument &) {
+        threw = true;
+    }
+    require(threw, "oob layer must throw invalid_argument");
+}
+
 } // namespace
 
 int main() {
@@ -106,6 +137,8 @@ int main() {
     test_mixed_top_k_uses_each_request_limit();
     test_chunked_prefill_makes_progress_without_generating_early();
     test_sequence_rejects_zero_token_prompt_before_dereference();
+    test_set_weight_fills_attn_slot();
+    test_set_weight_rejects_oob_layer();
     std::cout << "llaisys core test smoke assertion passed\n";
     return 0;
 }
