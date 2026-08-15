@@ -172,8 +172,7 @@ Qwen2::Qwen2(Qwen2Meta meta,
     this->_ctx.k_caches.resize(nlayer);
     this->_ctx.v_caches.resize(nlayer);
     this->use_layer_forward_ = env_use_layer_forward();
-    // 启动时间循环
-    this->start();
+    // 不在构造时 start：等 Python 填完 legacy Weights；首次 submit 时 sync + start
 }
 
 Qwen2::~Qwen2() {
@@ -195,6 +194,8 @@ void Qwen2::start(){
     if (this->_running) {
         return;
     }
+    // 权重加载结束后、worker 启动前：legacy struct → ModelContext（WeightRole）
+    this->sync_weights_from_legacy_struct();
     // 事件循环方法
     auto loop = [](Qwen2 *model)->void{
         while(model->_running){
@@ -224,6 +225,8 @@ void Qwen2::stop(){
 }
 
 qwen2_request_t Qwen2::submit(int64_t *token_ids, size_t ntoken, int64_t max_new_tokens, int top_k, float top_p, float temperature) {
+    // Python 填完 Weights 后首次提交时再 sync + 启动 worker
+    this->start();
     size_t limit = (max_new_tokens < 0) ? MAX_TOKEN_NUM : ntoken + static_cast<size_t>(max_new_tokens);
     auto request = std::make_shared<Qwen2Request>();
     request->sequence = std::make_shared<Sequence>(token_ids, ntoken, limit, top_k, top_p, temperature);
@@ -279,31 +282,31 @@ Qwen2Pack Qwen2::prepare_decode(const std::vector<seq_t> &seqs){
     return framework::Model::prepare_decode(seqs);
 }
 
-void Qwen2::bind_context_weights() {
+void Qwen2::sync_weights_from_legacy_struct() {
+    using framework::Model;
+    using framework::WeightRole;
+
     const Qwen2Weights &w = this->_weights;
     framework::ModelContext &ctx = this->_ctx;
     const size_t nlayer = this->_meta.nlayer;
 
-    // 从 legacy Weights 绑定到分层 Context（每次 forward_layers 调用，权重可能刚被 Python 填入）
-    ctx.in_embed = to_tensor(w.in_embed);
-    ctx.out_embed = to_tensor(w.out_embed);
-    ctx.out_norm_w = to_tensor(w.out_norm_w);
+    // 方案 A：legacy LlaisysQwen2Weights → WeightRole → ModelContext 分层槽位
+    Model::set_weight(ctx, WeightRole::InEmbed, 0, to_tensor(w.in_embed));
+    Model::set_weight(ctx, WeightRole::OutEmbed, 0, to_tensor(w.out_embed));
+    Model::set_weight(ctx, WeightRole::OutNorm, 0, to_tensor(w.out_norm_w));
     for (size_t layer = 0; layer < nlayer; ++layer) {
-        auto &attn = ctx.attns[layer];
-        attn.norm_w = to_tensor(w.attn_norm_w[layer]);
-        attn.q_w = to_tensor(w.attn_q_w[layer]);
-        attn.q_b = to_tensor(w.attn_q_b[layer]);
-        attn.k_w = to_tensor(w.attn_k_w[layer]);
-        attn.k_b = to_tensor(w.attn_k_b[layer]);
-        attn.v_w = to_tensor(w.attn_v_w[layer]);
-        attn.v_b = to_tensor(w.attn_v_b[layer]);
-        attn.o_w = to_tensor(w.attn_o_w[layer]);
-
-        auto &ffn = ctx.ffns[layer];
-        ffn.norm_w = to_tensor(w.mlp_norm_w[layer]);
-        ffn.gate_w = to_tensor(w.mlp_gate_w[layer]);
-        ffn.up_w = to_tensor(w.mlp_up_w[layer]);
-        ffn.down_w = to_tensor(w.mlp_down_w[layer]);
+        Model::set_weight(ctx, WeightRole::AttnNorm, layer, to_tensor(w.attn_norm_w[layer]));
+        Model::set_weight(ctx, WeightRole::AttnQ_W, layer, to_tensor(w.attn_q_w[layer]));
+        Model::set_weight(ctx, WeightRole::AttnQ_B, layer, to_tensor(w.attn_q_b[layer]));
+        Model::set_weight(ctx, WeightRole::AttnK_W, layer, to_tensor(w.attn_k_w[layer]));
+        Model::set_weight(ctx, WeightRole::AttnK_B, layer, to_tensor(w.attn_k_b[layer]));
+        Model::set_weight(ctx, WeightRole::AttnV_W, layer, to_tensor(w.attn_v_w[layer]));
+        Model::set_weight(ctx, WeightRole::AttnV_B, layer, to_tensor(w.attn_v_b[layer]));
+        Model::set_weight(ctx, WeightRole::AttnO_W, layer, to_tensor(w.attn_o_w[layer]));
+        Model::set_weight(ctx, WeightRole::MlpNorm, layer, to_tensor(w.mlp_norm_w[layer]));
+        Model::set_weight(ctx, WeightRole::MlpGate_W, layer, to_tensor(w.mlp_gate_w[layer]));
+        Model::set_weight(ctx, WeightRole::MlpUp_W, layer, to_tensor(w.mlp_up_w[layer]));
+        Model::set_weight(ctx, WeightRole::MlpDown_W, layer, to_tensor(w.mlp_down_w[layer]));
 
         ctx.k_caches[layer] = this->_k_cache[layer];
         ctx.v_caches[layer] = this->_v_cache[layer];
@@ -423,8 +426,8 @@ std::vector<int64_t> Qwen2::forward(Qwen2Pack &pack, std::vector<int64_t> &block
 }
 
 std::vector<int64_t> Qwen2::forward_layers(Qwen2Pack &pack, std::vector<int64_t> &block_ids, bool is_prefill) {
-    // 绑定权重 / KV，再写入本步 runtime + workspace
-    bind_context_weights();
+    // sync 保证 Context 权重槽位与 legacy struct 一致（双路径单测在 stop 后直接填 Weights）
+    sync_weights_from_legacy_struct();
     bind_context_runtime(pack, block_ids, is_prefill);
     // 执行分层 stack（产出 logits；layer0 capture 默认关闭，避免跨线程 Runtime 悬挂）
     framework::run_qwen2_layer_stack(this->_ctx, is_prefill);

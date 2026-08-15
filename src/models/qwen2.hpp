@@ -86,8 +86,8 @@ private:
     bool use_layer_forward_ = false;
     // logprobs 下次迭代实现: 添加 mutex + 需要时 forward 中保存 logits C PU 快照
 
-    // 把 legacy Weights / KV / 运行时张量绑定到 ModelContext
-    void bind_context_weights();
+    // 方案 A：从 legacy Weights 经 WeightRole/set_weight 同步到 ModelContext（加载结束 / start 前）
+    void sync_weights_from_legacy_struct();
     void bind_context_runtime(Qwen2Pack &pack, std::vector<int64_t> &block_ids, bool is_prefill);
     // 与 legacy 相同的 topk + sample 后处理
     std::vector<int64_t> sample_from_logits(tensor_t logits, Qwen2Pack &pack);

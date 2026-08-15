@@ -16,6 +16,7 @@ from ..libllaisys import (
     llaisysQwen2Model_t,
 )
 from ..tensor import Tensor
+from .qwen2_weight_map import assign_to_legacy_weights, resolve_hf_weight
 
 
 class Qwen2:
@@ -139,49 +140,14 @@ class Qwen2:
         self._tensors.append(t)
         return t
 
-    # 加载权重: 将对应的 tensor 赋给对应的权重
+    # 加载权重: HF 名 → WeightRole → 仍写入 legacy LlaisysQwen2Weights（方案 A）
     def _assign_weight(self, name: str, arr: np.ndarray):
+        resolved = resolve_hf_weight(name)
+        if resolved is None:
+            return
+        role, layer = resolved
         t = self._tensor_from_numpy(arr)
-        if name == "model.embed_tokens.weight":
-            self._weights.in_embed = t.lib_tensor()
-            return
-        if name == "lm_head.weight":
-            self._weights.out_embed = t.lib_tensor()
-            return
-        if name == "model.norm.weight":
-            self._weights.out_norm_w = t.lib_tensor()
-            return
-
-        if name.startswith("model.layers."):
-            parts = name.split(".")
-            if len(parts) < 4:
-                return
-            layer = int(parts[2])
-            suffix = ".".join(parts[3:])
-            if suffix == "input_layernorm.weight":
-                self._weights.attn_norm_w[layer] = t.lib_tensor()
-            elif suffix == "self_attn.q_proj.weight":
-                self._weights.attn_q_w[layer] = t.lib_tensor()
-            elif suffix == "self_attn.q_proj.bias":
-                self._weights.attn_q_b[layer] = t.lib_tensor()
-            elif suffix == "self_attn.k_proj.weight":
-                self._weights.attn_k_w[layer] = t.lib_tensor()
-            elif suffix == "self_attn.k_proj.bias":
-                self._weights.attn_k_b[layer] = t.lib_tensor()
-            elif suffix == "self_attn.v_proj.weight":
-                self._weights.attn_v_w[layer] = t.lib_tensor()
-            elif suffix == "self_attn.v_proj.bias":
-                self._weights.attn_v_b[layer] = t.lib_tensor()
-            elif suffix == "self_attn.o_proj.weight":
-                self._weights.attn_o_w[layer] = t.lib_tensor()
-            elif suffix == "post_attention_layernorm.weight":
-                self._weights.mlp_norm_w[layer] = t.lib_tensor()
-            elif suffix == "mlp.gate_proj.weight":
-                self._weights.mlp_gate_w[layer] = t.lib_tensor()
-            elif suffix == "mlp.up_proj.weight":
-                self._weights.mlp_up_w[layer] = t.lib_tensor()
-            elif suffix == "mlp.down_proj.weight":
-                self._weights.mlp_down_w[layer] = t.lib_tensor()
+        assign_to_legacy_weights(self._weights, role, layer, t.lib_tensor())
 
     # 生成回复
     def _submit_request(self, tokens, max_new_tokens, top_k, top_p, temperature):
