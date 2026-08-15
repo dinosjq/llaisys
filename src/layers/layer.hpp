@@ -1,6 +1,6 @@
 #pragma once
 
-#include "model_context.hpp"
+#include "../models/core/model_context.hpp"
 
 namespace llaisys::framework {
 

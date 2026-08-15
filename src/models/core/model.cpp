@@ -1,5 +1,7 @@
 #include "model.hpp"
 
+#include "../../utils/check.hpp"
+
 #include <algorithm>
 #include <stdexcept>
 #include <utility>
@@ -21,6 +23,93 @@ void validate_ffn_layer(const ModelContext &ctx, size_t layer) {
 }
 
 } // namespace
+
+Model::~Model() {
+    this->_ctx.workspace.capture_post_attn0.reset();
+    this->_ctx.workspace.capture_post_ffn0.reset();
+    this->stop();
+    if (this->_worker.joinable()) {
+        this->_worker.join();
+    }
+}
+
+void Model::start() {
+    if (this->_running) {
+        return;
+    }
+    // 权重加载结束后、worker 启动前
+    this->sync_weights();
+    auto loop = [](Model *model) -> void {
+        while (model->_running) {
+            // 先根据调度器决定本次计算的序列
+            auto [seqs, is_prefill] = model->_scheduler->schedule();
+            if (seqs.empty())
+                continue;
+            // 预处理块表
+            auto block_ids = Model::prepare_block_table(seqs, MAX_BLOCK_NUM);
+            // prefill / decode 预处理
+            BatchPack pack = is_prefill ? Model::prepare_prefill(seqs) : Model::prepare_decode(seqs);
+            // 子类 forward（Layer 组装）
+            std::vector<int64_t> token_ids = model->forward(pack, block_ids, is_prefill);
+            // 后处理更新 kv cache 信息
+            model->_scheduler->postprocess(seqs, token_ids, is_prefill);
+        }
+    };
+    // Genshen启动!
+    this->_running = true;
+    this->_worker = std::thread(loop, this);
+}
+
+void Model::stop() {
+    this->_running = false;
+}
+
+model_request_t Model::submit(int64_t *token_ids, size_t ntoken, int64_t max_new_tokens, int top_k, float top_p,
+                              float temperature) {
+    // 首次提交时再 sync + 启动 worker
+    this->start();
+    size_t limit = (max_new_tokens < 0) ? MAX_TOKEN_NUM : ntoken + static_cast<size_t>(max_new_tokens);
+    auto request = std::make_shared<ModelRequest>();
+    request->sequence = std::make_shared<Sequence>(token_ids, ntoken, limit, top_k, top_p, temperature);
+    request->observed_tokens = ntoken;
+    {
+        std::lock_guard<std::mutex> lock(this->_request_lock);
+        this->_active_requests.push_back(request);
+    }
+    this->_scheduler->add(request->sequence);
+    return request;
+}
+
+int64_t Model::await(const model_request_t &request) {
+    CHECK_ARGUMENT(request != nullptr && request->sequence != nullptr, "invalid request handle");
+    std::lock_guard<std::mutex> lock(request->mutex);
+    if (!request->sequence->wait_for_token(request->observed_tokens)) {
+        return -2;
+    }
+    const int64_t token = request->sequence->token_at(request->observed_tokens);
+    ++request->observed_tokens;
+    return token;
+}
+
+void Model::abort(const model_request_t &request) {
+    if (request && request->sequence) {
+        this->_scheduler->abort(request->sequence);
+    }
+}
+
+void Model::release(const model_request_t &request) {
+    if (!request) {
+        return;
+    }
+    if (request->sequence && !request->sequence->is_finish()) {
+        this->_scheduler->abort(request->sequence);
+    }
+    std::lock_guard<std::mutex> lock(this->_request_lock);
+    auto it = std::find(this->_active_requests.begin(), this->_active_requests.end(), request);
+    if (it != this->_active_requests.end()) {
+        this->_active_requests.erase(it);
+    }
+}
 
 void Model::set_weight(ModelContext &ctx, WeightRole role, size_t layer, tensor_t tensor) {
     switch (role) {
@@ -112,18 +201,14 @@ std::vector<int64_t> Model::prepare_block_table(const std::vector<seq_t> &seqs, 
  * prefill预处理
  * prefill阶段每个seq的计算长度可能不同，导致直接对tensor添加batch维度会无法对齐
  * 所以这里的做法是: 直接将所有要计算的seq拼接在一起，并记录对应的端点信息；
- * 原因是：除了 attention 和 采样算子(top_k) 之外的其他算子天然支持并行计算，
- *        并且 top_k 可以先将要处理的信息先按 batch 划分，然后执行批次计算，
- *        对 attention 则需要记录间断点（load q）和最长序列信息（算子分块）还需要已计算部分的总长信息（totlen），
- *        也可以进行批处理改造
  */
-Qwen2Pack Model::prepare_prefill(const std::vector<seq_t> &seqs) {
+BatchPack Model::prepare_prefill(const std::vector<seq_t> &seqs) {
     const size_t batch_size = seqs.size();
-    std::vector<int64_t> token_ids; // token信息
-    std::vector<int64_t> pos_ids;   // 位置信息
-    std::vector<int64_t> cut_idx(1, 0); // 切断点
-    std::vector<int64_t> tot_len;       // 总长信息
-    size_t max_seq_len = 0;         // 最大序列长度
+    std::vector<int64_t> token_ids;
+    std::vector<int64_t> pos_ids;
+    std::vector<int64_t> cut_idx(1, 0);
+    std::vector<int64_t> tot_len;
+    size_t max_seq_len = 0;
     for (size_t i = 0; i < batch_size; ++i) {
         seq_t seq = seqs[i];
         const size_t seq_len = seq->scheduled_token_num();
@@ -148,14 +233,14 @@ Qwen2Pack Model::prepare_prefill(const std::vector<seq_t> &seqs) {
         temps.push_back(seqs[i]->temperature());
         rngs.push_back(&seqs[i]->rng());
     }
-    return Qwen2Pack{token_ids, pos_ids, cut_idx, tot_len, top_ks, top_ps, temps, rngs, max_seq_len};
+    return BatchPack{token_ids, pos_ids, cut_idx, tot_len, top_ks, top_ps, temps, rngs, max_seq_len};
 }
 
 /**
  * decode预处理
  * 相较于 prefill 更加简单，因为所有 seq 当前的计算长度 seqlen 都是 1
  */
-Qwen2Pack Model::prepare_decode(const std::vector<seq_t> &seqs) {
+BatchPack Model::prepare_decode(const std::vector<seq_t> &seqs) {
     const size_t batch_size = seqs.size();
     std::vector<int64_t> token_ids;
     std::vector<int64_t> pos_ids;
@@ -170,7 +255,6 @@ Qwen2Pack Model::prepare_decode(const std::vector<seq_t> &seqs) {
         cut_idx.push_back(cut_idx.back() + 1);
         tot_len.push_back(seq->token_num());
     }
-    // per-seq 采样参数
     std::vector<int> top_ks;
     std::vector<float> top_ps, temps;
     std::vector<std::mt19937 *> rngs;
@@ -180,7 +264,7 @@ Qwen2Pack Model::prepare_decode(const std::vector<seq_t> &seqs) {
         temps.push_back(seqs[i]->temperature());
         rngs.push_back(&seqs[i]->rng());
     }
-    return Qwen2Pack{token_ids, pos_ids, cut_idx, tot_len, top_ks, top_ps, temps, rngs, 1};
+    return BatchPack{token_ids, pos_ids, cut_idx, tot_len, top_ks, top_ps, temps, rngs, 1};
 }
 
 } // namespace llaisys::framework

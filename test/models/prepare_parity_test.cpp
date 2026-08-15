@@ -1,6 +1,6 @@
 #include "../../src/config.hpp"
-#include "../../src/models/framework/model.hpp"
-#include "../../src/models/qwen2_pack.hpp"
+#include "../../src/models/core/model.hpp"
+#include "../../src/models/core/model_context.hpp"
 #include "../../src/sequence/sequence.hpp"
 
 #include <algorithm>
@@ -33,7 +33,7 @@ std::vector<int64_t> oracle_prepare_block_table(const std::vector<llaisys::seq_t
     return block_table;
 }
 
-llaisys::Qwen2Pack oracle_prepare_prefill(const std::vector<llaisys::seq_t> &seqs) {
+llaisys::framework::BatchPack oracle_prepare_prefill(const std::vector<llaisys::seq_t> &seqs) {
     const size_t batch_size = seqs.size();
     std::vector<int64_t> token_ids;
     std::vector<int64_t> pos_ids;
@@ -63,10 +63,10 @@ llaisys::Qwen2Pack oracle_prepare_prefill(const std::vector<llaisys::seq_t> &seq
         temps.push_back(seqs[i]->temperature());
         rngs.push_back(&seqs[i]->rng());
     }
-    return llaisys::Qwen2Pack{token_ids, pos_ids, cut_idx, tot_len, top_ks, top_ps, temps, rngs, max_seq_len};
+    return llaisys::framework::BatchPack{token_ids, pos_ids, cut_idx, tot_len, top_ks, top_ps, temps, rngs, max_seq_len};
 }
 
-llaisys::Qwen2Pack oracle_prepare_decode(const std::vector<llaisys::seq_t> &seqs) {
+llaisys::framework::BatchPack oracle_prepare_decode(const std::vector<llaisys::seq_t> &seqs) {
     const size_t batch_size = seqs.size();
     std::vector<int64_t> token_ids;
     std::vector<int64_t> pos_ids;
@@ -90,7 +90,7 @@ llaisys::Qwen2Pack oracle_prepare_decode(const std::vector<llaisys::seq_t> &seqs
         temps.push_back(seqs[i]->temperature());
         rngs.push_back(&seqs[i]->rng());
     }
-    return llaisys::Qwen2Pack{token_ids, pos_ids, cut_idx, tot_len, top_ks, top_ps, temps, rngs, 1};
+    return llaisys::framework::BatchPack{token_ids, pos_ids, cut_idx, tot_len, top_ks, top_ps, temps, rngs, 1};
 }
 
 void require_vec_eq(const std::vector<int64_t> &a, const std::vector<int64_t> &b, const char *msg) {
@@ -100,7 +100,7 @@ void require_vec_eq(const std::vector<int64_t> &a, const std::vector<int64_t> &b
     }
 }
 
-void require_pack_eq(const llaisys::Qwen2Pack &a, const llaisys::Qwen2Pack &b, const char *msg) {
+void require_pack_eq(const llaisys::framework::BatchPack &a, const llaisys::framework::BatchPack &b, const char *msg) {
     require_vec_eq(a.token_ids, b.token_ids, msg);
     require_vec_eq(a.pos_ids, b.pos_ids, msg);
     require_vec_eq(a.cut_idx, b.cut_idx, msg);

@@ -4,9 +4,28 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <random>
 #include <vector>
 
 namespace llaisys::framework {
+
+enum class WeightRole : int {
+    InEmbed,
+    OutEmbed,
+    OutNorm,
+    AttnNorm,
+    AttnQ_W,
+    AttnQ_B,
+    AttnK_W,
+    AttnK_B,
+    AttnV_W,
+    AttnV_B,
+    AttnO_W,
+    MlpNorm,
+    MlpGate_W,
+    MlpUp_W,
+    MlpDown_W,
+};
 
 struct AttnWeights {
     tensor_t norm_w, q_w, q_b, k_w, k_b, v_w, v_b, o_w;
@@ -23,11 +42,23 @@ struct ModelMeta {
     int64_t end_token;
 };
 
+// prepare_prefill / prepare_decode 产出的 batch 打包（原 Qwen2Pack）
+struct BatchPack {
+    std::vector<int64_t> token_ids;
+    std::vector<int64_t> pos_ids;
+    std::vector<int64_t> cut_idx;
+    std::vector<int64_t> tot_len;
+    std::vector<int> top_k;
+    std::vector<float> top_p;
+    std::vector<float> temperature;
+    std::vector<std::mt19937 *> rngs;
+    size_t max_seq_len;
+};
+
 struct BatchRuntime {
     std::vector<int64_t> token_ids, pos_ids, cut_idx, tot_len;
     size_t max_seq_len = 0;
-    // Batch cumulative KV block count from block-table metadata
-    // (production: block_ids[(batch_size-1)*width]), not KV pool capacity.
+    // 批次累计 KV 块数（来自块表元数据，不是 KV 池容量）
     size_t tot_block_num = 0;
     bool is_prefill = true;
 };
@@ -72,8 +103,7 @@ struct ModelContext {
     std::vector<tensor_t> k_caches;
     std::vector<tensor_t> v_caches;
     tensor_t in_embed, out_embed, out_norm_w;
-    // Off by default: stable_capture allocates host Storage via the calling
-    // thread's Runtime; worker-thread captures must not outlive that thread.
+    // 默认关闭：stable_capture 走调用线程 Runtime，不可跨 worker 线程悬挂
     bool enable_layer0_capture = false;
 };
 

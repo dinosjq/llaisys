@@ -1,5 +1,5 @@
-#include "../../src/models/framework/model_context.hpp"
-#include "../../src/models/layers/qwen2/stack.hpp"
+#include "../../src/models/core/model_context.hpp"
+#include "../../src/layers/qwen2/qwen2.hpp"
 #include "../../src/ops/add/op.hpp"
 #include "../../src/ops/embedding/op.hpp"
 #include "../../src/ops/kv_cache_move/op.hpp"

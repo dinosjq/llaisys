@@ -1,8 +1,8 @@
 #include "../../src/kv_cache/block_manager.hpp"
-#include "../../src/models/sampling.hpp"
-#include "../../src/models/framework/model.hpp"
-#include "../../src/models/framework/model_context.hpp"
-#include "../../src/models/framework/weight_role.hpp"
+#include "../../src/sampling/sampling.hpp"
+#include "../../src/models/core/model.hpp"
+#include "../../src/models/core/model_context.hpp"
+#include "../../src/models/core/model_context.hpp"
 #include "../../src/scheduler/scheduler.hpp"
 #include "../../src/tensor/tensor.hpp"
 

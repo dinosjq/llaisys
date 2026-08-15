@@ -72,11 +72,9 @@ target("llaisys-core")
     add_files("src/core/*/*.cpp")
     add_files("src/kv_cache/*.cpp")
     add_files("src/scheduler/*.cpp")
-    add_files("src/models/*.cpp")
-    -- framework: model.cpp (set_weight + prepare_* stubs); weight_set.cpp removed
-    add_files("src/models/framework/*.cpp")
-    add_files("src/models/layers/qwen2/*.cpp")
-    add_files("src/models/layers/llama/*.cpp")
+    -- Model 基类 + 采样（不含依赖 ops 的 Layer / 具体模型，避免 core↔ops 环）
+    add_files("src/models/core/*.cpp")
+    add_files("src/sampling/*.cpp")
 
     on_install(function (target) end)
 target_end()
@@ -137,6 +135,9 @@ target("llaisys")
     add_files("src/llaisys/*.cc")
     add_files("src/llaisys/models/*.cc")
     add_files("src/sequence/*.cpp")
+    add_files("src/models/qwen2/*.cpp")
+    add_files("src/layers/qwen2/*.cpp")
+    add_files("src/layers/llama/*.cpp")
     set_installdir(".")
 
     
@@ -202,24 +203,39 @@ target("llaisys-prepare-parity-test")
     on_install(function (target) end)
 target_end()
 
+
 target("llaisys-model-layer-cpu-test")
     set_kind("binary")
     set_default(false)
-    add_deps("llaisys-core")
-    add_deps("llaisys-ops")
+    add_deps("llaisys-core", {inherit = false})
+    add_deps("llaisys-ops", {inherit = false})
+    add_deps("llaisys-tensor", {inherit = false})
+    add_deps("llaisys-device", {inherit = false})
+    add_deps("llaisys-utils", {inherit = false})
+    add_deps("llaisys-ops-cpu", {inherit = false})
+    add_deps("llaisys-device-cpu", {inherit = false})
     if has_config("nv-gpu") then
+        add_deps("llaisys-ops-nvidia", {inherit = false})
+        add_deps("llaisys-device-nvidia", {inherit = false})
         add_packages("cuda")
         add_rules("cuda")
         set_policy("build.cuda.devlink", true)
-        add_linkdirs("/usr/local/cuda/lib64")
+        add_linkdirs("$(builddir)/$(plat)/$(arch)/$(mode)", "/usr/local/cuda/lib64")
+        add_links("llaisys-ops", "llaisys-ops-cpu", "llaisys-ops-nvidia", "llaisys-tensor",
+                  "llaisys-device", "llaisys-device-cpu", "llaisys-device-nvidia", "llaisys-core", "llaisys-utils")
         add_syslinks("cublas", "cublasLt")
         add_ldflags("-Wl,-rpath=/usr/local/cuda/lib64")
+    else
+        add_linkdirs("$(builddir)/$(plat)/$(arch)/$(mode)")
+        add_links("llaisys-ops", "llaisys-ops-cpu", "llaisys-tensor",
+                  "llaisys-device", "llaisys-device-cpu", "llaisys-core", "llaisys-utils")
     end
 
     set_languages("cxx17")
     set_warnings("all", "error")
     add_includedirs("src")
     add_files("test/models/qwen2_layer_cpu_test.cpp")
+    add_files("src/layers/qwen2/qwen2.cpp")
     add_files("src/llaisys/runtime.cc")
     add_files("src/ops/rearrange/op.cpp")
 
@@ -230,12 +246,21 @@ if has_config("nv-gpu") then
     target("llaisys-model-layer-nvidia-test")
         set_kind("binary")
         set_default(false)
-        add_deps("llaisys-core")
-        add_deps("llaisys-ops")
+        add_deps("llaisys-core", {inherit = false})
+        add_deps("llaisys-ops", {inherit = false})
+        add_deps("llaisys-tensor", {inherit = false})
+        add_deps("llaisys-device", {inherit = false})
+        add_deps("llaisys-utils", {inherit = false})
+        add_deps("llaisys-ops-cpu", {inherit = false})
+        add_deps("llaisys-ops-nvidia", {inherit = false})
+        add_deps("llaisys-device-cpu", {inherit = false})
+        add_deps("llaisys-device-nvidia", {inherit = false})
         add_packages("cuda")
         add_rules("cuda")
         set_policy("build.cuda.devlink", true)
-        add_linkdirs("/usr/local/cuda/lib64")
+        add_linkdirs("$(builddir)/$(plat)/$(arch)/$(mode)", "/usr/local/cuda/lib64")
+        add_links("llaisys-ops", "llaisys-ops-cpu", "llaisys-ops-nvidia", "llaisys-tensor",
+                  "llaisys-device", "llaisys-device-cpu", "llaisys-device-nvidia", "llaisys-core", "llaisys-utils")
         add_syslinks("cublas", "cublasLt")
         add_ldflags("-Wl,-rpath=/usr/local/cuda/lib64")
 
@@ -243,6 +268,7 @@ if has_config("nv-gpu") then
         set_warnings("all", "error")
         add_includedirs("src")
         add_files("test/models/qwen2_layer_nvidia_test.cpp")
+        add_files("src/layers/qwen2/qwen2.cpp")
         add_files("src/llaisys/runtime.cc")
         add_files("src/ops/rearrange/op.cpp")
 
@@ -265,9 +291,8 @@ if has_config("nv-gpu") then
         add_rules("cuda")
         set_policy("build.cuda.devlink", true)
         add_linkdirs("$(builddir)/$(plat)/$(arch)/$(mode)", "/usr/local/cuda/lib64")
-        -- Explicit order (inherit=false): core before ops so Qwen2/layer refs resolve.
-        add_links("llaisys-core", "llaisys-ops", "llaisys-ops-cpu", "llaisys-ops-nvidia", "llaisys-tensor",
-                  "llaisys-device", "llaisys-device-cpu", "llaisys-device-nvidia", "llaisys-utils")
+        add_links("llaisys-ops", "llaisys-ops-cpu", "llaisys-ops-nvidia", "llaisys-tensor",
+                  "llaisys-device", "llaisys-device-cpu", "llaisys-device-nvidia", "llaisys-core", "llaisys-utils")
         add_syslinks("cublas", "cublasLt")
         add_ldflags("-Wl,-rpath=/usr/local/cuda/lib64")
 
@@ -275,6 +300,9 @@ if has_config("nv-gpu") then
         set_warnings("all", "error")
         add_includedirs("src")
         add_files("test/models/qwen2_dual_path_nvidia_test.cpp")
+        add_files("src/models/qwen2/qwen2.cpp")
+        add_files("src/layers/qwen2/qwen2.cpp")
+        add_files("src/layers/llama/llama.cpp")
         add_files("src/llaisys/runtime.cc")
         add_files("src/ops/rearrange/op.cpp")
         add_files("src/sequence/*.cpp")

@@ -1,7 +1,7 @@
 #include "llaisys/models/qwen2.h"
 
 #include "../llaisys_tensor.hpp"
-#include "../../models/qwen2.hpp"
+#include "../../models/qwen2/qwen2.hpp"
 
 struct LlaisysQwen2Model {
     llaisys::Qwen2_t qwen2;

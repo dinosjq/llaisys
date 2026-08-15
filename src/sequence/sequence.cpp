@@ -1,6 +1,6 @@
 #include "sequence.hpp"
 #include "../kv_cache/block_manager.hpp"
-#include "../models/sampling.hpp"
+#include "../sampling/sampling.hpp"
 
 #include <algorithm>
 #include <cmath>
