@@ -4,6 +4,7 @@
 #include "../tensor/tensor.hpp"
 #include "../kv_cache/block_manager.hpp"
 #include "../scheduler/scheduler.hpp"
+#include "framework/model_context.hpp"
 #include "qwen2_pack.hpp"
 #include <mutex>
 #include <random>
@@ -80,7 +81,16 @@ private:
     // 事件循环
     bool _running;
     std::thread _worker;
+    // 分层框架上下文（权重/KV/workspace 绑定；默认仍走硬编码 forward）
+    framework::ModelContext _ctx;
+    bool use_layer_forward_ = false;
     // logprobs 下次迭代实现: 添加 mutex + 需要时 forward 中保存 logits C PU 快照
+
+    // 把 legacy Weights / KV / 运行时张量绑定到 ModelContext
+    void bind_context_weights();
+    void bind_context_runtime(Qwen2Pack &pack, std::vector<int64_t> &block_ids, bool is_prefill);
+    // 与 legacy 相同的 topk + sample 后处理
+    std::vector<int64_t> sample_from_logits(tensor_t logits, Qwen2Pack &pack);
 
 public:
     Qwen2(Qwen2Meta meta, llaisysDeviceType_t device, int *device_ids, int ndevice);
@@ -117,8 +127,17 @@ public:
     Qwen2Pack prepare_prefill(const std::vector<seq_t> &seqs);
     Qwen2Pack prepare_decode(const std::vector<seq_t> &seqs);
 
-    // 批次前向传播
-    std::vector<int64_t> forward(Qwen2Pack &pack, std::vector<int64_t> &block_ids, bool is_prefill);    
+    // 批次前向传播（按 use_layer_forward_ 分发）
+    std::vector<int64_t> forward(Qwen2Pack &pack, std::vector<int64_t> &block_ids, bool is_prefill);
+    // 硬编码循环（默认路径）
+    std::vector<int64_t> forward_legacy(Qwen2Pack &pack, std::vector<int64_t> &block_ids, bool is_prefill);
+    // Layer 组装路径：填 Context → run_qwen2_layer_stack → 同 legacy 采样
+    std::vector<int64_t> forward_layers(Qwen2Pack &pack, std::vector<int64_t> &block_ids, bool is_prefill);
+
+    bool use_layer_forward() const { return use_layer_forward_; }
+    void set_use_layer_forward(bool enabled) { use_layer_forward_ = enabled; }
+    // 最近一次 forward 写入的 logits 视图（供双路径对照）
+    tensor_t last_logits(size_t batch_size) const;
 
     // 模型权重
     Qwen2Weights &weights(){ return this->_weights; }

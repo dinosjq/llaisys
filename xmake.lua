@@ -247,4 +247,37 @@ if has_config("nv-gpu") then
 
         on_install(function (target) end)
     target_end()
+
+    target("llaisys-qwen2-dual-path-nvidia-test")
+        set_kind("binary")
+        set_default(false)
+        add_deps("llaisys-core", {inherit = false})
+        add_deps("llaisys-ops", {inherit = false})
+        add_deps("llaisys-tensor", {inherit = false})
+        add_deps("llaisys-device", {inherit = false})
+        add_deps("llaisys-utils", {inherit = false})
+        add_deps("llaisys-ops-cpu", {inherit = false})
+        add_deps("llaisys-ops-nvidia", {inherit = false})
+        add_deps("llaisys-device-cpu", {inherit = false})
+        add_deps("llaisys-device-nvidia", {inherit = false})
+        add_packages("cuda")
+        add_rules("cuda")
+        set_policy("build.cuda.devlink", true)
+        add_linkdirs("$(builddir)/$(plat)/$(arch)/$(mode)", "/usr/local/cuda/lib64")
+        -- Explicit order (inherit=false): core before ops so Qwen2/layer refs resolve.
+        add_links("llaisys-core", "llaisys-ops", "llaisys-ops-cpu", "llaisys-ops-nvidia", "llaisys-tensor",
+                  "llaisys-device", "llaisys-device-cpu", "llaisys-device-nvidia", "llaisys-utils")
+        add_syslinks("cublas", "cublasLt")
+        add_ldflags("-Wl,-rpath=/usr/local/cuda/lib64")
+
+        set_languages("cxx17")
+        set_warnings("all", "error")
+        add_includedirs("src")
+        add_files("test/models/qwen2_dual_path_nvidia_test.cpp")
+        add_files("src/llaisys/runtime.cc")
+        add_files("src/ops/rearrange/op.cpp")
+        add_files("src/sequence/*.cpp")
+
+        on_install(function (target) end)
+    target_end()
 end

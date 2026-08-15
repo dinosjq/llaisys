@@ -2,6 +2,7 @@
 #include "../sequence/sequence.hpp"
 #include "qwen2.hpp"
 #include "framework/model.hpp"
+#include "layers/qwen2/stack.hpp"
 #include "../llaisys/llaisys_tensor.hpp"
 #include "../ops/add/op.hpp"
 #include "../ops/argmax/op.hpp"
@@ -22,6 +23,7 @@
 #include <numeric>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <iostream>
 #include <functional>
 #include <thread> 
@@ -79,6 +81,15 @@ static void free_weight_arrays(Qwen2Weights &w) {
     w.mlp_gate_w = nullptr;
     w.mlp_up_w = nullptr;
     w.mlp_down_w = nullptr;
+}
+
+// LLAISYS_QWEN2_LAYER_FORWARD unset/0 → legacy；非 0 → layer stack
+static bool env_use_layer_forward() {
+    const char *value = std::getenv("LLAISYS_QWEN2_LAYER_FORWARD");
+    if (value == nullptr || value[0] == '\0') {
+        return false;
+    }
+    return std::strcmp(value, "0") != 0;
 }
 
 } // namespace
@@ -153,6 +164,14 @@ Qwen2::Qwen2(Qwen2Meta meta,
     }
     // 创建调度器
     this->_scheduler = std::make_shared<Scheduler>(token_num, block_num, BATCH_MAX_TOKEN_NUM, BATCH_MAX_SEQ_NUM, meta.end_token);
+    // 初始化分层 ModelContext（权重稍后从 legacy Weights 绑定）
+    this->_ctx.meta = framework::ModelMeta{meta.dtype, meta.nlayer, meta.hs, meta.nh, meta.nkvh, meta.dh, meta.di,
+                                            meta.maxseq, meta.voc, meta.epsilon, meta.theta, meta.end_token};
+    this->_ctx.attns.resize(nlayer);
+    this->_ctx.ffns.resize(nlayer);
+    this->_ctx.k_caches.resize(nlayer);
+    this->_ctx.v_caches.resize(nlayer);
+    this->use_layer_forward_ = env_use_layer_forward();
     // 启动时间循环
     this->start();
 }
@@ -182,8 +201,10 @@ void Qwen2::start(){
             auto block_ids = model->prepare_block_table(seqs);
             // 根据是 prefill 还是 decode 分别进行预处理
             Qwen2Pack pack = is_prefill ? model->prepare_prefill(seqs) : model->prepare_decode(seqs);
-            // 执行一次批处理前向传播
-            std::vector<int64_t> token_ids = model->forward(pack, block_ids, is_prefill);
+            // 执行一次批处理前向传播（默认 legacy；LLAISYS_QWEN2_LAYER_FORWARD 开启时走 layer）
+            std::vector<int64_t> token_ids = model->use_layer_forward_
+                                                ? model->forward_layers(pack, block_ids, is_prefill)
+                                                : model->forward_legacy(pack, block_ids, is_prefill);
             // 后处理更新kv cache信息
             model->_scheduler->postprocess(seqs, token_ids, is_prefill);
         }
@@ -254,7 +275,160 @@ Qwen2Pack Qwen2::prepare_decode(const std::vector<seq_t> &seqs){
     return framework::Model::prepare_decode(seqs);
 }
 
-std::vector<int64_t> Qwen2::forward(Qwen2Pack &pack, std::vector<int64_t> &block_ids, bool is_prefill){
+void Qwen2::bind_context_weights() {
+    const Qwen2Weights &w = this->_weights;
+    framework::ModelContext &ctx = this->_ctx;
+    const size_t nlayer = this->_meta.nlayer;
+
+    // 从 legacy Weights 绑定到分层 Context（每次 forward_layers 调用，权重可能刚被 Python 填入）
+    ctx.in_embed = to_tensor(w.in_embed);
+    ctx.out_embed = to_tensor(w.out_embed);
+    ctx.out_norm_w = to_tensor(w.out_norm_w);
+    for (size_t layer = 0; layer < nlayer; ++layer) {
+        auto &attn = ctx.attns[layer];
+        attn.norm_w = to_tensor(w.attn_norm_w[layer]);
+        attn.q_w = to_tensor(w.attn_q_w[layer]);
+        attn.q_b = to_tensor(w.attn_q_b[layer]);
+        attn.k_w = to_tensor(w.attn_k_w[layer]);
+        attn.k_b = to_tensor(w.attn_k_b[layer]);
+        attn.v_w = to_tensor(w.attn_v_w[layer]);
+        attn.v_b = to_tensor(w.attn_v_b[layer]);
+        attn.o_w = to_tensor(w.attn_o_w[layer]);
+
+        auto &ffn = ctx.ffns[layer];
+        ffn.norm_w = to_tensor(w.mlp_norm_w[layer]);
+        ffn.gate_w = to_tensor(w.mlp_gate_w[layer]);
+        ffn.up_w = to_tensor(w.mlp_up_w[layer]);
+        ffn.down_w = to_tensor(w.mlp_down_w[layer]);
+
+        ctx.k_caches[layer] = this->_k_cache[layer];
+        ctx.v_caches[layer] = this->_v_cache[layer];
+    }
+}
+
+void Qwen2::bind_context_runtime(Qwen2Pack &pack, std::vector<int64_t> &block_ids, bool is_prefill) {
+    const Qwen2Meta &meta = this->_meta;
+    const Qwen2Tensors &ts = this->_tensors;
+    framework::ModelContext &ctx = this->_ctx;
+
+    const std::vector<int64_t> &token_ids = pack.token_ids;
+    const std::vector<int64_t> &pos_ids = pack.pos_ids;
+    const std::vector<int64_t> &cut_idx = pack.cut_idx;
+    const std::vector<int64_t> &tot_len = pack.tot_len;
+    const size_t max_seq_len = pack.max_seq_len;
+    const size_t tot_seq_len = token_ids.size();
+    const size_t batch_size = tot_len.size();
+    const size_t max_block_num = MAX_BLOCK_NUM;
+    // block_ids 末行第 0 列是累计块数前缀和 = 整个批次总块数
+    const size_t tot_block_num = block_ids[(batch_size - 1) * MAX_BLOCK_NUM];
+
+    const size_t hs = meta.hs;
+    const size_t nh = meta.nh;
+    const size_t nkvh = meta.nkvh;
+    const size_t dh = meta.dh;
+    const size_t di = meta.di;
+    const size_t voc = meta.voc;
+
+    // 填 BatchRuntime（embedding 从 runtime.token_ids 建 device 张量）
+    ctx.runtime.token_ids = token_ids;
+    ctx.runtime.pos_ids = pos_ids;
+    ctx.runtime.cut_idx = cut_idx;
+    ctx.runtime.tot_len = tot_len;
+    ctx.runtime.max_seq_len = max_seq_len;
+    ctx.runtime.tot_block_num = tot_block_num;
+    ctx.runtime.is_prefill = is_prefill;
+
+    // 切片绑定到与 legacy 相同的预分配 workspace
+    ctx.workspace.x_norm = ts._x_norm->slice(0, 0, tot_seq_len)->view({tot_seq_len, hs});
+    ctx.workspace.q = ts._q->slice(0, 0, tot_seq_len)->view({tot_seq_len, nh * dh});
+    ctx.workspace.k = ts._k->slice(0, 0, tot_seq_len)->view({tot_seq_len, nkvh * dh});
+    ctx.workspace.v = ts._v->slice(0, 0, tot_seq_len)->view({tot_seq_len, nkvh * dh});
+    ctx.workspace.q_rope = ts._q_rope->slice(0, 0, tot_seq_len)->view({tot_seq_len, nh, dh});
+    ctx.workspace.k_rope = ts._k_rope->slice(0, 0, tot_seq_len)->view({tot_seq_len, nkvh, dh});
+    ctx.workspace.attn_val = ts._attn_val->slice(0, 0, tot_seq_len)->view({tot_seq_len, nh, dh});
+    ctx.workspace.attn_out = ts._attn_out->slice(0, 0, tot_seq_len)->view({tot_seq_len, hs});
+    ctx.workspace.x_attn = ts._x_attn->slice(0, 0, tot_seq_len)->view({tot_seq_len, hs});
+    ctx.workspace.m_norm = ts._m_norm->slice(0, 0, tot_seq_len)->view({tot_seq_len, hs});
+    ctx.workspace.gate = ts._gate->slice(0, 0, tot_seq_len)->view({tot_seq_len, di});
+    ctx.workspace.up = ts._up->slice(0, 0, tot_seq_len)->view({tot_seq_len, di});
+    ctx.workspace.swiglu = ts._swiglu->slice(0, 0, tot_seq_len)->view({tot_seq_len, di});
+    ctx.workspace.down = ts._down->slice(0, 0, tot_seq_len)->view({tot_seq_len, hs});
+    ctx.workspace.x_mlp = ts._x_mlp->slice(0, 0, tot_seq_len)->view({tot_seq_len, hs});
+    ctx.workspace.block_ids = ts._dev_block_ids->slice(0, 0, batch_size * max_block_num)->view({batch_size, max_block_num});
+    ctx.workspace.cut_idx = ts._dev_cut_idx->slice(0, 0, batch_size + 1)->view({batch_size + 1});
+    ctx.workspace.tot_len = ts._dev_tot_len->slice(0, 0, batch_size)->view({batch_size});
+    ctx.workspace.pos_ids = ts._dev_pos_ids->slice(0, 0, tot_seq_len)->view({tot_seq_len});
+    ctx.workspace.x = ts._x->slice(0, 0, tot_seq_len)->view({tot_seq_len, hs});
+    ctx.workspace.x_part = ts._x_part->slice(0, 0, batch_size)->view({batch_size, hs});
+    ctx.workspace.x_part_norm = ts._x_part_norm->slice(0, 0, batch_size)->view({batch_size, hs});
+    ctx.workspace.logits = ts._logits->slice(0, 0, batch_size)->view({batch_size, voc});
+    ctx.workspace.attn_acc = ts._attn_acc;
+    ctx.workspace.attn_sum = ts._attn_sum;
+    ctx.workspace.attn_max = ts._attn_max;
+    ctx.workspace.capture_post_attn0.reset();
+    ctx.workspace.capture_post_ffn0.reset();
+
+    // 初始化设备端元数据（H2D）；token_ids 由 Embedding 层从 runtime 加载
+    ctx.workspace.block_ids->load(block_ids.data());
+    ctx.workspace.cut_idx->load(cut_idx.data());
+    ctx.workspace.tot_len->load(tot_len.data());
+    ctx.workspace.pos_ids->load(pos_ids.data());
+}
+
+std::vector<int64_t> Qwen2::sample_from_logits(tensor_t logits, Qwen2Pack &pack) {
+    const Qwen2Meta &meta = this->_meta;
+    const llaisysDeviceType_t device = this->_device_type;
+    const size_t batch_size = pack.tot_len.size();
+
+    // top_k
+    const size_t K = static_cast<size_t>(*std::max_element(pack.top_k.begin(), pack.top_k.end()));
+    tensor_t top_idx = Tensor::create({batch_size, K}, LLAISYS_DTYPE_I64, device, this->_device_ids[0]);
+    tensor_t top_val = Tensor::create({batch_size, K}, meta.dtype, device, this->_device_ids[0]);
+    ops::topk(top_idx, top_val, logits, K);
+    // 搬到cpu
+    if (device != LLAISYS_DEVICE_CPU) {
+        top_idx = top_idx->to(LLAISYS_DEVICE_CPU, 0);
+        top_val = top_val->to(LLAISYS_DEVICE_CPU, 0);
+    }
+    const std::vector<int64_t> all_idx = top_idx->reshape({batch_size * K})->to_vector<int64_t>();
+    const std::vector<float> all_val = top_val->reshape({batch_size * K})->to_vector<float>();
+    // 逐个进行随机 top_p 采样 (per-seq top_p / temperature)
+    std::vector<int64_t> result(batch_size);
+    for (size_t i = 0; i < batch_size; ++i) {
+        std::vector<SamplingCandidate> candidates;
+        candidates.reserve(K);
+        for (size_t j = 0; j < K; ++j) {
+            const size_t offset = i * K + j;
+            candidates.push_back({all_val[offset], all_idx[offset]});
+        }
+        result[i] = sample_token(candidates, pack.top_k[i], pack.top_p[i], pack.temperature[i], *pack.rngs[i]);
+    }
+    return result;
+}
+
+tensor_t Qwen2::last_logits(size_t batch_size) const {
+    const size_t voc = this->_meta.voc;
+    return this->_tensors._logits->slice(0, 0, batch_size)->view({batch_size, voc});
+}
+
+std::vector<int64_t> Qwen2::forward(Qwen2Pack &pack, std::vector<int64_t> &block_ids, bool is_prefill) {
+    if (this->use_layer_forward_) {
+        return forward_layers(pack, block_ids, is_prefill);
+    }
+    return forward_legacy(pack, block_ids, is_prefill);
+}
+
+std::vector<int64_t> Qwen2::forward_layers(Qwen2Pack &pack, std::vector<int64_t> &block_ids, bool is_prefill) {
+    // 绑定权重 / KV，再写入本步 runtime + workspace
+    bind_context_weights();
+    bind_context_runtime(pack, block_ids, is_prefill);
+    // 执行分层 stack（产出 logits；层内 residual 后 CPU stable_capture）
+    framework::run_qwen2_layer_stack(this->_ctx, is_prefill);
+    // 与 legacy 相同的 topk + sample 后处理
+    return sample_from_logits(this->_ctx.workspace.logits, pack);
+}
+
+std::vector<int64_t> Qwen2::forward_legacy(Qwen2Pack &pack, std::vector<int64_t> &block_ids, bool is_prefill){
     // 加载元数据 + 权重
     const Qwen2Meta &meta = this->_meta;
     const Qwen2Weights &w = this->_weights;
@@ -282,9 +456,6 @@ std::vector<int64_t> Qwen2::forward(Qwen2Pack &pack, std::vector<int64_t> &block
     const size_t voc = meta.voc;
     const float epsilon = meta.epsilon;
     const float theta = meta.theta;
-
-    // 加载设备
-    const llaisysDeviceType_t device = this->_device_type;
 
     // 初始化中间张量
     tensor_t x_norm = ts._x_norm->slice(0, 0, tot_seq_len)->view({tot_seq_len, hs});
@@ -378,39 +549,9 @@ std::vector<int64_t> Qwen2::forward(Qwen2Pack &pack, std::vector<int64_t> &block
     // 把隐藏向量映射到词表维度（voc）生成未归一化的打分（logits）
     tensor_t logits = ts._logits->slice(0, 0, batch_size)->view({batch_size, voc});
     ops::linear(logits, x_part_norm, to_tensor(w.out_embed), nullptr);
-    // argmax
-    // tensor_t max_idx = Tensor::create({batch_size, 1}, LLAISYS_DTYPE_I64, device, device_id);
-    // tensor_t max_val = Tensor::create({batch_size, 1}, dtype, device, device_id);
-    // ops::argmax(max_idx, max_val, last);
-    // if (device != LLAISYS_DEVICE_CPU) {
-    //     max_idx = max_idx->to(LLAISYS_DEVICE_CPU, 0);
-    // }
-    // int64_t result = reinterpret_cast<int64_t *>(max_idx->data())[0];
 
-    // top_k
-    const size_t K = static_cast<size_t>(*std::max_element(pack.top_k.begin(), pack.top_k.end()));
-    tensor_t top_idx = Tensor::create({batch_size, K}, LLAISYS_DTYPE_I64, device, this->_device_ids[0]);
-    tensor_t top_val = Tensor::create({batch_size, K}, meta.dtype, device, this->_device_ids[0]);
-    ops::topk(top_idx, top_val, logits, K);
-    // 搬到cpu
-    if (device != LLAISYS_DEVICE_CPU) {
-        top_idx = top_idx->to(LLAISYS_DEVICE_CPU, 0);
-        top_val = top_val->to(LLAISYS_DEVICE_CPU, 0);
-    }
-    const std::vector<int64_t> all_idx = top_idx->reshape({batch_size * K})->to_vector<int64_t>();
-    const std::vector<float> all_val = top_val->reshape({batch_size * K})->to_vector<float>();
-    // 逐个进行随机 top_p 采样 (per-seq top_p / temperature)
-    std::vector<int64_t> result(batch_size);
-    for(size_t i = 0; i < batch_size; ++ i){
-        std::vector<SamplingCandidate> candidates;
-        candidates.reserve(K);
-        for (size_t j = 0; j < K; ++j) {
-            const size_t offset = i * K + j;
-            candidates.push_back({all_val[offset], all_idx[offset]});
-        }
-        result[i] = sample_token(candidates, pack.top_k[i], pack.top_p[i], pack.temperature[i], *pack.rngs[i]);
-    }
-    return result;
+    // 与 layer 路径共用采样后处理
+    return sample_from_logits(logits, pack);
 }
 
 }
