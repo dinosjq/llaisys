@@ -92,6 +92,10 @@ All passed. `git diff --name-only -- src/models/qwen2.cpp src/models/qwen2.hpp` 
 
 PASS
 
+### Commits
+
+`74c6227`
+
 ### Fix
 
 - Important: `Qwen2Attention` no longer uses `k_caches[layer]->shape()[0]` (pool capacity) for `tot_block_num`.
