@@ -5,7 +5,7 @@
 // 包含核心功能、工具函数和CPU加法实现的头文件
 #include "../../core/llaisys_core.hpp"
 #include "../../utils.hpp"
-// #include "cpu/add_cpu.hpp"
+#include "cpu/add_cpu.hpp"
 #include "nvidia/add_nvidia.cuh"
 
 namespace llaisys::ops {
@@ -27,7 +27,7 @@ void add(tensor_t c, tensor_t a, tensor_t b) {
     // 根据设备类型分发实现
     switch (c->deviceType()) {
     case LLAISYS_DEVICE_CPU:
-        // return cpu::add(c->data(), a->data(), b->data(), c->dtype(), c->numel());
+        return cpu::add(c->data(), a->data(), b->data(), c->dtype(), c->numel());
 #ifdef ENABLE_NVIDIA_API
     case LLAISYS_DEVICE_NVIDIA:
         return nvidia::add(c->data(), a->data(), b->data(), c->dtype(), c->numel());

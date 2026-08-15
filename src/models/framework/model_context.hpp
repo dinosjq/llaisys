@@ -30,6 +30,13 @@ struct BatchRuntime {
 
 struct WorkspaceTensors {
     tensor_t x;
+    tensor_t x_norm;
+    tensor_t m_norm;
+    tensor_t gate;
+    tensor_t up;
+    tensor_t swiglu;
+    tensor_t down;
+    tensor_t x_mlp;
 };
 
 struct ModelContext {
