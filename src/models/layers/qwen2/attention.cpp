@@ -32,7 +32,8 @@ void Qwen2Attention::forward(ModelContext &ctx) {
     ops::kv_cache_move(ctx.v_caches[layer_], ctx.workspace.v->view({token_count, ctx.meta.nkvh, ctx.meta.dh}), ctx.workspace.block_ids, ctx.workspace.cut_idx, ctx.workspace.pos_ids,
                        ctx.runtime.max_seq_len);
     ops::paged_attention(ctx.workspace.attn_val, ctx.workspace.q_rope, ctx.k_caches[layer_], ctx.v_caches[layer_], ctx.workspace.block_ids, ctx.workspace.cut_idx,
-                          ctx.workspace.tot_len, ctx.runtime.max_seq_len, ctx.k_caches[layer_]->shape()[0], scale, ctx.runtime.is_prefill);
+                          ctx.workspace.tot_len, ctx.runtime.max_seq_len, ctx.k_caches[layer_]->shape()[0], scale, ctx.runtime.is_prefill, ctx.workspace.attn_acc,
+                          ctx.workspace.attn_sum, ctx.workspace.attn_max);
     ops::linear(ctx.workspace.attn_out, ctx.workspace.attn_val->view({token_count, ctx.meta.hs}), w_->o_w, nullptr);
     ops::add(ctx.workspace.x_attn, ctx.workspace.x, ctx.workspace.attn_out);
     std::swap(ctx.workspace.x, ctx.workspace.x_attn);

@@ -38,6 +38,9 @@ struct WorkspaceTensors {
     tensor_t q_rope;
     tensor_t k_rope;
     tensor_t attn_val;
+    tensor_t attn_acc;
+    tensor_t attn_sum;
+    tensor_t attn_max;
     tensor_t attn_out;
     tensor_t x_attn;
     tensor_t m_norm;
