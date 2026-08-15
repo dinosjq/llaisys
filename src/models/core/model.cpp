@@ -6,7 +6,7 @@
 #include <stdexcept>
 #include <utility>
 
-namespace llaisys::framework {
+namespace llaisys::core {
 
 namespace {
 
@@ -38,7 +38,7 @@ void Model::start() {
         return;
     }
     // 权重加载结束后、worker 启动前
-    this->sync_weights();
+    this->bind_kv_caches();
     auto loop = [](Model *model) -> void {
         while (model->_running) {
             // 先根据调度器决定本次计算的序列
@@ -267,4 +267,4 @@ BatchPack Model::prepare_decode(const std::vector<seq_t> &seqs) {
     return BatchPack{token_ids, pos_ids, cut_idx, tot_len, top_ks, top_ps, temps, rngs, 1};
 }
 
-} // namespace llaisys::framework
+} // namespace llaisys::core

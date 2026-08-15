@@ -11,7 +11,7 @@
 #include <thread>
 #include <vector>
 
-namespace llaisys::framework {
+namespace llaisys::core {
 
 struct ModelRequest {
     seq_t sequence;
@@ -39,8 +39,8 @@ protected:
 
     // 子类实现：组装 Layer → logits → 采样返回 token
     virtual std::vector<int64_t> forward(BatchPack &pack, std::vector<int64_t> &block_ids, bool is_prefill) = 0;
-    // 权重加载结束后、worker 启动前：子类把权重同步进 _ctx
-    virtual void sync_weights() {}
+    // 权重已由 SetWeight 写入 _ctx；worker 启动前只把 KV 视图绑到 Context
+    virtual void bind_kv_caches() {}
 
 public:
     virtual ~Model();
@@ -75,4 +75,4 @@ public:
     const ModelContext &ctx() const { return _ctx; }
 };
 
-} // namespace llaisys::framework
+} // namespace llaisys::core

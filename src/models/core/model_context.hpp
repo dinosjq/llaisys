@@ -7,7 +7,7 @@
 #include <random>
 #include <vector>
 
-namespace llaisys::framework {
+namespace llaisys::core {
 
 enum class WeightRole : int {
     InEmbed,
@@ -107,4 +107,4 @@ struct ModelContext {
     bool enable_layer0_capture = false;
 };
 
-} // namespace llaisys::framework
+} // namespace llaisys::core

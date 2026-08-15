@@ -4,7 +4,7 @@
 
 #include <cstddef>
 
-namespace llaisys::framework {
+namespace llaisys::core {
 
 class LlamaEmbedding : public Layer {
 public:
@@ -17,20 +17,17 @@ public:
     void forward(ModelContext &ctx) override;
 
 private:
-    const AttnWeights *w_;
-    size_t layer_;
+    const AttnWeights *_w;
+    size_t _layer;
 };
 
 class LlamaFFN : public Layer {
 public:
-    explicit LlamaFFN(const FfnWeights *weights, size_t layer_index_for_debug = 0);
+    explicit LlamaFFN(const FfnWeights *weights);
     void forward(ModelContext &ctx) override;
 
 private:
-    const FfnWeights *w_;
-    size_t layer_index_for_debug_;
+    const FfnWeights *_w;
 };
 
-void run_llama_layer_stack(ModelContext &ctx, bool is_prefill);
-
-} // namespace llaisys::framework
+} // namespace llaisys::core

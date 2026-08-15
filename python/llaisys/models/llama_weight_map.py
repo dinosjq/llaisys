@@ -1,24 +1,14 @@
-"""HF safetensors name → (WeightRole, layer) for Llama-3.x (no attention/MLP bias).
-
-Upload still fills ``LlaisysQwen2Weights`` (shared decoder runtime); C++
-``sync_weights_from_legacy_struct`` + ``LLAISYS_LAYER_STACK=llama`` selects
-``run_llama_layer_stack``.
-"""
+"""HF safetensors name → (WeightRole, layer) for Llama-3.x (no attention/MLP bias)."""
 
 from __future__ import annotations
 
 from typing import Optional, Tuple
 
-from .qwen2_weight_map import (
-    WeightRole,
-    assign_to_legacy_weights,
-    is_layered_role,
-    legacy_slot_for_role,
-)
+from .qwen2_weight_map import WeightRole
 
 _GLOBAL_HF_TO_ROLE: dict[str, WeightRole] = {
     "model.embed_tokens.weight": WeightRole.InEmbed,
-    "lm_head.weight": WeightRole.OutEmbed,  # optional; often tied
+    "lm_head.weight": WeightRole.OutEmbed,
     "model.norm.weight": WeightRole.OutNorm,
 }
 
@@ -59,7 +49,4 @@ def resolve_hf_weight(name: str) -> Optional[Tuple[WeightRole, int]]:
 __all__ = [
     "WeightRole",
     "resolve_hf_weight",
-    "assign_to_legacy_weights",
-    "is_layered_role",
-    "legacy_slot_for_role",
 ]

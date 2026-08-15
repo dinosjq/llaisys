@@ -4,37 +4,35 @@ import asyncio
 import json
 import numpy as np
 import safetensors
-from ctypes import c_int64, c_size_t, c_int, c_float, c_void_p, POINTER, byref
+from ctypes import c_int64, c_size_t, c_int, c_float, c_void_p, byref
 
 from ..libllaisys import (
     LIB_LLAISYS,
     DeviceType,
     DataType,
-    llaisysDeviceType_t,
-    LlaisysQwen2Meta,
-    LlaisysQwen2Weights,
-    llaisysQwen2Model_t,
+    LlaisysModelArch,
+    LlaisysModelMeta,
+    llaisysModel_t,
 )
 from ..tensor import Tensor
-from .qwen2_weight_map import assign_to_legacy_weights, resolve_hf_weight
+from .qwen2_weight_map import WeightRole, resolve_hf_weight
 
 
 class Qwen2:
     def __init__(self, model_path, device: DeviceType = DeviceType.CPU):
-        # 初始化设备 路径
         model_path = Path(model_path)
         self._device = device
         self._tensors = []
         self._closed = False
+        self._in_embed = None
+        self._out_embed_set = False
 
-        # model 的 config 路径
         config_path = model_path / "config.json"
         if not config_path.exists():
             raise FileNotFoundError(f"config.json not found in {model_path}")
         with open(config_path, "r", encoding="utf-8") as f:
             config = json.load(f)
 
-        # 结束符 token_id
         eos = config.get("eos_token_id", config.get("eos_token_ids", None))
         if isinstance(eos, list):
             eos_token = int(eos[0]) if eos else 0
@@ -51,8 +49,7 @@ class Qwen2:
         else:
             dtype = DataType.F32
 
-        # 加载模型其他参数配置
-        meta = LlaisysQwen2Meta()
+        meta = LlaisysModelMeta()
         meta.dtype = int(dtype)
         meta.nlayer = int(config["num_hidden_layers"])
         meta.hs = int(config["hidden_size"])
@@ -66,7 +63,6 @@ class Qwen2:
         meta.theta = float(config.get("rope_theta", 10000.0))
         meta.end_token = int(eos_token)
 
-        # Register bfloat16 dtype for numpy via ml_dtypes
         try:
             import ml_dtypes  # noqa: F401
             if "bfloat16" not in np.sctypeDict:
@@ -78,11 +74,10 @@ class Qwen2:
                 "Loading bfloat16 weights requires ml_dtypes. Please install ml_dtypes."
             ) from exc
 
-        # 设置 meta
         self._meta = meta
         device_ids = (c_int * 1)(0)
-        # 通过 create 创建 model
-        self._model: llaisysQwen2Model_t = LIB_LLAISYS.llaisysQwen2ModelCreate(
+        self._model: llaisysModel_t = LIB_LLAISYS.llaisysModelCreate(
+            int(LlaisysModelArch.QWEN2),
             byref(meta),
             int(device),
             device_ids,
@@ -91,28 +86,26 @@ class Qwen2:
         if not self._model:
             raise RuntimeError("Failed to create Qwen2 model")
 
-        weights_ptr = LIB_LLAISYS.llaisysQwen2ModelWeights(self._model)
-        if not weights_ptr:
-            raise RuntimeError("Failed to get Qwen2 weights")
-        self._weights: LlaisysQwen2Weights = weights_ptr.contents
-
-        # 从 safetensors 中加载模型参数
         for file in sorted(model_path.glob("*.safetensors")):
             with safetensors.safe_open(file, framework="numpy", device="cpu") as data_:
                 for name_ in data_.keys():
                     arr = data_.get_tensor(name_)
                     self._assign_weight(name_, arr)
 
-        # tie weights if needed
-        if not self._weights.out_embed:
-            self._weights.out_embed = self._weights.in_embed
+        if not self._out_embed_set and self._in_embed is not None:
+            LIB_LLAISYS.llaisysModelSetWeight(
+                self._model,
+                int(WeightRole.OutEmbed),
+                c_size_t(0),
+                self._in_embed.lib_tensor(),
+            )
 
     def close(self):
         if self._closed:
             return
         self._closed = True
         if getattr(self, "_model", None):
-            LIB_LLAISYS.llaisysQwen2ModelDestroy(self._model)
+            LIB_LLAISYS.llaisysModelDestroy(self._model)
             self._model = None
 
     def __del__(self):
@@ -121,7 +114,6 @@ class Qwen2:
         except Exception:
             pass
 
-    # 加载 tensor: 将 numpy 转为 tensor
     def _tensor_from_numpy(self, arr: np.ndarray) -> Tensor:
         arr = np.ascontiguousarray(arr)
         if arr.dtype == np.float32:
@@ -140,19 +132,26 @@ class Qwen2:
         self._tensors.append(t)
         return t
 
-    # 加载权重: HF 名 → WeightRole → 仍写入 legacy LlaisysQwen2Weights（方案 A）
     def _assign_weight(self, name: str, arr: np.ndarray):
         resolved = resolve_hf_weight(name)
         if resolved is None:
             return
         role, layer = resolved
         t = self._tensor_from_numpy(arr)
-        assign_to_legacy_weights(self._weights, role, layer, t.lib_tensor())
+        if role == WeightRole.InEmbed:
+            self._in_embed = t
+        if role == WeightRole.OutEmbed:
+            self._out_embed_set = True
+        LIB_LLAISYS.llaisysModelSetWeight(
+            self._model,
+            int(role),
+            c_size_t(layer),
+            t.lib_tensor(),
+        )
 
-    # 生成回复
     def _submit_request(self, tokens, max_new_tokens, top_k, top_p, temperature):
         arr = (c_int64 * len(tokens))(*tokens)
-        request = LIB_LLAISYS.llaisysQwen2RequestSubmit(
+        request = LIB_LLAISYS.llaisysModelRequestSubmit(
             self._model,
             arr,
             c_size_t(len(tokens)),
@@ -162,7 +161,7 @@ class Qwen2:
             c_float(temperature),
         )
         if not request:
-            raise RuntimeError("llaisysQwen2RequestSubmit failed")
+            raise RuntimeError("llaisysModelRequestSubmit failed")
         return request
 
     def generate(
@@ -174,41 +173,27 @@ class Qwen2:
         temperature: float = 0.8,
         callback: Callable[[int, int, tuple[int, ...]], bool] = None,
     ) -> list[int]:
-        """Generate tokens autoregressively.
-
-        Parameters
-        ----------
-        callback : callable or None
-            Called after each token is produced:
-            ``callback(token, step, tokens_tuple) -> bool``.
-            *token* is the newly generated token id.  *step* is 0-based
-            (step 0 = first generated token).  *tokens_tuple* is a
-            read-only snapshot of the full token list (prompt + generated).
-            Return ``False`` to abort generation early; any other value
-            continues.
-
-        """
         if max_new_tokens is None:
-            max_new_tokens = -1    # -1: use C++ config default (MAX_TOKEN_NUM)
+            max_new_tokens = -1
 
         _loop_bound = max_new_tokens if max_new_tokens >= 0 else 128
         tokens = list(int(t) for t in inputs)
         request = self._submit_request(tokens, max_new_tokens, top_k, top_p, temperature)
         try:
             for step in range(_loop_bound):
-                next_token = int(LIB_LLAISYS.llaisysQwen2RequestAwait(request))
+                next_token = int(LIB_LLAISYS.llaisysModelRequestAwait(request))
                 if next_token == -2:
                     break
                 if next_token == -1:
-                    raise RuntimeError("llaisysQwen2RequestAwait failed")
+                    raise RuntimeError("llaisysModelRequestAwait failed")
                 tokens.append(next_token)
                 if callback is not None and callback(next_token, step, tuple(tokens)) is False:
-                    LIB_LLAISYS.llaisysQwen2RequestAbort(request)
+                    LIB_LLAISYS.llaisysModelRequestAbort(request)
                     break
                 if next_token == int(self._meta.end_token):
                     break
         finally:
-            LIB_LLAISYS.llaisysQwen2RequestRelease(request)
+            LIB_LLAISYS.llaisysModelRequestRelease(request)
         return tokens
 
     async def generate_async(
@@ -219,18 +204,6 @@ class Qwen2:
         top_p: float = 0.9,
         temperature: float = 0.8,
     ):
-        """Async generator yielding per-token dicts for SSE streaming.
-
-        Each yielded dict has keys:
-        - ``token``: the generated token id
-        - ``index``: 0-based generation step
-        - ``finish_reason``: None or "stop"
-
-        The blocking C call runs in a worker thread via ``asyncio.to_thread``;
-        the C++ side sleeps on a condition variable, so the thread does not
-        spin while waiting. On ``asyncio.CancelledError`` (client disconnect)
-        the C++ sequence is aborted before re-raising.
-        """
         loop_bound = max_new_tokens if max_new_tokens >= 0 else 128
         tokens = list(int(t) for t in inputs)
         request = self._submit_request(tokens, max_new_tokens, top_k, top_p, temperature)
@@ -242,20 +215,20 @@ class Qwen2:
             nonlocal released
             if not released:
                 released = True
-                LIB_LLAISYS.llaisysQwen2RequestRelease(request)
+                LIB_LLAISYS.llaisysModelRequestRelease(request)
 
         try:
             for step in range(loop_bound):
                 def _await():
-                    return int(LIB_LLAISYS.llaisysQwen2RequestAwait(request))
+                    return int(LIB_LLAISYS.llaisysModelRequestAwait(request))
 
                 await_task = asyncio.create_task(asyncio.to_thread(_await))
                 next_token = await asyncio.shield(await_task)
 
                 if next_token == -2:
-                    break  # cancelled from another path
+                    break
                 if next_token == -1:
-                    raise RuntimeError("llaisysQwen2RequestAwait failed")
+                    raise RuntimeError("llaisysModelRequestAwait failed")
 
                 tokens.append(next_token)
 
@@ -274,7 +247,7 @@ class Qwen2:
                 if is_eos:
                     break
         except asyncio.CancelledError:
-            LIB_LLAISYS.llaisysQwen2RequestAbort(request)
+            LIB_LLAISYS.llaisysModelRequestAbort(request)
             if await_task is None or await_task.done():
                 release_once()
             else:
@@ -284,5 +257,3 @@ class Qwen2:
         finally:
             if not release_deferred:
                 release_once()
-
-

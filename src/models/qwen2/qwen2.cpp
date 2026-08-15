@@ -1,75 +1,22 @@
 #include "qwen2.hpp"
 
 #include "../../layers/qwen2/qwen2.hpp"
-#include "../../layers/llama/llama.hpp"
-#include "../../llaisys/llaisys_tensor.hpp"
+#include "../../ops/embedding/op.hpp"
+#include "../../ops/linear/op.hpp"
+#include "../../ops/rms_norm/op.hpp"
 #include "../../ops/top_k/op.hpp"
 #include "../../config.hpp"
 
 #include <algorithm>
 #include <cmath>
-#include <cstdlib>
-#include <cstring>
+#include <utility>
 
 namespace llaisys {
 
 namespace {
-static tensor_t to_tensor(llaisysTensor_t t) {
-    return t ? t->tensor : nullptr;
-}
 
-static void init_weight_arrays(Qwen2Weights &w, size_t nlayer) {
-    w.in_embed = nullptr;
-    w.out_embed = nullptr;
-    w.out_norm_w = nullptr;
-    w.attn_norm_w = new llaisysTensor_t[nlayer]();
-    w.attn_q_w = new llaisysTensor_t[nlayer]();
-    w.attn_q_b = new llaisysTensor_t[nlayer]();
-    w.attn_k_w = new llaisysTensor_t[nlayer]();
-    w.attn_k_b = new llaisysTensor_t[nlayer]();
-    w.attn_v_w = new llaisysTensor_t[nlayer]();
-    w.attn_v_b = new llaisysTensor_t[nlayer]();
-    w.attn_o_w = new llaisysTensor_t[nlayer]();
-    w.mlp_norm_w = new llaisysTensor_t[nlayer]();
-    w.mlp_gate_w = new llaisysTensor_t[nlayer]();
-    w.mlp_up_w = new llaisysTensor_t[nlayer]();
-    w.mlp_down_w = new llaisysTensor_t[nlayer]();
-}
-
-static void free_weight_arrays(Qwen2Weights &w) {
-    delete[] w.attn_norm_w;
-    delete[] w.attn_q_w;
-    delete[] w.attn_q_b;
-    delete[] w.attn_k_w;
-    delete[] w.attn_k_b;
-    delete[] w.attn_v_w;
-    delete[] w.attn_v_b;
-    delete[] w.attn_o_w;
-    delete[] w.mlp_norm_w;
-    delete[] w.mlp_gate_w;
-    delete[] w.mlp_up_w;
-    delete[] w.mlp_down_w;
-    w.in_embed = nullptr;
-    w.out_embed = nullptr;
-    w.out_norm_w = nullptr;
-    w.attn_norm_w = nullptr;
-    w.attn_q_w = nullptr;
-    w.attn_q_b = nullptr;
-    w.attn_k_w = nullptr;
-    w.attn_k_b = nullptr;
-    w.attn_v_w = nullptr;
-    w.attn_v_b = nullptr;
-    w.attn_o_w = nullptr;
-    w.mlp_norm_w = nullptr;
-    w.mlp_gate_w = nullptr;
-    w.mlp_up_w = nullptr;
-    w.mlp_down_w = nullptr;
-}
-
-// LLAISYS_LAYER_STACK=llama → Llama 层组装
-static bool env_use_llama_stack() {
-    const char *value = std::getenv("LLAISYS_LAYER_STACK");
-    return value != nullptr && std::strcmp(value, "llama") == 0;
+tensor_t stable_capture(const tensor_t &tensor) {
+    return tensor->to(LLAISYS_DEVICE_CPU, 0);
 }
 
 } // namespace
@@ -93,9 +40,6 @@ Qwen2::Qwen2(Qwen2Meta meta, llaisysDeviceType_t device, int *device_ids, int nd
     const size_t batch_max_seq_num = BATCH_MAX_SEQ_NUM;
     const size_t max_block_num = MAX_BLOCK_NUM;
     int device_id = device_ids[0];
-
-    // 初始化权重数组
-    init_weight_arrays(this->_weights, nlayer);
 
     // 初始化运行时张量
     _tensors._x_norm = Tensor::create({batch_max_token_num, hs}, dtype, device, device_id);
@@ -143,66 +87,40 @@ Qwen2::Qwen2(Qwen2Meta meta, llaisysDeviceType_t device, int *device_ids, int nd
     this->_scheduler = std::make_shared<Scheduler>(token_num, block_num, BATCH_MAX_TOKEN_NUM, BATCH_MAX_SEQ_NUM, meta.end_token);
 
     // 初始化 ModelContext
-    this->_ctx.meta = framework::ModelMeta{meta.dtype, meta.nlayer, meta.hs, meta.nh, meta.nkvh, meta.dh, meta.di,
+    this->_ctx.meta = core::ModelMeta{meta.dtype, meta.nlayer, meta.hs, meta.nh, meta.nkvh, meta.dh, meta.di,
                                            meta.maxseq, meta.voc, meta.epsilon, meta.theta, meta.end_token};
     this->_ctx.attns.resize(nlayer);
     this->_ctx.ffns.resize(nlayer);
     this->_ctx.k_caches.resize(nlayer);
     this->_ctx.v_caches.resize(nlayer);
-    this->use_llama_stack_ = env_use_llama_stack();
 }
 
-Qwen2::~Qwen2() {
-    free_weight_arrays(this->_weights);
-}
+Qwen2::~Qwen2() = default;
 
 std::vector<int64_t> Qwen2::prepare_block_table(const std::vector<seq_t> &seqs) {
-    return framework::Model::prepare_block_table(seqs, MAX_BLOCK_NUM);
+    return core::Model::prepare_block_table(seqs, MAX_BLOCK_NUM);
 }
 
-framework::BatchPack Qwen2::prepare_prefill(const std::vector<seq_t> &seqs) {
-    return framework::Model::prepare_prefill(seqs);
+core::BatchPack Qwen2::prepare_prefill(const std::vector<seq_t> &seqs) {
+    return core::Model::prepare_prefill(seqs);
 }
 
-framework::BatchPack Qwen2::prepare_decode(const std::vector<seq_t> &seqs) {
-    return framework::Model::prepare_decode(seqs);
+core::BatchPack Qwen2::prepare_decode(const std::vector<seq_t> &seqs) {
+    return core::Model::prepare_decode(seqs);
 }
 
-void Qwen2::sync_weights() {
-    using framework::Model;
-    using framework::WeightRole;
-
-    const Qwen2Weights &w = this->_weights;
-    framework::ModelContext &ctx = this->_ctx;
+void Qwen2::bind_kv_caches() {
     const size_t nlayer = this->_meta.nlayer;
-
-    // 方案 A：legacy Weights → WeightRole → Context 分层槽位
-    Model::set_weight(ctx, WeightRole::InEmbed, 0, to_tensor(w.in_embed));
-    Model::set_weight(ctx, WeightRole::OutEmbed, 0, to_tensor(w.out_embed));
-    Model::set_weight(ctx, WeightRole::OutNorm, 0, to_tensor(w.out_norm_w));
     for (size_t layer = 0; layer < nlayer; ++layer) {
-        Model::set_weight(ctx, WeightRole::AttnNorm, layer, to_tensor(w.attn_norm_w[layer]));
-        Model::set_weight(ctx, WeightRole::AttnQ_W, layer, to_tensor(w.attn_q_w[layer]));
-        Model::set_weight(ctx, WeightRole::AttnQ_B, layer, to_tensor(w.attn_q_b[layer]));
-        Model::set_weight(ctx, WeightRole::AttnK_W, layer, to_tensor(w.attn_k_w[layer]));
-        Model::set_weight(ctx, WeightRole::AttnK_B, layer, to_tensor(w.attn_k_b[layer]));
-        Model::set_weight(ctx, WeightRole::AttnV_W, layer, to_tensor(w.attn_v_w[layer]));
-        Model::set_weight(ctx, WeightRole::AttnV_B, layer, to_tensor(w.attn_v_b[layer]));
-        Model::set_weight(ctx, WeightRole::AttnO_W, layer, to_tensor(w.attn_o_w[layer]));
-        Model::set_weight(ctx, WeightRole::MlpNorm, layer, to_tensor(w.mlp_norm_w[layer]));
-        Model::set_weight(ctx, WeightRole::MlpGate_W, layer, to_tensor(w.mlp_gate_w[layer]));
-        Model::set_weight(ctx, WeightRole::MlpUp_W, layer, to_tensor(w.mlp_up_w[layer]));
-        Model::set_weight(ctx, WeightRole::MlpDown_W, layer, to_tensor(w.mlp_down_w[layer]));
-
-        ctx.k_caches[layer] = this->_k_cache[layer];
-        ctx.v_caches[layer] = this->_v_cache[layer];
+        this->_ctx.k_caches[layer] = this->_k_cache[layer];
+        this->_ctx.v_caches[layer] = this->_v_cache[layer];
     }
 }
 
-void Qwen2::bind_context_runtime(framework::BatchPack &pack, std::vector<int64_t> &block_ids, bool is_prefill) {
+void Qwen2::bind_context_runtime(core::BatchPack &pack, std::vector<int64_t> &block_ids, bool is_prefill) {
     const Qwen2Meta &meta = this->_meta;
     const Qwen2Tensors &ts = this->_tensors;
-    framework::ModelContext &ctx = this->_ctx;
+    core::ModelContext &ctx = this->_ctx;
 
     const std::vector<int64_t> &token_ids = pack.token_ids;
     const std::vector<int64_t> &pos_ids = pack.pos_ids;
@@ -265,7 +183,7 @@ void Qwen2::bind_context_runtime(framework::BatchPack &pack, std::vector<int64_t
     ctx.workspace.pos_ids->load(pos_ids.data());
 }
 
-std::vector<int64_t> Qwen2::sample_from_logits(tensor_t logits, framework::BatchPack &pack) {
+std::vector<int64_t> Qwen2::sample_from_logits(tensor_t logits, core::BatchPack &pack) {
     const Qwen2Meta &meta = this->_meta;
     const llaisysDeviceType_t device = this->_device_type;
     const size_t batch_size = pack.tot_len.size();
@@ -298,17 +216,41 @@ tensor_t Qwen2::last_logits(size_t batch_size) const {
     return this->_tensors._logits->slice(0, 0, batch_size)->view({batch_size, voc});
 }
 
-std::vector<int64_t> Qwen2::forward(framework::BatchPack &pack, std::vector<int64_t> &block_ids, bool is_prefill) {
-    // 保证 Context 权重与 legacy struct 一致
-    this->sync_weights();
+std::vector<int64_t> Qwen2::forward(core::BatchPack &pack, std::vector<int64_t> &block_ids, bool is_prefill) {
+    this->bind_kv_caches();
     this->bind_context_runtime(pack, block_ids, is_prefill);
+
+    core::ModelContext &ctx = this->_ctx;
+    ctx.runtime.is_prefill = is_prefill;
+
     // 显式组装 Layer
-    if (this->use_llama_stack_) {
-        framework::run_llama_layer_stack(this->_ctx, is_prefill);
-    } else {
-        framework::run_qwen2_layer_stack(this->_ctx, is_prefill);
+    // embedding
+    core::Qwen2Embedding{}.forward(ctx);
+
+    // 逐层: Attention → FFN
+    for (size_t layer = 0; layer < ctx.meta.nlayer; ++layer) {
+        core::Qwen2Attention(&ctx.attns[layer], layer).forward(ctx);
+        if (layer == 0 && ctx.enable_layer0_capture) {
+            ctx.workspace.capture_post_attn0 = stable_capture(ctx.workspace.x);
+        }
+        core::Qwen2FFN(&ctx.ffns[layer]).forward(ctx);
+        if (layer == 0 && ctx.enable_layer0_capture) {
+            ctx.workspace.capture_post_ffn0 = stable_capture(ctx.workspace.x);
+        }
     }
-    return this->sample_from_logits(this->_ctx.workspace.logits, pack);
+
+    // 先去提取 last-token 隐藏状态
+    const size_t batch_size = ctx.runtime.cut_idx.size() - 1;
+    auto last_token_indices = ctx.workspace.cut_idx->slice(0, 1, batch_size + 1);
+    ops::embedding(ctx.workspace.x_part, last_token_indices, ctx.workspace.x, -1);
+
+    // RMS-norm 均方根归一化
+    ops::rms_norm(ctx.workspace.x_part_norm, ctx.workspace.x_part, ctx.out_norm_w, ctx.meta.epsilon);
+
+    // 把隐藏向量映射到词表维度（voc）生成未归一化的打分（logits）
+    ops::linear(ctx.workspace.logits, ctx.workspace.x_part_norm, ctx.out_embed, nullptr);
+
+    return this->sample_from_logits(ctx.workspace.logits, pack);
 }
 
 } // namespace llaisys

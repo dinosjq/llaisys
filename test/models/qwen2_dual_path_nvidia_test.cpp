@@ -1,5 +1,4 @@
 #include "../../src/config.hpp"
-#include "../../src/llaisys/llaisys_tensor.hpp"
 #include "../../src/models/qwen2/qwen2.hpp"
 #include "../../src/tensor/tensor.hpp"
 
@@ -16,7 +15,7 @@ namespace {
 
 using llaisys::Qwen2;
 using llaisys::Qwen2Meta;
-using llaisys::framework::BatchPack;
+using llaisys::core::BatchPack;
 using llaisys::Tensor;
 using llaisys::tensor_t;
 
@@ -44,10 +43,6 @@ tensor_t nvidia_f32(const std::vector<size_t> &shape, const std::vector<float> &
     return host->to(kDevice, kDeviceId);
 }
 
-llaisysTensor_t wrap(const tensor_t &tensor) {
-    return new LlaisysTensor{tensor};
-}
-
 Qwen2Meta tiny_meta() {
     Qwen2Meta meta{};
     meta.dtype = LLAISYS_DTYPE_F32;
@@ -66,24 +61,34 @@ Qwen2Meta tiny_meta() {
 }
 
 void fill_tiny_weights(Qwen2 &model) {
-    auto &w = model.weights();
+    using llaisys::core::Model;
+    using llaisys::core::WeightRole;
+    auto &ctx = model.ctx();
     const auto &meta = model.meta();
-    w.in_embed = wrap(nvidia_f32({meta.voc, meta.hs}, sequence(meta.voc * meta.hs)));
-    w.out_embed = wrap(nvidia_f32({meta.voc, meta.hs}, sequence(meta.voc * meta.hs, 0.02f)));
-    w.out_norm_w = wrap(nvidia_f32({meta.hs}, sequence(meta.hs)));
+    Model::set_weight(ctx, WeightRole::InEmbed, 0, nvidia_f32({meta.voc, meta.hs}, sequence(meta.voc * meta.hs)));
+    Model::set_weight(ctx, WeightRole::OutEmbed, 0, nvidia_f32({meta.voc, meta.hs}, sequence(meta.voc * meta.hs, 0.02f)));
+    Model::set_weight(ctx, WeightRole::OutNorm, 0, nvidia_f32({meta.hs}, sequence(meta.hs)));
     for (size_t layer = 0; layer < meta.nlayer; ++layer) {
-        w.attn_norm_w[layer] = wrap(nvidia_f32({meta.hs}, sequence(meta.hs)));
-        w.attn_q_w[layer] = wrap(nvidia_f32({meta.nh * meta.dh, meta.hs}, sequence(meta.nh * meta.dh * meta.hs)));
-        w.attn_q_b[layer] = wrap(nvidia_f32({meta.nh * meta.dh}, sequence(meta.nh * meta.dh, 0.001f)));
-        w.attn_k_w[layer] = wrap(nvidia_f32({meta.nkvh * meta.dh, meta.hs}, sequence(meta.nkvh * meta.dh * meta.hs)));
-        w.attn_k_b[layer] = wrap(nvidia_f32({meta.nkvh * meta.dh}, sequence(meta.nkvh * meta.dh, 0.001f)));
-        w.attn_v_w[layer] = wrap(nvidia_f32({meta.nkvh * meta.dh, meta.hs}, sequence(meta.nkvh * meta.dh * meta.hs)));
-        w.attn_v_b[layer] = wrap(nvidia_f32({meta.nkvh * meta.dh}, sequence(meta.nkvh * meta.dh, 0.001f)));
-        w.attn_o_w[layer] = wrap(nvidia_f32({meta.hs, meta.nh * meta.dh}, sequence(meta.hs * meta.nh * meta.dh)));
-        w.mlp_norm_w[layer] = wrap(nvidia_f32({meta.hs}, sequence(meta.hs, 0.02f)));
-        w.mlp_gate_w[layer] = wrap(nvidia_f32({meta.di, meta.hs}, sequence(meta.di * meta.hs)));
-        w.mlp_up_w[layer] = wrap(nvidia_f32({meta.di, meta.hs}, sequence(meta.di * meta.hs, 0.015f)));
-        w.mlp_down_w[layer] = wrap(nvidia_f32({meta.hs, meta.di}, sequence(meta.hs * meta.di)));
+        Model::set_weight(ctx, WeightRole::AttnNorm, layer, nvidia_f32({meta.hs}, sequence(meta.hs)));
+        Model::set_weight(ctx, WeightRole::AttnQ_W, layer,
+                          nvidia_f32({meta.nh * meta.dh, meta.hs}, sequence(meta.nh * meta.dh * meta.hs)));
+        Model::set_weight(ctx, WeightRole::AttnQ_B, layer,
+                          nvidia_f32({meta.nh * meta.dh}, sequence(meta.nh * meta.dh, 0.001f)));
+        Model::set_weight(ctx, WeightRole::AttnK_W, layer,
+                          nvidia_f32({meta.nkvh * meta.dh, meta.hs}, sequence(meta.nkvh * meta.dh * meta.hs)));
+        Model::set_weight(ctx, WeightRole::AttnK_B, layer,
+                          nvidia_f32({meta.nkvh * meta.dh}, sequence(meta.nkvh * meta.dh, 0.001f)));
+        Model::set_weight(ctx, WeightRole::AttnV_W, layer,
+                          nvidia_f32({meta.nkvh * meta.dh, meta.hs}, sequence(meta.nkvh * meta.dh * meta.hs)));
+        Model::set_weight(ctx, WeightRole::AttnV_B, layer,
+                          nvidia_f32({meta.nkvh * meta.dh}, sequence(meta.nkvh * meta.dh, 0.001f)));
+        Model::set_weight(ctx, WeightRole::AttnO_W, layer,
+                          nvidia_f32({meta.hs, meta.nh * meta.dh}, sequence(meta.hs * meta.nh * meta.dh)));
+        Model::set_weight(ctx, WeightRole::MlpNorm, layer, nvidia_f32({meta.hs}, sequence(meta.hs, 0.02f)));
+        Model::set_weight(ctx, WeightRole::MlpGate_W, layer, nvidia_f32({meta.di, meta.hs}, sequence(meta.di * meta.hs)));
+        Model::set_weight(ctx, WeightRole::MlpUp_W, layer,
+                          nvidia_f32({meta.di, meta.hs}, sequence(meta.di * meta.hs, 0.015f)));
+        Model::set_weight(ctx, WeightRole::MlpDown_W, layer, nvidia_f32({meta.hs, meta.di}, sequence(meta.hs * meta.di)));
     }
 }
 

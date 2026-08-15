@@ -14,16 +14,16 @@ class BlockingRequestLibrary:
         self.await_finished = threading.Event()
         self.released = threading.Event()
 
-    def llaisysQwen2RequestAwait(self, _request):
+    def llaisysModelRequestAwait(self, _request):
         self.await_started.set()
         self.allow_await_return.wait()
         self.await_finished.set()
         return -2
 
-    def llaisysQwen2RequestAbort(self, _request):
+    def llaisysModelRequestAbort(self, _request):
         return None
 
-    def llaisysQwen2RequestRelease(self, _request):
+    def llaisysModelRequestRelease(self, _request):
         self.released.set()
 
 

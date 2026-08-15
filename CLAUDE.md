@@ -82,7 +82,7 @@ LLAISYS is an educational AI inference framework. The backend is a C++17 shared 
 
 `include/llaisys/` declares the C API. `src/llaisys/*.cc` implements those extern "C" functions, converting C handles (`LlaisysTensor*`) to internal C++ types (`llaisys::tensor_t` = `std::shared_ptr<Tensor>`). The struct `LlaisysTensor` simply wraps a `tensor_t`.
 
-Model C API lives in `include/llaisys/models/qwen2.h`, bridged by `src/llaisys/models/qwen2.cc`.
+Model C API lives in `include/llaisys/models/model.h`, bridged by `src/llaisys/models/model.cc` (`llaisysModelCreate` / `SetWeight` / Request*).
 
 ### Python layers
 
@@ -126,9 +126,9 @@ The Qwen2 model implementation spans two directories:
 
 - **`src/models/qwen2.cpp`** — The actual C++ `Qwen2` class containing the Transformer forward pass, worker loop, request-handle lifecycle, KV-cache integration, and sampling. Every submitted request owns an independent `Sequence`; reusable KV blocks are managed only by `BlockManager`.
 
-- **`src/llaisys/models/qwen2.cc`** — Thin C API bridge converting `LlaisysQwen2Model*` / `LlaisysQwen2Meta` / `LlaisysQwen2Weights` structs to calls on the C++ `Qwen2` class.
+- **`src/llaisys/models/model.cc`** — Thin C API bridge: `LlaisysModel` holds `shared_ptr<framework::Model>`; Create dispatches Qwen2/Llama; weights via `SetWeight` → `Model::set_weight`.
 
-- **`python/llaisys/models/qwen2.py`** — Loads safetensors weights into LLAISYS tensors via the C API and drives generation through `llaisysQwen2RequestSubmit/Await/Abort/Release`.
+- **`python/llaisys/models/qwen2.py` / `llama.py`** — Load safetensors via `llaisysModelSetWeight` and drive generation through `llaisysModelRequestSubmit/Await/Abort/Release`.
 
 The forward pass per layer: embedding → rms_norm → linear(QKV) → rope → kv_cache_move → paged_attention → linear(O) → residual add → rms_norm → linear(gate/up) → swiglu → linear(down) → residual add.
 

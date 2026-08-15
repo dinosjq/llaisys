@@ -22,7 +22,7 @@ namespace {
 
 using llaisys::Tensor;
 using llaisys::tensor_t;
-using llaisys::framework::ModelContext;
+using llaisys::core::ModelContext;
 
 constexpr llaisysDeviceType_t kDevice = LLAISYS_DEVICE_NVIDIA;
 constexpr int kDeviceId = 0;
@@ -250,11 +250,31 @@ void require_layer0_snapshots(const ModelContext &ctx, const char *message) {
     require(ctx.workspace.capture_post_ffn0->data() != ctx.workspace.x_mlp->data(), message);
 }
 
+void assemble_qwen2_stack(ModelContext &ctx, bool is_prefill) {
+    ctx.runtime.is_prefill = is_prefill;
+    llaisys::core::Qwen2Embedding{}.forward(ctx);
+    for (size_t layer = 0; layer < ctx.meta.nlayer; ++layer) {
+        llaisys::core::Qwen2Attention(&ctx.attns[layer], layer).forward(ctx);
+        if (layer == 0 && ctx.enable_layer0_capture) {
+            ctx.workspace.capture_post_attn0 = ctx.workspace.x->to(LLAISYS_DEVICE_CPU, 0);
+        }
+        llaisys::core::Qwen2FFN(&ctx.ffns[layer]).forward(ctx);
+        if (layer == 0 && ctx.enable_layer0_capture) {
+            ctx.workspace.capture_post_ffn0 = ctx.workspace.x->to(LLAISYS_DEVICE_CPU, 0);
+        }
+    }
+    const size_t batch_size = ctx.runtime.cut_idx.size() - 1;
+    auto last_token_indices = ctx.workspace.cut_idx->slice(0, 1, batch_size + 1);
+    llaisys::ops::embedding(ctx.workspace.x_part, last_token_indices, ctx.workspace.x, -1);
+    llaisys::ops::rms_norm(ctx.workspace.x_part_norm, ctx.workspace.x_part, ctx.out_norm_w, ctx.meta.epsilon);
+    llaisys::ops::linear(ctx.workspace.logits, ctx.workspace.x_part_norm, ctx.out_embed, nullptr);
+}
+
 void test_stack_matches_production_capture_points() {
     auto actual = make_prefill_context();
     auto expected = make_prefill_context();
     actual.enable_layer0_capture = true;
-    llaisys::framework::run_qwen2_layer_stack(actual, true);
+    assemble_qwen2_stack(actual, true);
     legacy_qwen2_forward_copy(expected, true);
 
     require_layer0_snapshots(actual, "stack layer-zero captures alias reusable workspace");
@@ -269,12 +289,12 @@ void test_stack_decode_uses_flash_decoding_workspace() {
     auto actual = make_prefill_context();
     auto expected = make_prefill_context();
     actual.enable_layer0_capture = true;
-    llaisys::framework::run_qwen2_layer_stack(actual, true);
+    assemble_qwen2_stack(actual, true);
     legacy_qwen2_forward_copy(expected, true);
 
     configure_decode_step(actual);
     configure_decode_step(expected);
-    llaisys::framework::run_qwen2_layer_stack(actual, false);
+    assemble_qwen2_stack(actual, false);
     legacy_qwen2_forward_copy(expected, false);
 
     require_layer0_snapshots(actual, "stack decode captures alias reusable workspace");

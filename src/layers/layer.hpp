@@ -2,7 +2,7 @@
 
 #include "../models/core/model_context.hpp"
 
-namespace llaisys::framework {
+namespace llaisys::core {
 
 class Layer {
 public:
@@ -10,4 +10,4 @@ public:
     virtual void forward(ModelContext &ctx) = 0;
 };
 
-} // namespace llaisys::framework
+} // namespace llaisys::core

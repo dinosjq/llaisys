@@ -13,7 +13,7 @@
 #include <stdexcept>
 #include <utility>
 
-namespace llaisys::framework {
+namespace llaisys::core {
 
 void Qwen2Embedding::forward(ModelContext &ctx) {
     auto &ws = ctx.workspace;
@@ -25,20 +25,26 @@ void Qwen2Embedding::forward(ModelContext &ctx) {
     ops::embedding(ws.x, token_ids, ctx.in_embed);
 }
 
-Qwen2Attention::Qwen2Attention(const AttnWeights *weights, size_t layer) : w_(weights), layer_(layer) {}
+Qwen2Attention::Qwen2Attention(const AttnWeights *weights, size_t layer)
+    : _w(weights), _layer(layer) {}
 
 void Qwen2Attention::forward(ModelContext &ctx) {
-    if (w_ == nullptr || layer_ >= ctx.k_caches.size() || layer_ >= ctx.v_caches.size()) {
+    if (this->_w == nullptr || this->_layer >= ctx.k_caches.size() || this->_layer >= ctx.v_caches.size()) {
         throw std::invalid_argument("Qwen2Attention requires weights and per-layer KV caches");
     }
 
     auto &ws = ctx.workspace;
     const auto &meta = ctx.meta;
-    const auto &w = *w_;
+    const auto &w = *this->_w;
+    const size_t layer = this->_layer;
 
+    const size_t nh = meta.nh;
+    const size_t nkvh = meta.nkvh;
+    const size_t dh = meta.dh;
+    const size_t hs = meta.hs;
     const size_t token_count = ws.x->shape()[0];
     // 计算 self_attention 所需的参数 scale
-    const float scale = 1.0f / std::sqrt(static_cast<float>(meta.dh));
+    const float scale = 1.0f / std::sqrt(static_cast<float>(dh));
 
     // RMS-norm 均方根归一化
     ops::rms_norm(ws.x_norm, ws.x, w.norm_w, meta.epsilon);
@@ -49,37 +55,36 @@ void Qwen2Attention::forward(ModelContext &ctx) {
     ops::linear(ws.v, ws.x_norm, w.v_w, w.v_b);
 
     // 旋转位置编码 rope: 将位置信息融入进 Q / K 当中
-    ops::rope(ws.q_rope, ws.q->view({token_count, meta.nh, meta.dh}), ws.pos_ids, meta.theta);
-    ops::rope(ws.k_rope, ws.k->view({token_count, meta.nkvh, meta.dh}), ws.pos_ids, meta.theta);
+    ops::rope(ws.q_rope, ws.q->view({token_count, nh, dh}), ws.pos_ids, meta.theta);
+    ops::rope(ws.k_rope, ws.k->view({token_count, nkvh, dh}), ws.pos_ids, meta.theta);
 
     // 按块加载到 kv cache
-    ops::kv_cache_move(ctx.k_caches[layer_], ws.k_rope, ws.block_ids, ws.cut_idx, ws.pos_ids, ctx.runtime.max_seq_len);
-    ops::kv_cache_move(ctx.v_caches[layer_], ws.v->view({token_count, meta.nkvh, meta.dh}), ws.block_ids, ws.cut_idx, ws.pos_ids,
+    ops::kv_cache_move(ctx.k_caches[layer], ws.k_rope, ws.block_ids, ws.cut_idx, ws.pos_ids, ctx.runtime.max_seq_len);
+    ops::kv_cache_move(ctx.v_caches[layer], ws.v->view({token_count, nkvh, dh}), ws.block_ids, ws.cut_idx, ws.pos_ids,
                        ctx.runtime.max_seq_len);
 
     // 自注意力: paged_attention(flash v2 / flash decoding)
-    // tot_block_num is batch block-table cumulative count, not k_cache pool capacity.
-    ops::paged_attention(ws.attn_val, ws.q_rope, ctx.k_caches[layer_], ctx.v_caches[layer_], ws.block_ids, ws.cut_idx, ws.tot_len,
-                         ctx.runtime.max_seq_len, ctx.runtime.tot_block_num, scale, ctx.runtime.is_prefill, ws.attn_acc, ws.attn_sum,
-                         ws.attn_max);
+    ops::paged_attention(ws.attn_val, ws.q_rope, ctx.k_caches[layer], ctx.v_caches[layer], ws.block_ids, ws.cut_idx,
+                         ws.tot_len, ctx.runtime.max_seq_len, ctx.runtime.tot_block_num, scale, ctx.runtime.is_prefill,
+                         ws.attn_acc, ws.attn_sum, ws.attn_max);
 
     // 得到多头注意力输出投影
-    ops::linear(ws.attn_out, ws.attn_val->view({token_count, meta.hs}), w.o_w, nullptr);
+    ops::linear(ws.attn_out, ws.attn_val->view({token_count, hs}), w.o_w, nullptr);
 
     // 实现残差连接: x(上一层信息) + attn_out(当前层信息)
     ops::add(ws.x_attn, ws.x, ws.attn_out);
     std::swap(ws.x, ws.x_attn);
 }
 
-Qwen2FFN::Qwen2FFN(const FfnWeights *weights, size_t layer_index_for_debug) : w_(weights), layer_index_for_debug_(layer_index_for_debug) {}
+Qwen2FFN::Qwen2FFN(const FfnWeights *weights) : _w(weights) {}
 
 void Qwen2FFN::forward(ModelContext &ctx) {
-    if (w_ == nullptr) {
+    if (this->_w == nullptr) {
         throw std::invalid_argument("Qwen2FFN requires weights");
     }
 
     auto &ws = ctx.workspace;
-    const auto &w = *w_;
+    const auto &w = *this->_w;
 
     // 多层感知机 MLP block
     ops::rms_norm(ws.m_norm, ws.x, w.norm_w, ctx.meta.epsilon);
@@ -93,48 +98,4 @@ void Qwen2FFN::forward(ModelContext &ctx) {
     std::swap(ws.x, ws.x_mlp);
 }
 
-namespace {
-
-// Stable capture: copy to CPU so later workspace reuse cannot mutate the snapshot.
-tensor_t stable_capture(const tensor_t &tensor) {
-    return tensor->to(LLAISYS_DEVICE_CPU, 0);
-}
-
-} // namespace
-
-void run_qwen2_layer_stack(ModelContext &ctx, bool is_prefill) {
-    if (ctx.attns.size() != ctx.meta.nlayer || ctx.ffns.size() != ctx.meta.nlayer) {
-        throw std::invalid_argument("Qwen2 layer weights do not match the model layer count");
-    }
-    if (ctx.runtime.cut_idx.size() < 2) {
-        throw std::invalid_argument("Qwen2 layer stack requires at least one sequence");
-    }
-
-    ctx.runtime.is_prefill = is_prefill;
-    Qwen2Embedding{}.forward(ctx);
-    for (size_t layer = 0; layer < ctx.meta.nlayer; ++layer) {
-        Qwen2Attention(&ctx.attns[layer], layer).forward(ctx);
-        if (layer == 0 && ctx.enable_layer0_capture) {
-            // Capture after attention residual swap into current x.
-            ctx.workspace.capture_post_attn0 = stable_capture(ctx.workspace.x);
-        }
-        Qwen2FFN(&ctx.ffns[layer], layer).forward(ctx);
-        if (layer == 0 && ctx.enable_layer0_capture) {
-            // Capture after FFN residual swap into current x.
-            ctx.workspace.capture_post_ffn0 = stable_capture(ctx.workspace.x);
-        }
-    }
-
-    // 先去提取 last-token 隐藏状态
-    const size_t batch_size = ctx.runtime.cut_idx.size() - 1;
-    auto last_token_indices = ctx.workspace.cut_idx->slice(0, 1, batch_size + 1);
-    ops::embedding(ctx.workspace.x_part, last_token_indices, ctx.workspace.x, -1);
-
-    // RMS-norm 均方根归一化
-    ops::rms_norm(ctx.workspace.x_part_norm, ctx.workspace.x_part, ctx.out_norm_w, ctx.meta.epsilon);
-
-    // 把隐藏向量映射到词表维度生成 logits
-    ops::linear(ctx.workspace.logits, ctx.workspace.x_part_norm, ctx.out_embed, nullptr);
-}
-
-} // namespace llaisys::framework
+} // namespace llaisys::core

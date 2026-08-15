@@ -18,7 +18,7 @@ namespace {
 
 using llaisys::Tensor;
 using llaisys::tensor_t;
-using llaisys::framework::ModelContext;
+using llaisys::core::ModelContext;
 
 void require(bool condition, const char *message) {
     if (!condition) {
@@ -41,7 +41,7 @@ void require_close(const tensor_t &actual, const tensor_t &expected, float atol 
     }
 }
 
-void legacy_ffn_block(ModelContext &ctx, const llaisys::framework::FfnWeights &weights) {
+void legacy_ffn_block(ModelContext &ctx, const llaisys::core::FfnWeights &weights) {
     llaisys::ops::rms_norm(ctx.workspace.m_norm, ctx.workspace.x, weights.norm_w, ctx.meta.epsilon);
     llaisys::ops::linear(ctx.workspace.gate, ctx.workspace.m_norm, weights.gate_w, nullptr);
     llaisys::ops::linear(ctx.workspace.up, ctx.workspace.m_norm, weights.up_w, nullptr);
@@ -98,7 +98,7 @@ void test_embedding_matches_ops_embedding() {
     auto expected = Tensor::create({3, 2}, LLAISYS_DTYPE_F32);
     llaisys::ops::embedding(expected, token_ids, ctx.in_embed);
 
-    llaisys::framework::Qwen2Embedding{}.forward(ctx);
+    llaisys::core::Qwen2Embedding{}.forward(ctx);
     require_close(ctx.workspace.x, expected);
 }
 
@@ -106,7 +106,7 @@ void test_ffn_matches_legacy_block() {
     auto actual = make_ffn_context();
     auto expected = make_ffn_context();
 
-    llaisys::framework::Qwen2FFN(&actual.ffns[0]).forward(actual);
+    llaisys::core::Qwen2FFN(&actual.ffns[0]).forward(actual);
     legacy_ffn_block(expected, expected.ffns[0]);
 
     require_close(actual.workspace.x, expected.workspace.x);

@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 from pathlib import Path
 
@@ -32,10 +31,10 @@ def main() -> int:
         tokenize=False,
     )
     input_ids = tokenizer.encode(text)
-    print(f"device={args.device} prompt_tokens={len(input_ids)} stack={os.environ.get('LLAISYS_LAYER_STACK')}")
+    print(f"device={args.device} prompt_tokens={len(input_ids)}")
 
     model = llaisys.models.Llama(args.model, device)
-    print(f"after_ctor stack={os.environ.get('LLAISYS_LAYER_STACK')}")
+    print("model_created arch=llama")
     out = model.generate(input_ids, max_new_tokens=args.max_steps, top_k=1, temperature=0.0)
     model.close()
 

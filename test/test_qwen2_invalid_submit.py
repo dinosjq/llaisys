@@ -12,7 +12,7 @@ class InvalidSubmitTest(unittest.TestCase):
         model_path = os.environ.get("LLAISYS_TEST_MODEL", "/home/songjq/models/DeepSeek-R1-Distill-Qwen-1.5B")
         model = Qwen2(model_path, llaisys.DeviceType.NVIDIA)
         try:
-            request = LIB_LLAISYS.llaisysQwen2RequestSubmit(
+            request = LIB_LLAISYS.llaisysModelRequestSubmit(
                 model._model,
                 POINTER(c_int64)(),
                 c_size_t(0),
