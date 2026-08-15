@@ -25,8 +25,11 @@ struct ModelMeta {
 
 struct BatchRuntime {
     std::vector<int64_t> token_ids, pos_ids, cut_idx, tot_len;
-    size_t max_seq_len;
-    bool is_prefill;
+    size_t max_seq_len = 0;
+    // Batch cumulative KV block count from block-table metadata
+    // (production: block_ids[(batch_size-1)*width]), not KV pool capacity.
+    size_t tot_block_num = 0;
+    bool is_prefill = true;
 };
 
 struct WorkspaceTensors {

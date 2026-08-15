@@ -85,3 +85,21 @@ All passed. `git diff --name-only -- src/models/qwen2.cpp src/models/qwen2.hpp` 
 
 - Core-test still prints the expected zero-token Sequence rejection to stderr (`token_ids must not be null`); assertion still passes.
 - `clang-format` still unavailable in this environment.
+
+## Follow-up (2026-08-15): tot_block_num from batch metadata
+
+### Status
+
+PASS
+
+### Fix
+
+- Important: `Qwen2Attention` no longer uses `k_caches[layer]->shape()[0]` (pool capacity) for `tot_block_num`.
+- Added `BatchRuntime::tot_block_num` (batch block-table cumulative, same source as production `block_ids[(batch_size-1)*width]`).
+- Tests / legacy capture path set and read `ctx.runtime.tot_block_num` explicitly (`1` in fixture).
+- Minor: FFN null-checks `w_`; `BatchRuntime::is_prefill` defaults to `true`.
+- Production `qwen2.cpp` / `qwen2.hpp` untouched.
+
+### Tests
+
+`xmake build/run llaisys-model-layer-cpu-test` and `llaisys-model-layer-nvidia-test` — both PASS.

@@ -46,9 +46,10 @@ void Qwen2Attention::forward(ModelContext &ctx) {
                        ctx.runtime.max_seq_len);
 
     // 自注意力: paged_attention(flash v2 / flash decoding)
-    const size_t tot_block_num = ctx.k_caches[layer_]->shape()[0];
+    // tot_block_num is batch block-table cumulative count, not k_cache pool capacity.
     ops::paged_attention(ws.attn_val, ws.q_rope, ctx.k_caches[layer_], ctx.v_caches[layer_], ws.block_ids, ws.cut_idx, ws.tot_len,
-                         ctx.runtime.max_seq_len, tot_block_num, scale, ctx.runtime.is_prefill, ws.attn_acc, ws.attn_sum, ws.attn_max);
+                         ctx.runtime.max_seq_len, ctx.runtime.tot_block_num, scale, ctx.runtime.is_prefill, ws.attn_acc, ws.attn_sum,
+                         ws.attn_max);
 
     // 得到多头注意力输出投影
     ops::linear(ws.attn_out, ws.attn_val->view({token_count, meta.hs}), w.o_w, nullptr);

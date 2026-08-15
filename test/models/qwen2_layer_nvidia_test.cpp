@@ -126,6 +126,8 @@ ModelContext make_prefill_context() {
     ctx.runtime.cut_idx = {0, 2};
     ctx.runtime.tot_len = {2};
     ctx.runtime.max_seq_len = 2;
+    // Same source as production: last row's first entry = batch cumulative block count.
+    ctx.runtime.tot_block_num = 1;
 
     allocate_seq_workspace(ctx, 2);
     // One logical KV block at physical id 0; first entry is the cumulative count.
@@ -173,6 +175,7 @@ void configure_decode_step(ModelContext &ctx) {
     ctx.runtime.cut_idx = {0, 1};
     ctx.runtime.tot_len = {3};
     ctx.runtime.max_seq_len = 3;
+    ctx.runtime.tot_block_num = 1;
 
     allocate_seq_workspace(ctx, 1);
     ctx.workspace.block_ids = nvidia_i64({1, 2}, {1, 0});
@@ -186,8 +189,8 @@ void legacy_qwen2_forward_copy(ModelContext &ctx, bool is_prefill) {
     auto token_ids = nvidia_i64({ctx.runtime.token_ids.size()}, ctx.runtime.token_ids);
     llaisys::ops::embedding(ctx.workspace.x, token_ids, ctx.in_embed);
     const float scale = 1.0f / std::sqrt(static_cast<float>(ctx.meta.dh));
-    // Matches prepare_block_table: last row's first entry is the batch cumulative block count.
-    const size_t tot_block_num = 1;
+    // Matches prepare_block_table / BatchRuntime: last row's first entry is the batch cumulative block count.
+    const size_t tot_block_num = ctx.runtime.tot_block_num;
 
     for (size_t layer = 0; layer < ctx.meta.nlayer; ++layer) {
         const auto &attn = ctx.attns[layer];
