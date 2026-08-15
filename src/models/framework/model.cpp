@@ -1,4 +1,4 @@
-#include "weight_set.hpp"
+#include "model.hpp"
 
 #include <stdexcept>
 #include <utility>
@@ -21,7 +21,7 @@ void validate_ffn_layer(const ModelContext &ctx, size_t layer) {
 
 } // namespace
 
-void set_weight(ModelContext &ctx, WeightRole role, size_t layer, tensor_t tensor) {
+void Model::set_weight(ModelContext &ctx, WeightRole role, size_t layer, tensor_t tensor) {
     switch (role) {
     case WeightRole::InEmbed:
         ctx.in_embed = std::move(tensor);

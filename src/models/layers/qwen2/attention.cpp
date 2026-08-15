@@ -20,23 +20,42 @@ void Qwen2Attention::forward(ModelContext &ctx) {
         throw std::invalid_argument("Qwen2Attention requires weights and per-layer KV caches");
     }
 
-    const size_t token_count = ctx.workspace.x->shape()[0];
-    const float scale = 1.0f / std::sqrt(static_cast<float>(ctx.meta.dh));
-    ops::rms_norm(ctx.workspace.x_norm, ctx.workspace.x, w_->norm_w, ctx.meta.epsilon);
-    ops::linear(ctx.workspace.q, ctx.workspace.x_norm, w_->q_w, w_->q_b);
-    ops::linear(ctx.workspace.k, ctx.workspace.x_norm, w_->k_w, w_->k_b);
-    ops::linear(ctx.workspace.v, ctx.workspace.x_norm, w_->v_w, w_->v_b);
-    ops::rope(ctx.workspace.q_rope, ctx.workspace.q->view({token_count, ctx.meta.nh, ctx.meta.dh}), ctx.workspace.pos_ids, ctx.meta.theta);
-    ops::rope(ctx.workspace.k_rope, ctx.workspace.k->view({token_count, ctx.meta.nkvh, ctx.meta.dh}), ctx.workspace.pos_ids, ctx.meta.theta);
-    ops::kv_cache_move(ctx.k_caches[layer_], ctx.workspace.k_rope, ctx.workspace.block_ids, ctx.workspace.cut_idx, ctx.workspace.pos_ids, ctx.runtime.max_seq_len);
-    ops::kv_cache_move(ctx.v_caches[layer_], ctx.workspace.v->view({token_count, ctx.meta.nkvh, ctx.meta.dh}), ctx.workspace.block_ids, ctx.workspace.cut_idx, ctx.workspace.pos_ids,
+    auto &ws = ctx.workspace;
+    const auto &meta = ctx.meta;
+    const auto &w = *w_;
+
+    const size_t token_count = ws.x->shape()[0];
+    // 计算 self_attention 所需的参数 scale
+    const float scale = 1.0f / std::sqrt(static_cast<float>(meta.dh));
+
+    // RMS-norm 均方根归一化
+    ops::rms_norm(ws.x_norm, ws.x, w.norm_w, meta.epsilon);
+
+    // 初始化 Q K V
+    ops::linear(ws.q, ws.x_norm, w.q_w, w.q_b);
+    ops::linear(ws.k, ws.x_norm, w.k_w, w.k_b);
+    ops::linear(ws.v, ws.x_norm, w.v_w, w.v_b);
+
+    // 旋转位置编码 rope: 将位置信息融入进 Q / K 当中
+    ops::rope(ws.q_rope, ws.q->view({token_count, meta.nh, meta.dh}), ws.pos_ids, meta.theta);
+    ops::rope(ws.k_rope, ws.k->view({token_count, meta.nkvh, meta.dh}), ws.pos_ids, meta.theta);
+
+    // 按块加载到 kv cache
+    ops::kv_cache_move(ctx.k_caches[layer_], ws.k_rope, ws.block_ids, ws.cut_idx, ws.pos_ids, ctx.runtime.max_seq_len);
+    ops::kv_cache_move(ctx.v_caches[layer_], ws.v->view({token_count, meta.nkvh, meta.dh}), ws.block_ids, ws.cut_idx, ws.pos_ids,
                        ctx.runtime.max_seq_len);
-    ops::paged_attention(ctx.workspace.attn_val, ctx.workspace.q_rope, ctx.k_caches[layer_], ctx.v_caches[layer_], ctx.workspace.block_ids, ctx.workspace.cut_idx,
-                          ctx.workspace.tot_len, ctx.runtime.max_seq_len, ctx.k_caches[layer_]->shape()[0], scale, ctx.runtime.is_prefill, ctx.workspace.attn_acc,
-                          ctx.workspace.attn_sum, ctx.workspace.attn_max);
-    ops::linear(ctx.workspace.attn_out, ctx.workspace.attn_val->view({token_count, ctx.meta.hs}), w_->o_w, nullptr);
-    ops::add(ctx.workspace.x_attn, ctx.workspace.x, ctx.workspace.attn_out);
-    std::swap(ctx.workspace.x, ctx.workspace.x_attn);
+
+    // 自注意力: paged_attention(flash v2 / flash decoding)
+    const size_t tot_block_num = ctx.k_caches[layer_]->shape()[0];
+    ops::paged_attention(ws.attn_val, ws.q_rope, ctx.k_caches[layer_], ctx.v_caches[layer_], ws.block_ids, ws.cut_idx, ws.tot_len,
+                         ctx.runtime.max_seq_len, tot_block_num, scale, ctx.runtime.is_prefill, ws.attn_acc, ws.attn_sum, ws.attn_max);
+
+    // 得到多头注意力输出投影
+    ops::linear(ws.attn_out, ws.attn_val->view({token_count, meta.hs}), w.o_w, nullptr);
+
+    // 实现残差连接: x(上一层信息) + attn_out(当前层信息)
+    ops::add(ws.x_attn, ws.x, ws.attn_out);
+    std::swap(ws.x, ws.x_attn);
 }
 
 } // namespace llaisys::framework

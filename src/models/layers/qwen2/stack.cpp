@@ -3,7 +3,6 @@
 #include "attention.hpp"
 #include "embedding.hpp"
 #include "ffn.hpp"
-#include "../../../core/llaisys_core.hpp"
 #include "../../../ops/embedding/op.hpp"
 #include "../../../ops/linear/op.hpp"
 #include "../../../ops/rms_norm/op.hpp"
@@ -14,13 +13,9 @@ namespace llaisys::framework {
 
 namespace {
 
-tensor_t snapshot(const tensor_t &source) {
-    auto destination = Tensor::create(source->shape(), source->dtype(), source->deviceType(), source->deviceId());
-    core::context().setDevice(source->deviceType(), source->deviceId());
-    core::context().runtime().api()->memcpy_sync(
-        destination->data(), source->data(), source->numel() * source->elementSize(),
-        source->deviceType() == LLAISYS_DEVICE_CPU ? LLAISYS_MEMCPY_H2H : LLAISYS_MEMCPY_D2D);
-    return destination;
+// Stable capture: copy to CPU so later workspace reuse cannot mutate the snapshot.
+tensor_t stable_capture(const tensor_t &tensor) {
+    return tensor->to(LLAISYS_DEVICE_CPU, 0);
 }
 
 } // namespace
@@ -38,18 +33,25 @@ void run_qwen2_layer_stack(ModelContext &ctx, bool is_prefill) {
     for (size_t layer = 0; layer < ctx.meta.nlayer; ++layer) {
         Qwen2Attention(&ctx.attns[layer], layer).forward(ctx);
         if (layer == 0) {
-            ctx.workspace.capture_post_attn0 = snapshot(ctx.workspace.x);
+            // Capture after attention residual swap into current x.
+            ctx.workspace.capture_post_attn0 = stable_capture(ctx.workspace.x);
         }
         Qwen2FFN(&ctx.ffns[layer], layer).forward(ctx);
         if (layer == 0) {
-            ctx.workspace.capture_post_ffn0 = snapshot(ctx.workspace.x);
+            // Capture after FFN residual swap into current x.
+            ctx.workspace.capture_post_ffn0 = stable_capture(ctx.workspace.x);
         }
     }
 
+    // 先去提取 last-token 隐藏状态
     const size_t batch_size = ctx.runtime.cut_idx.size() - 1;
     auto last_token_indices = ctx.workspace.cut_idx->slice(0, 1, batch_size + 1);
     ops::embedding(ctx.workspace.x_part, last_token_indices, ctx.workspace.x, -1);
+
+    // RMS-norm 均方根归一化
     ops::rms_norm(ctx.workspace.x_part_norm, ctx.workspace.x_part, ctx.out_norm_w, ctx.meta.epsilon);
+
+    // 把隐藏向量映射到词表维度生成 logits
     ops::linear(ctx.workspace.logits, ctx.workspace.x_part_norm, ctx.out_embed, nullptr);
 }
 

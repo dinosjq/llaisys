@@ -73,6 +73,7 @@ target("llaisys-core")
     add_files("src/kv_cache/*.cpp")
     add_files("src/scheduler/*.cpp")
     add_files("src/models/*.cpp")
+    -- framework: model.cpp (set_weight + prepare_* stubs); weight_set.cpp removed
     add_files("src/models/framework/*.cpp")
     add_files("src/models/layers/qwen2/*.cpp")
 
@@ -155,6 +156,14 @@ target("llaisys-core-test")
     set_default(false)
     add_deps("llaisys-core")
     add_deps("llaisys-ops")
+    if has_config("nv-gpu") then
+        add_packages("cuda")
+        add_rules("cuda")
+        set_policy("build.cuda.devlink", true)
+        add_linkdirs("/usr/local/cuda/lib64")
+        add_syslinks("cublas", "cublasLt")
+        add_ldflags("-Wl,-rpath=/usr/local/cuda/lib64")
+    end
 
     set_languages("cxx17")
     set_warnings("all", "error")
@@ -172,6 +181,14 @@ target("llaisys-model-layer-cpu-test")
     set_default(false)
     add_deps("llaisys-core")
     add_deps("llaisys-ops")
+    if has_config("nv-gpu") then
+        add_packages("cuda")
+        add_rules("cuda")
+        set_policy("build.cuda.devlink", true)
+        add_linkdirs("/usr/local/cuda/lib64")
+        add_syslinks("cublas", "cublasLt")
+        add_ldflags("-Wl,-rpath=/usr/local/cuda/lib64")
+    end
 
     set_languages("cxx17")
     set_warnings("all", "error")
