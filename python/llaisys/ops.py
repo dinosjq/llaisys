@@ -59,6 +59,12 @@ class Ops:
         )
 
     @staticmethod
+    def rope_inv_freq(out: Tensor, inp: Tensor, pos_ids: Tensor, inv_freq: Tensor):
+        LIB_LLAISYS.llaisysROPEInvFreq(
+            out.lib_tensor(), inp.lib_tensor(), pos_ids.lib_tensor(), inv_freq.lib_tensor()
+        )
+
+    @staticmethod
     def paged_attention(attn_val: Tensor, q: Tensor, k_cache: Tensor, v_cache: Tensor, block_ids, *rest):
         """
         Batched call: (attn_val, q_cat, k_cache, v_cache, block_ids_ll, cut_idx_ll,

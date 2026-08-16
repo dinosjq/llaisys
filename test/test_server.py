@@ -13,6 +13,7 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import httpx
 
@@ -39,18 +40,19 @@ def test_health(base):
     print("[PASS] health")
 
 
-def test_list_models(base):
+def test_list_models(base, model_name):
     r = httpx.get(f"{base}/v1/models")
     assert r.status_code == 200, r.text
     data = r.json()
     assert data["object"] == "list"
     assert len(data["data"]) >= 1
+    assert data["data"][0]["id"] == model_name
     print("[PASS] list_models")
 
 
-def test_chat_non_streaming(base):
+def test_chat_non_streaming(base, model_name):
     r = httpx.post(f"{base}/v1/chat/completions", json={
-        "model": "qwen2-1.5b",
+        "model": model_name,
         "messages": [{"role": "user", "content": "1+1="}],
         "max_tokens": 16,
         "stream": False,
@@ -65,11 +67,11 @@ def test_chat_non_streaming(base):
     print("[PASS] chat_non_streaming:", repr(data["choices"][0]["message"]["content"][:60]))
 
 
-def test_chat_streaming(base):
+def test_chat_streaming(base, model_name):
     chunks = []
     done = False
     with httpx.stream("POST", f"{base}/v1/chat/completions", json={
-        "model": "qwen2-1.5b",
+        "model": model_name,
         "messages": [{"role": "user", "content": "hi"}],
         "max_tokens": 8,
         "stream": True,
@@ -91,9 +93,9 @@ def test_chat_streaming(base):
     print(f"[PASS] chat_streaming: {len(chunks)} chunks + [DONE]")
 
 
-def test_completions_non_stream(base):
+def test_completions_non_stream(base, model_name):
     r = httpx.post(f"{base}/v1/completions", json={
-        "model": "qwen2-1.5b",
+        "model": model_name,
         "prompt": "The capital of France is",
         "max_tokens": 8,
         "stream": False,
@@ -105,10 +107,10 @@ def test_completions_non_stream(base):
     print("[PASS] completions_non_stream:", repr(data["choices"][0]["text"][:60]))
 
 
-def test_cancellation(base):
+def test_cancellation(base, model_name):
     """Client disconnect mid-stream must not crash the server."""
     with httpx.stream("POST", f"{base}/v1/chat/completions", json={
-        "model": "qwen2-1.5b",
+        "model": model_name,
         "messages": [{"role": "user", "content": "Write a very long essay about history"}],
         "max_tokens": 512,
         "stream": True,
@@ -123,7 +125,7 @@ def test_cancellation(base):
     assert r.status_code == 200
     # and able to serve a new request after the abort
     r = httpx.post(f"{base}/v1/chat/completions", json={
-        "model": "qwen2-1.5b",
+        "model": model_name,
         "messages": [{"role": "user", "content": "2+2="}],
         "max_tokens": 8,
         "stream": False,
@@ -131,9 +133,9 @@ def test_cancellation(base):
     assert r.status_code == 200
     print("[PASS] cancellation: server alive and serving after client disconnect")
 
-def test_identical_prompt_request_isolation(base):
+def test_identical_prompt_request_isolation(base, model_name):
     payload = {
-        "model": "qwen2-1.5b",
+        "model": model_name,
         "prompt": "A request handle must isolate this prompt.",
         "max_tokens": 8,
         "stream": False,
@@ -144,9 +146,9 @@ def test_identical_prompt_request_isolation(base):
     assert all(response.json()["choices"] for response in responses)
     print("[PASS] identical prompts: independent concurrent completions")
 
-def test_identical_prompt_cancellation_isolation(base):
+def test_identical_prompt_cancellation_isolation(base, model_name):
     payload = {
-        "model": "qwen2-1.5b",
+        "model": model_name,
         "prompt": "Keep this identical request active while its peer is cancelled.",
         "max_tokens": 32,
         "stream": True,
@@ -188,10 +190,12 @@ def main():
     parser.add_argument("--port", type=int, default=8321)
     args = parser.parse_args()
 
+    model_name = Path(args.model).name
     base = f"http://127.0.0.1:{args.port}"
     proc = subprocess.Popen(
         [sys.executable, "-m", "llaisys.server",
          "--model", args.model, "--device", args.device,
+         "--model-name", model_name,
          "--host", "127.0.0.1", "--port", str(args.port)],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -199,13 +203,13 @@ def main():
     try:
         wait_ready(base)
         test_health(base)
-        test_list_models(base)
-        test_chat_non_streaming(base)
-        test_chat_streaming(base)
-        test_completions_non_stream(base)
-        test_cancellation(base)
-        test_identical_prompt_request_isolation(base)
-        test_identical_prompt_cancellation_isolation(base)
+        test_list_models(base, model_name)
+        test_chat_non_streaming(base, model_name)
+        test_chat_streaming(base, model_name)
+        test_completions_non_stream(base, model_name)
+        test_cancellation(base, model_name)
+        test_identical_prompt_request_isolation(base, model_name)
+        test_identical_prompt_cancellation_isolation(base, model_name)
         print("\nAll server tests passed.")
     finally:
         proc.terminate()

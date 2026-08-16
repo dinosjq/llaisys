@@ -38,12 +38,14 @@ GPU variants: append `--device nvidia` to any test command.
 Operator tests support `--profile` for benchmarking.
 Tests use shared utilities from `test/test_utils.py` (`random_tensor`, `check_equal`, `benchmark`, etc.).
 
-Server tests:
+Server / model API tests:
 ```bash
 python test/test_server.py --model <path>              # OpenAI-compatible API server tests
-python test/test_server_temperature.py --model <path>  # temperature sampling tests
-python test/test_qwen2_request_api.py --model <path>   # request API lifecycle tests
-python test/test_qwen2_request_lifetime.py --model <path>  # request handle lifecycle
+python test/test_server_temperature.py                 # temperature sampling tests
+python test/test_request_lifetime.py                   # request handle lifecycle
+python test/test_invalid_submit.py                     # empty submit reject
+python test/test_weight_map.py                         # HF weight name maps (Qwen2/Llama)
+python test/test_model_api_symbols.py                  # unified Model C API symbols
 ```
 
 ## Architecture
@@ -87,7 +89,7 @@ Model C API lives in `include/llaisys/models/model.h`, bridged by `src/llaisys/m
 ### Python layers
 
 - `python/llaisys/libllaisys/` — ctypes bindings: loads the `.so`, declares argtypes/restype for every C API function. Sub-packages mirror the C API structure (e.g., `libllaisys/models/qwen2.py` for model bindings, `libllaisys/llaisys_types.py` for enums).
-- `python/llaisys/` — Pythonic wrappers: `Tensor`, `Ops`, `RuntimeAPI`, `models.Qwen2`.
+- `python/llaisys/` — Pythonic wrappers: `Tensor`, `Ops`, `RuntimeAPI`, `models.load_causal_lm` / `Qwen2` / `Llama`.
 
 ### Building (xmake)
 
@@ -126,7 +128,7 @@ The Qwen2 model implementation spans two directories:
 
 - **`src/models/qwen2.cpp`** — The actual C++ `Qwen2` class containing the Transformer forward pass, worker loop, request-handle lifecycle, KV-cache integration, and sampling. Every submitted request owns an independent `Sequence`; reusable KV blocks are managed only by `BlockManager`.
 
-- **`src/llaisys/models/model.cc`** — Thin C API bridge: `LlaisysModel` holds `shared_ptr<framework::Model>`; Create dispatches Qwen2/Llama; weights via `SetWeight` → `Model::set_weight`.
+- **`src/llaisys/models/model.cc`** — Thin C API bridge: `LlaisysModel` holds `shared_ptr<model::Model>`; Create dispatches Qwen2/Llama; weights via `SetWeight` → `Model::set_weight`.
 
 - **`python/llaisys/models/qwen2.py` / `llama.py`** — Load safetensors via `llaisysModelSetWeight` and drive generation through `llaisysModelRequestSubmit/Await/Abort/Release`.
 
@@ -156,8 +158,6 @@ python -m llaisys.server --model <path> --port 8000 --device nvidia
 Endpoints: `GET /health`, `GET /v1/models`, `POST /v1/chat/completions` (streaming + non-streaming), `POST /v1/completions`. The server uses FastAPI + uvicorn with SSE for streaming. It loads the tokenizer via HuggingFace `transformers` for chat template support.
 
 ### Benchmarking & Profiling
-
-**Operator benchmarks** (`test/benchmark/ops/`): CUDA Event-timed micro-benchmarks comparing LLAISYS ops against PyTorch/CUDA baselines. Supports NCU profiling (`--use-ncu`) and batch runs (`run_all_benchmarks.py`). See `test/benchmark/README.md` for full details.
 
 **Inference benchmarks** (`test/benchmark/`): End-to-end inference performance comparison against HuggingFace, supporting single-request serial and concurrent multi-request modes.
 ```bash

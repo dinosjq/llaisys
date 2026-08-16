@@ -1,5 +1,6 @@
-#include "../../src/models/core/model_context.hpp"
-#include "../../src/layers/qwen2/qwen2.hpp"
+#include "../../src/model/model_context.hpp"
+#include "../../src/models/qwen2/qwen2_context.hpp"
+#include "../../src/layer/qwen2/qwen2.hpp"
 #include "../../src/ops/add/op.hpp"
 #include "../../src/ops/embedding/op.hpp"
 #include "../../src/ops/kv_cache_move/op.hpp"
@@ -22,7 +23,8 @@ namespace {
 
 using llaisys::Tensor;
 using llaisys::tensor_t;
-using llaisys::core::ModelContext;
+using llaisys::model::Qwen2Context;
+using ModelContext = Qwen2Context;
 
 constexpr llaisysDeviceType_t kDevice = LLAISYS_DEVICE_NVIDIA;
 constexpr int kDeviceId = 0;
@@ -74,10 +76,10 @@ std::vector<float> sequence(size_t count, float scale = 0.01f) {
     return result;
 }
 
-// Stable capture: copy to CPU (matches model-pipeline decoder_model.cpp).
-tensor_t stable_capture(const tensor_t &tensor) {
-    return tensor->to(LLAISYS_DEVICE_CPU, 0);
-}
+// Stable capture: copy to CPU for layer0 residual parity (disabled with production capture).
+// tensor_t stable_capture(const tensor_t &tensor) {
+//     return tensor->to(LLAISYS_DEVICE_CPU, 0);
+// }
 
 void allocate_seq_workspace(ModelContext &ctx, size_t seq_len) {
     const auto make = [&](const std::vector<size_t> &shape) {
@@ -110,8 +112,6 @@ void allocate_seq_workspace(ModelContext &ctx, size_t seq_len) {
     ctx.workspace.attn_acc = nvidia_f32({1, ctx.meta.nh, ctx.meta.dh}, std::vector<float>(ctx.meta.nh * ctx.meta.dh));
     ctx.workspace.attn_sum = nvidia_f32({1, ctx.meta.nh, 1}, std::vector<float>(ctx.meta.nh));
     ctx.workspace.attn_max = nvidia_f32({1, ctx.meta.nh, 1}, std::vector<float>(ctx.meta.nh));
-    ctx.workspace.capture_post_attn0.reset();
-    ctx.workspace.capture_post_ffn0.reset();
 }
 
 // Block table layout matches qwen2.cpp prepare_block_table:
@@ -211,10 +211,9 @@ void legacy_qwen2_forward_copy(ModelContext &ctx, bool is_prefill) {
         llaisys::ops::linear(ctx.workspace.attn_out, ctx.workspace.attn_val->view({token_count, ctx.meta.hs}), attn.o_w, nullptr);
         llaisys::ops::add(ctx.workspace.x_attn, ctx.workspace.x, ctx.workspace.attn_out);
         std::swap(ctx.workspace.x, ctx.workspace.x_attn);
-        if (layer == 0) {
-            // Capture after attention residual swap into current x.
-            ctx.workspace.capture_post_attn0 = stable_capture(ctx.workspace.x);
-        }
+        // if (layer == 0) {
+        //     ctx.workspace.capture_post_attn0 = stable_capture(ctx.workspace.x);
+        // }
 
         const auto &ffn = ctx.ffns[layer];
         llaisys::ops::rms_norm(ctx.workspace.m_norm, ctx.workspace.x, ffn.norm_w, ctx.meta.epsilon);
@@ -224,10 +223,9 @@ void legacy_qwen2_forward_copy(ModelContext &ctx, bool is_prefill) {
         llaisys::ops::linear(ctx.workspace.down, ctx.workspace.swiglu, ffn.down_w, nullptr);
         llaisys::ops::add(ctx.workspace.x_mlp, ctx.workspace.x, ctx.workspace.down);
         std::swap(ctx.workspace.x, ctx.workspace.x_mlp);
-        if (layer == 0) {
-            // Capture after FFN residual swap into current x.
-            ctx.workspace.capture_post_ffn0 = stable_capture(ctx.workspace.x);
-        }
+        // if (layer == 0) {
+        //     ctx.workspace.capture_post_ffn0 = stable_capture(ctx.workspace.x);
+        // }
     }
 
     // Match production / stack: last-token index is cut_idx[1:] with embedding offset -1.
@@ -238,30 +236,18 @@ void legacy_qwen2_forward_copy(ModelContext &ctx, bool is_prefill) {
     llaisys::ops::linear(ctx.workspace.logits, ctx.workspace.x_part_norm, ctx.out_embed, nullptr);
 }
 
-void require_layer0_snapshots(const ModelContext &ctx, const char *message) {
-    require(ctx.workspace.capture_post_attn0 && ctx.workspace.capture_post_ffn0, message);
-    require(ctx.workspace.capture_post_attn0->deviceType() == LLAISYS_DEVICE_CPU, message);
-    require(ctx.workspace.capture_post_ffn0->deviceType() == LLAISYS_DEVICE_CPU, message);
-    require(ctx.workspace.capture_post_attn0->data() != ctx.workspace.x->data(), message);
-    require(ctx.workspace.capture_post_attn0->data() != ctx.workspace.x_attn->data(), message);
-    require(ctx.workspace.capture_post_attn0->data() != ctx.workspace.x_mlp->data(), message);
-    require(ctx.workspace.capture_post_ffn0->data() != ctx.workspace.x->data(), message);
-    require(ctx.workspace.capture_post_ffn0->data() != ctx.workspace.x_attn->data(), message);
-    require(ctx.workspace.capture_post_ffn0->data() != ctx.workspace.x_mlp->data(), message);
-}
-
 void assemble_qwen2_stack(ModelContext &ctx, bool is_prefill) {
     ctx.runtime.is_prefill = is_prefill;
-    llaisys::core::Qwen2Embedding{}.forward(ctx);
+    llaisys::model::Qwen2Embedding{}.forward(ctx);
     for (size_t layer = 0; layer < ctx.meta.nlayer; ++layer) {
-        llaisys::core::Qwen2Attention(&ctx.attns[layer], layer).forward(ctx);
-        if (layer == 0 && ctx.enable_layer0_capture) {
-            ctx.workspace.capture_post_attn0 = ctx.workspace.x->to(LLAISYS_DEVICE_CPU, 0);
-        }
-        llaisys::core::Qwen2FFN(&ctx.ffns[layer]).forward(ctx);
-        if (layer == 0 && ctx.enable_layer0_capture) {
-            ctx.workspace.capture_post_ffn0 = ctx.workspace.x->to(LLAISYS_DEVICE_CPU, 0);
-        }
+        llaisys::model::Qwen2Attention(&ctx.attns[layer], layer).forward(ctx);
+        // if (layer == 0 && ctx.enable_layer0_capture) {
+        //     ctx.workspace.capture_post_attn0 = ctx.workspace.x->to(LLAISYS_DEVICE_CPU, 0);
+        // }
+        llaisys::model::Qwen2FFN(&ctx.ffns[layer]).forward(ctx);
+        // if (layer == 0 && ctx.enable_layer0_capture) {
+        //     ctx.workspace.capture_post_ffn0 = ctx.workspace.x->to(LLAISYS_DEVICE_CPU, 0);
+        // }
     }
     const size_t batch_size = ctx.runtime.cut_idx.size() - 1;
     auto last_token_indices = ctx.workspace.cut_idx->slice(0, 1, batch_size + 1);
@@ -270,25 +256,17 @@ void assemble_qwen2_stack(ModelContext &ctx, bool is_prefill) {
     llaisys::ops::linear(ctx.workspace.logits, ctx.workspace.x_part_norm, ctx.out_embed, nullptr);
 }
 
-void test_stack_matches_production_capture_points() {
+void test_stack_matches_production_logits() {
     auto actual = make_prefill_context();
     auto expected = make_prefill_context();
-    actual.enable_layer0_capture = true;
     assemble_qwen2_stack(actual, true);
     legacy_qwen2_forward_copy(expected, true);
-
-    require_layer0_snapshots(actual, "stack layer-zero captures alias reusable workspace");
-    require_layer0_snapshots(expected, "legacy layer-zero captures alias reusable workspace");
-    require_close(actual.workspace.capture_post_attn0, expected.workspace.capture_post_attn0, "prefill layer-zero post-attention differs");
-    require_close(actual.workspace.capture_post_ffn0, expected.workspace.capture_post_ffn0, "prefill layer-zero post-ffn differs");
     require_close(actual.workspace.logits, expected.workspace.logits, "prefill logits differ");
 }
 
-void test_stack_decode_uses_flash_decoding_workspace() {
-    // Prefill first on the same context/caches so flash-decoding has real KV content.
+void test_stack_decode_logits() {
     auto actual = make_prefill_context();
     auto expected = make_prefill_context();
-    actual.enable_layer0_capture = true;
     assemble_qwen2_stack(actual, true);
     legacy_qwen2_forward_copy(expected, true);
 
@@ -297,18 +275,14 @@ void test_stack_decode_uses_flash_decoding_workspace() {
     assemble_qwen2_stack(actual, false);
     legacy_qwen2_forward_copy(expected, false);
 
-    require_layer0_snapshots(actual, "stack decode captures alias reusable workspace");
-    require_layer0_snapshots(expected, "legacy decode captures alias reusable workspace");
-    require_close(actual.workspace.capture_post_attn0, expected.workspace.capture_post_attn0, "decode layer-zero post-attention differs");
-    require_close(actual.workspace.capture_post_ffn0, expected.workspace.capture_post_ffn0, "decode layer-zero post-ffn differs");
     require_close(actual.workspace.logits, expected.workspace.logits, "decode logits differ");
 }
 
 } // namespace
 
 int main() {
-    test_stack_matches_production_capture_points();
-    test_stack_decode_uses_flash_decoding_workspace();
-    std::cout << "qwen2 NVIDIA layer stack capture test passed\n";
+    test_stack_matches_production_logits();
+    test_stack_decode_logits();
+    std::cout << "qwen2 NVIDIA layer stack logits test passed\n";
     return 0;
 }

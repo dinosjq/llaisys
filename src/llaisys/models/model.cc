@@ -7,12 +7,12 @@
 #include <memory>
 
 struct LlaisysModel {
-    std::shared_ptr<llaisys::core::Model> model;
+    std::shared_ptr<llaisys::model::Model> model;
 };
 
 struct LlaisysRequest {
-    std::shared_ptr<llaisys::core::Model> model;
-    llaisys::core::model_request_t request;
+    std::shared_ptr<llaisys::model::Model> model;
+    llaisys::model::model_request_t request;
 };
 
 namespace {
@@ -31,6 +31,7 @@ llaisys::Qwen2Meta to_qwen2_meta(const LlaisysModelMeta *meta) {
     out.epsilon = meta->epsilon;
     out.theta = meta->theta;
     out.end_token = meta->end_token;
+    out.rope_scale = meta->rope_scale > 0.f ? meta->rope_scale : 1.f;
     return out;
 }
 
@@ -74,7 +75,7 @@ __C {
         if (!model || !model->model || !tensor) {
             return;
         }
-        llaisys::core::Model::set_weight(model->model->ctx(), static_cast<llaisys::core::WeightRole>(role),
+        llaisys::model::Model::set_weight(model->model->ctx(), static_cast<llaisys::model::WeightRole>(role),
                                               layer, tensor->tensor);
     }
 
@@ -83,7 +84,7 @@ __C {
         if (!model || !model->model || !token_ids) {
             return nullptr;
         }
-        llaisys::core::model_request_t submitted = nullptr;
+        llaisys::model::model_request_t submitted = nullptr;
         try {
             submitted = model->model->submit(token_ids, ntoken, max_new_tokens, top_k, top_p, temperature);
             auto *request = new LlaisysRequest();

@@ -21,7 +21,7 @@ def main():
     free_before, total = torch.cuda.mem_get_info()
 
     start = time.perf_counter()
-    model = llaisys.models.Qwen2(args.model, llaisys.DeviceType.NVIDIA)
+    model = llaisys.models.load_causal_lm(args.model, llaisys.DeviceType.NVIDIA)
     try:
         torch.cuda.synchronize()
         initialization_wall_seconds = time.perf_counter() - start

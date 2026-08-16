@@ -9,7 +9,7 @@ __C {
         LLAISYS_MODEL_LLAMA = 1,
     } LlaisysModelArch;
 
-    /* Must match llaisys::core::WeightRole order/values. */
+    /* Must match llaisys::model::WeightRole order/values. */
     typedef enum LlaisysWeightRole {
         LLAISYS_WEIGHT_IN_EMBED = 0,
         LLAISYS_WEIGHT_OUT_EMBED = 1,
@@ -33,6 +33,8 @@ __C {
         size_t nlayer, hs, nh, nkvh, dh, di, maxseq, voc;
         float epsilon, theta;
         int64_t end_token;
+        /* Llama-3 rope factor；1 = 不做 scaling。其余 freq 边界为架构常量。 */
+        float rope_scale;
     };
 
     struct LlaisysModel;

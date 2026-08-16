@@ -1,131 +1,274 @@
 #!/usr/bin/env python3
-"""Single-request serial inference benchmark — HF vs LLAISYS."""
+"""Single-request serial benchmark — HF generate vs LLAISYS generate.
 
-import argparse, gc, sys, time
+Inputs are constructed to exact token lengths and shared across backends.
+On small GPUs use ``--backend hf`` then ``--backend llaisys --from-json …``
+so the two weight sets never share one process.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
 import torch
+
 from infer_utils import (
-    load_hf_model, load_llaisys_model, build_prompt_bank,
-    hf_infer, llaisys_infer, summarize_run, print_speedup,
-    format_table, save_json,
+    build_workload,
+    count_new_tokens,
+    format_single_table,
+    hf_generate_serial,
+    llaisys_generate_serial,
+    load_hf_model,
+    load_llaisys_model,
+    make_warmup_ids,
+    parse_int_list,
+    print_speedup,
+    release_hf,
+    save_json,
+    summarize_run,
 )
 
 
-def main():
-    parser = argparse.ArgumentParser()
+def _load_tokenizer_only(model_path: str):
+    from transformers import AutoTokenizer
+    return AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--device", default="nvidia", choices=["nvidia"])
     parser.add_argument("--model", default=None, type=str)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--max_steps", default=10, type=int)
+    parser.add_argument("--max_steps", default=64, type=int)
     parser.add_argument("--top_p", default=1.0, type=float)
     parser.add_argument("--top_k", default=1, type=int)
     parser.add_argument("--temperature", default=1.0, type=float)
-    parser.add_argument("--num_prompts", default=12, type=int)
-    parser.add_argument("--warmup", default=3, type=int)
-    parser.add_argument("--repeat", default=5, type=int)
+    parser.add_argument(
+        "--input-lens",
+        default="32,128,512",
+        help="Comma-separated exact input token lengths",
+    )
+    parser.add_argument("--prompts-per-len", type=int, default=2)
+    parser.add_argument("--warmup", type=int, default=3)
+    parser.add_argument("--repeat", type=int, default=5)
+    parser.add_argument(
+        "--force-max-tokens",
+        action="store_true",
+        help="Ask HF for min_new_tokens=max_new_tokens (LLAISYS best-effort)",
+    )
+    parser.add_argument("--no-chat-template", action="store_true")
     parser.add_argument("--test", action="store_true")
     parser.add_argument("--output", default="test/benchmark/results")
+    parser.add_argument(
+        "--backend",
+        choices=["both", "hf", "llaisys"],
+        default="both",
+        help="Run one or both backends (use split processes on 8GB GPUs)",
+    )
+    parser.add_argument(
+        "--from-json",
+        default=None,
+        help="Partial results JSON from --backend hf (for --backend llaisys)",
+    )
     args = parser.parse_args()
 
     if args.test:
-        args.top_p = 1.0; args.top_k = 1; args.temperature = 1.0
+        args.top_p = 1.0
+        args.top_k = 1
+        args.temperature = 0.0
 
     torch.manual_seed(args.seed)
+    input_lens = parse_int_list(args.input_lens)
+    max_steps = args.max_steps
+    tp, tk, temp = args.top_p, args.top_k, args.temperature
+    force = args.force_max_tokens
 
-    prompts = build_prompt_bank(args.num_prompts)
-    max_steps, tp, tk, temp = args.max_steps, args.top_p, args.top_k, args.temperature
+    partial = None
+    if args.from_json:
+        with open(args.from_json) as f:
+            partial = json.load(f)
 
-    # ── HF ───────────────────────────────────────────
-    from infer_utils import _apply_chat
-    tokenizer, hf_model, model_path = load_hf_model(args.model, args.device)
-    prompt_input_lens = [len(_apply_chat(tokenizer, p)) for p in prompts]
+    cases = None
+    model_path = args.model
+    hf_stats = hf_best = rows_hf = None
+    vocab = None
 
-    for _ in range(args.warmup):
-        for p in prompts:
-            hf_infer(p, tokenizer, hf_model, max_steps, tp, tk, temp)
+    if args.backend in ("both", "hf"):
+        tokenizer, hf_model, model_path = load_hf_model(args.model, args.device)
+        cases = build_workload(
+            tokenizer,
+            input_lens,
+            args.prompts_per_len,
+            use_chat_template=not args.no_chat_template,
+        )
+        vocab = getattr(tokenizer, "vocab_size", None) or len(tokenizer)
 
-    hf_results = []
-    hf_ttfts = []
-    hf_elapsed_sum = 0.0
-    for _ in range(args.repeat):
-        rep_results, rep_ttfts = [], []
-        rep_start = time.perf_counter()
-        for i, p in enumerate(prompts):
-            tokens, e_us, ttft_us = hf_infer(p, tokenizer, hf_model, max_steps, tp, tk, temp)
-            rep_results.append((tokens, e_us))
-            rep_ttfts.append(ttft_us)
-        hf_elapsed_sum += time.perf_counter() - rep_start
-        hf_results, hf_ttfts = rep_results, rep_ttfts
+        for _ in range(args.warmup):
+            warm_cases = [
+                {**c, "input_ids": make_warmup_ids(c["input_ids"], vocab)} for c in cases
+            ]
+            hf_generate_serial(
+                warm_cases, tokenizer, hf_model, max_steps, tp, tk, temp,
+                force_max_tokens=force,
+            )
 
-    hf_in_tok  = sum(prompt_input_lens)
-    hf_out_tok = sum(len(r[0]) - prompt_input_lens[i] for i, r in enumerate(hf_results))
-    hf_lat_us  = [r[1] for r in hf_results]
-    hf_stats = summarize_run("HF", hf_elapsed_sum / args.repeat, len(prompts),
-                              hf_in_tok, hf_out_tok, hf_lat_us)
-    hf_stats["per_prompt"] = hf_lat_us
-    hf_stats["ttft_avg_ms"] = (sum(hf_ttfts) / len(hf_ttfts) / 1000.0) if hf_ttfts else 0
-    del hf_model; gc.collect()
-    torch.cuda.empty_cache(); torch.cuda.synchronize()
+        hf_best = None
+        hf_wall_best = None
+        for _ in range(args.repeat):
+            hf_results, wall_s = hf_generate_serial(
+                cases, tokenizer, hf_model, max_steps, tp, tk, temp,
+                force_max_tokens=force,
+            )
+            if hf_wall_best is None or wall_s < hf_wall_best:
+                hf_wall_best = wall_s
+                hf_best = hf_results
 
-    # ── LLAISYS ──────────────────────────────────────
-    WARMUP_PROMPT = "Hello, this is a dedicated warmup prompt for GPU initialization."
+        hf_out = sum(
+            count_new_tokens(full, c["input_len"]) for c, (full, _) in zip(cases, hf_best)
+        )
+        hf_in = sum(c["input_len"] for c in cases)
+        hf_lat = [e_us for _, e_us in hf_best]
+        hf_stats = summarize_run("HF", hf_wall_best, hf_in, hf_out, hf_lat)
+        hf_stats["ttft_avg_ms"] = 0.0
+        hf_model = None
+        release_hf()
+
+        if args.backend == "hf":
+            payload = {
+                "environment": {
+                    "gpu": torch.cuda.get_device_name(0),
+                    "cuda": torch.version.cuda,
+                },
+                "config": {
+                    "mode": "single-serial",
+                    "input_lens": input_lens,
+                    "prompts_per_len": args.prompts_per_len,
+                    "max_steps": max_steps,
+                    "force_max_tokens": force,
+                    "warmup": args.warmup,
+                    "repeat": args.repeat,
+                    "seed": args.seed,
+                    "model_path": model_path,
+                    "no_chat_template": args.no_chat_template,
+                },
+                "cases": cases,
+                "results": {
+                    "hf": hf_stats,
+                    "hf_full_ids": [full for full, _ in hf_best],
+                    "hf_lat_us": [e_us for _, e_us in hf_best],
+                },
+            }
+            out_path = save_json(payload, args.output)
+            print(f"  HF-only partial saved: {out_path}")
+            return
+
+    if args.backend == "llaisys":
+        if partial is None:
+            parser.error("--backend llaisys requires --from-json")
+        model_path = args.model or partial["config"]["model_path"]
+        cases = partial["cases"]
+        hf_stats = partial["results"]["hf"]
+        hf_best = list(
+            zip(partial["results"]["hf_full_ids"], partial["results"]["hf_lat_us"])
+        )
+        tokenizer = _load_tokenizer_only(model_path)
+        vocab = getattr(tokenizer, "vocab_size", None) or len(tokenizer)
+        input_lens = partial["config"]["input_lens"]
+        max_steps = partial["config"]["max_steps"]
+        force = partial["config"]["force_max_tokens"]
+        args.warmup = partial["config"].get("warmup", args.warmup)
+        args.repeat = partial["config"].get("repeat", args.repeat)
+        args.prompts_per_len = partial["config"].get(
+            "prompts_per_len", args.prompts_per_len
+        )
+
     print("Loading LLAISYS model...")
     ll_model = load_llaisys_model(model_path, args.device)
     for _ in range(args.warmup):
-        llaisys_infer(WARMUP_PROMPT, tokenizer, ll_model, max_steps, tp, tk, temp)
+        warm_cases = [
+            {**c, "input_ids": make_warmup_ids(c["input_ids"], vocab)} for c in cases
+        ]
+        llaisys_generate_serial(warm_cases, ll_model, max_steps, tp, tk, temp)
 
-    ll_results = []
-    ll_ttfts = []
-    ll_elapsed_sum = 0.0
+    ll_best = None
+    ll_wall_best = None
     for _ in range(args.repeat):
-        rep_results, rep_ttfts = [], []
-        rep_start = time.perf_counter()
-        for i, p in enumerate(prompts):
-            tokens, e_us, ttft_us = llaisys_infer(p, tokenizer, ll_model, max_steps, tp, tk, temp)
-            rep_results.append((tokens, e_us))
-            rep_ttfts.append(ttft_us)
-        ll_elapsed_sum += time.perf_counter() - rep_start
-        ll_results, ll_ttfts = rep_results, rep_ttfts
+        ll_results, wall_s = llaisys_generate_serial(
+            cases, ll_model, max_steps, tp, tk, temp,
+        )
+        if ll_wall_best is None or wall_s < ll_wall_best:
+            ll_wall_best = wall_s
+            ll_best = ll_results
 
-    ll_out_tok = sum(len(r[0]) - prompt_input_lens[i] for i, r in enumerate(ll_results))
-    ll_lat_us  = [r[1] for r in ll_results]
-    ll_stats = summarize_run("LLAISYS", ll_elapsed_sum / args.repeat, len(prompts),
-                              hf_in_tok, ll_out_tok, ll_lat_us)
-    ll_stats["ttft_avg_ms"] = (sum(ll_ttfts) / len(ll_ttfts) / 1000.0) if ll_ttfts else 0
+    hf_in = sum(c["input_len"] for c in cases)
+    ll_out = sum(
+        count_new_tokens(full, c["input_len"]) for c, (full, _, _) in zip(cases, ll_best)
+    )
+    ll_lat = [e_us for _, e_us, _ in ll_best]
+    ll_ttft = [ttft for _, _, ttft in ll_best]
+    ll_stats = summarize_run("LLAISYS", ll_wall_best, hf_in, ll_out, ll_lat)
+    ll_stats["ttft_avg_ms"] = (sum(ll_ttft) / len(ll_ttft) / 1000.0) if ll_ttft else 0.0
 
-    # ── Per-prompt results list ──────────────────────
-    results_list = []
-    tiers = ["short", "medium", "long"]
-    for i, p in enumerate(prompts):
-        tier = tiers[i % len(tiers)]
-        results_list.append({
-            "label": f"{tier}_{i//len(tiers)}",
-            "input_tok": prompt_input_lens[i],
-            "ll_out": len(ll_results[i][0]) - prompt_input_lens[i],
-            "hf_out": len(hf_results[i][0]) - prompt_input_lens[i],
-            "ll_ms": ll_lat_us[i],
+    rows = []
+    for i, c in enumerate(cases):
+        rows.append({
+            "label": c["label"],
+            "input_len": c["input_len"],
+            "ll_out": count_new_tokens(ll_best[i][0], c["input_len"]),
+            "hf_out": count_new_tokens(hf_best[i][0], c["input_len"]),
+            "ll_us": ll_best[i][1],
+            "hf_us": hf_best[i][1],
         })
 
-    # ── Output ───────────────────────────────────────
     gpu = torch.cuda.get_device_name(0)
-    mode = "single"
-    print(f"\n  Model: Qwen2-1.5B  |  GPU: {gpu}  |  Prompts: {args.num_prompts}  |  Mode: {mode}")
-    print(format_table(results_list, hf_stats, ll_stats, mode))
-    print_speedup(hf_stats, ll_stats)
+    print(
+        f"\n  Model: {Path(model_path).name}  |  GPU: {gpu}  |  Mode: single-serial\n"
+        f"  input_lens={input_lens}  prompts_per_len={args.prompts_per_len}  "
+        f"max_steps={max_steps}  force_max_tokens={force}  "
+        f"warmup={args.warmup} repeat={args.repeat} (best wall)"
+    )
+    print(format_single_table(rows, hf_stats, ll_stats))
+    print_speedup("vs HF generate serial", hf_stats, ll_stats)
 
     if args.test:
         matched = 0
-        for idx, (hf_r, ll_r) in enumerate(zip(hf_results, ll_results)):
+        for idx, (hf_r, ll_r) in enumerate(zip(hf_best, ll_best)):
             ok = hf_r[0] == ll_r[0]
             matched += int(ok)
-            print(f"  Prompt [{idx}] {'OK' if ok else 'MISMATCH'}  hf={len(hf_r[0])}  ll={len(ll_r[0])}")
-        print(f"  Correctness: {matched}/{len(prompts)} matched")
-        if matched != len(prompts):
+            print(
+                f"  Case [{cases[idx]['label']}] {'OK' if ok else 'MISMATCH'}  "
+                f"hf={len(hf_r[0])} ll={len(ll_r[0])}"
+            )
+        print(f"  Correctness: {matched}/{len(cases)} matched")
+        if matched != len(cases):
             sys.exit(1)
 
-    save_json(hf_stats, ll_stats,
-              {"mode": mode, "num_prompts": args.num_prompts,
-               "max_steps": max_steps, "seed": args.seed},
-              args.output)
+    save_json(
+        {
+            "environment": {"gpu": gpu, "cuda": torch.version.cuda},
+            "config": {
+                "mode": "single-serial",
+                "input_lens": input_lens,
+                "prompts_per_len": args.prompts_per_len,
+                "max_steps": max_steps,
+                "force_max_tokens": force,
+                "warmup": args.warmup,
+                "repeat": args.repeat,
+                "seed": args.seed,
+                "backend": args.backend,
+            },
+            "results": {"hf": hf_stats, "llaisys": ll_stats, "rows": rows},
+            "speedup_vs_hf_serial": (
+                ll_stats["throughput"] / hf_stats["throughput"]
+                if hf_stats["throughput"] else 0
+            ),
+        },
+        args.output,
+    )
+    ll_model.close()
 
 
 if __name__ == "__main__":

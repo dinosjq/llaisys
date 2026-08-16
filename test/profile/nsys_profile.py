@@ -127,7 +127,7 @@ def main():
 
     # ── LLAISYS model (no HF model loaded) ───────────────────
     device = llaisys.DeviceType.NVIDIA
-    model = llaisys.models.Qwen2(args.model, device)
+    model = llaisys.models.load_causal_lm(args.model, device)
 
     # ── Warmup ───────────────────────────────────────────────
     # Change the first token so the warmup has the same shape but cannot reuse

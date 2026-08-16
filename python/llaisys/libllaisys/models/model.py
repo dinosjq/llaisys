@@ -43,6 +43,7 @@ class LlaisysModelMeta(ctypes.Structure):
         ("epsilon", c_float),
         ("theta", c_float),
         ("end_token", c_int64),
+        ("rope_scale", c_float),
     ]
 
 

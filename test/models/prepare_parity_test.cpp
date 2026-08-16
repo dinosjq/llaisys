@@ -1,6 +1,6 @@
 #include "../../src/config.hpp"
-#include "../../src/models/core/model.hpp"
-#include "../../src/models/core/model_context.hpp"
+#include "../../src/model/model.hpp"
+#include "../../src/model/model_context.hpp"
 #include "../../src/sequence/sequence.hpp"
 
 #include <algorithm>
@@ -33,7 +33,7 @@ std::vector<int64_t> oracle_prepare_block_table(const std::vector<llaisys::seq_t
     return block_table;
 }
 
-llaisys::core::BatchPack oracle_prepare_prefill(const std::vector<llaisys::seq_t> &seqs) {
+llaisys::model::BatchPack oracle_prepare_prefill(const std::vector<llaisys::seq_t> &seqs) {
     const size_t batch_size = seqs.size();
     std::vector<int64_t> token_ids;
     std::vector<int64_t> pos_ids;
@@ -63,10 +63,10 @@ llaisys::core::BatchPack oracle_prepare_prefill(const std::vector<llaisys::seq_t
         temps.push_back(seqs[i]->temperature());
         rngs.push_back(&seqs[i]->rng());
     }
-    return llaisys::core::BatchPack{token_ids, pos_ids, cut_idx, tot_len, top_ks, top_ps, temps, rngs, max_seq_len};
+    return llaisys::model::BatchPack{token_ids, pos_ids, cut_idx, tot_len, top_ks, top_ps, temps, rngs, max_seq_len};
 }
 
-llaisys::core::BatchPack oracle_prepare_decode(const std::vector<llaisys::seq_t> &seqs) {
+llaisys::model::BatchPack oracle_prepare_decode(const std::vector<llaisys::seq_t> &seqs) {
     const size_t batch_size = seqs.size();
     std::vector<int64_t> token_ids;
     std::vector<int64_t> pos_ids;
@@ -90,7 +90,7 @@ llaisys::core::BatchPack oracle_prepare_decode(const std::vector<llaisys::seq_t>
         temps.push_back(seqs[i]->temperature());
         rngs.push_back(&seqs[i]->rng());
     }
-    return llaisys::core::BatchPack{token_ids, pos_ids, cut_idx, tot_len, top_ks, top_ps, temps, rngs, 1};
+    return llaisys::model::BatchPack{token_ids, pos_ids, cut_idx, tot_len, top_ks, top_ps, temps, rngs, 1};
 }
 
 void require_vec_eq(const std::vector<int64_t> &a, const std::vector<int64_t> &b, const char *msg) {
@@ -100,7 +100,7 @@ void require_vec_eq(const std::vector<int64_t> &a, const std::vector<int64_t> &b
     }
 }
 
-void require_pack_eq(const llaisys::core::BatchPack &a, const llaisys::core::BatchPack &b, const char *msg) {
+void require_pack_eq(const llaisys::model::BatchPack &a, const llaisys::model::BatchPack &b, const char *msg) {
     require_vec_eq(a.token_ids, b.token_ids, msg);
     require_vec_eq(a.pos_ids, b.pos_ids, msg);
     require_vec_eq(a.cut_idx, b.cut_idx, msg);
@@ -158,22 +158,22 @@ void test_model_prepare_matches_qwen2_oracle() {
     auto prefill_seqs = make_two_prefill_seqs();
     auto decode_seqs = make_two_decode_seqs();
 
-    require_vec_eq(llaisys::core::Model::prepare_block_table(prefill_seqs, width),
+    require_vec_eq(llaisys::model::Model::prepare_block_table(prefill_seqs, width),
                    oracle_prepare_block_table(prefill_seqs, width),
                    "prepare_block_table prefill parity");
-    require_vec_eq(llaisys::core::Model::prepare_block_table(decode_seqs, width),
+    require_vec_eq(llaisys::model::Model::prepare_block_table(decode_seqs, width),
                    oracle_prepare_block_table(decode_seqs, width),
                    "prepare_block_table decode parity");
 
-    require_pack_eq(llaisys::core::Model::prepare_prefill(prefill_seqs),
+    require_pack_eq(llaisys::model::Model::prepare_prefill(prefill_seqs),
                     oracle_prepare_prefill(prefill_seqs),
                     "prepare_prefill parity");
-    require_pack_eq(llaisys::core::Model::prepare_decode(decode_seqs),
+    require_pack_eq(llaisys::model::Model::prepare_decode(decode_seqs),
                     oracle_prepare_decode(decode_seqs),
                     "prepare_decode parity");
 
     // Sanity: production width path with MAX_BLOCK_NUM still matches oracle.
-    require_vec_eq(llaisys::core::Model::prepare_block_table(prefill_seqs, MAX_BLOCK_NUM),
+    require_vec_eq(llaisys::model::Model::prepare_block_table(prefill_seqs, MAX_BLOCK_NUM),
                    oracle_prepare_block_table(prefill_seqs, MAX_BLOCK_NUM),
                    "prepare_block_table MAX_BLOCK_NUM parity");
 }

@@ -16,18 +16,20 @@ from collections import defaultdict
 
 KERNEL_GROUPS = {
     "paged_attn":     "paged_attention_kernel",
-    "flash_decode":   "flash_decoding_parallel_kernel",
-    "flash_reduce":   "flash_decoding_reduce_kernel",
+    "flash_reduce":   "flash_decoding_v3_reduce",
+    "flash_decode":   "flash_decoding",
     "embedding":      "embedding_gather_kernel",
     "kv_cache_move":  "kv_cache_move_kernel",
     "rms_norm":       "rms_norm_kernel",
-    "rope":           "rope_kernel",
+    "rope":           "rope_",  # rope_kernel / rope_inv_freq_kernel
     "swiglu":         "swiglu_kernel",
     "add":            "add_kernel<llaisys",
-    "add_bias":       "add_bias_kernel<llaisys",
+    "add_bias":       "add_bias_kernel",
     "topk":           "_topk_kernel<llaisys",
-    # cuBLAS names vary by toolkit and matrix dimensions.  Keep these after
-    # LLAISYS-specific kernels so phase anchors retain their existing labels.
+    # Handwritten small-M GEMV (must precede generic cuBLAS "gemv"/"gemm").
+    "gemv_simt":      "warp_per_column_kernel",
+    "gemv_simt_long": "block_per_column_kernel",
+    # cuBLAS names vary by toolkit and matrix dimensions.
     "gemm_reduction": "splitKreduce",
     "gemv":           "gemv",
     "gemm":           "gemm",
@@ -45,6 +47,8 @@ KERNEL_NAMES = {
     "add":            "add",
     "add_bias":       "linear (bias)",
     "topk":           "topk",
+    "gemv_simt":      "linear (gemv)",
+    "gemv_simt_long": "linear (gemv)",
     "gemm_reduction": "linear (reduction)",
     "gemv":           "linear (gemv)",
     "gemm":           "linear (gemm)",
@@ -159,15 +163,16 @@ def main():
                                     "min_ns": float("inf"), "max_ns": 0.0})
         for s, e, label, _ in kernels:
             dur = e - s
-            entry = agg[label]
+            display = KERNEL_NAMES.get(label, label)
+            entry = agg[display]
             entry["instances"] += 1
             entry["total_ns"] += dur
             entry["min_ns"] = min(entry["min_ns"], dur)
             entry["max_ns"] = max(entry["max_ns"], dur)
 
-        for label in agg:
-            if agg[label]["instances"] > 0:
-                agg[label]["avg_ns"] = agg[label]["total_ns"] / agg[label]["instances"]
+        for display in agg:
+            if agg[display]["instances"] > 0:
+                agg[display]["avg_ns"] = agg[display]["total_ns"] / agg[display]["instances"]
 
         total = sum(v["total_ns"] for v in agg.values())
         sorted_ops = sorted(agg.items(), key=lambda x: -x[1]["total_ns"])
@@ -184,9 +189,9 @@ def main():
               f"{'Avg(us)':>8s}  {'Min(us)':>8s}  {'Max(us)':>8s}  {'%':>6s}")
         print(f"  {'─' * 78}")
 
-        for label, v in sorted_ops:
+        for display, v in sorted_ops:
             pct = v["total_ns"] / total * 100 if total > 0 else 0
-            print(f"  {KERNEL_NAMES[label]:<18s} {v['instances']:5d}  "
+            print(f"  {display:<18s} {v['instances']:5d}  "
                   f"{v['total_ns'] / 1e6:10.3f}  {v['avg_ns'] / 1e3:8.1f}  "
                   f"{v['min_ns'] / 1e3:8.1f}  {v['max_ns'] / 1e3:8.1f}  {pct:5.1f}")
 

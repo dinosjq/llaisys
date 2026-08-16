@@ -22,7 +22,7 @@
 
 捕获：`capture_post_attn0/ffn0` 为残差后的 CPU 副本。骨架 commits：`a038de5` … `484ed0b`（交付报告）。
 
-> 布局已演进为 `src/models/core/`、`src/layers/`、命名空间 `llaisys::core`（见 §4）。
+> 布局已演进为 `src/models/core/`、`src/layers/`、命名空间 `llaisys::model::core`（见 §4）。
 
 ## 2. Qwen2 迁入 Layer（§4，2026-08-16）
 
@@ -60,7 +60,8 @@
 | env `LLAISYS_LAYER_STACK=llama` + `run_llama_layer_stack` | **已删** |
 | 借用 Qwen2 C API / Weights | `Llama : Qwen2` + `Create(LLAMA)` + `SetWeight` |
 
-限制：**未实现** Llama-3 `rope_scaling`；`rope_theta=500000` 标准 RoPE。
+**RoPE：** Qwen2 仍用原 `ops::rope(..., theta)`。  
+Llama 在 `models/llama` 构造时建 `inv_freq`（可选 `LlaisysRopeScaling` / llama3），layer 走 `ops::rope(..., inv_freq)`。
 
 冒烟（NVIDIA，4 step）：`generated_tokens=4`，解码 `Hello! How can` → **PASS**（RTX 4060 8GB）。
 
@@ -79,15 +80,17 @@
 ```text
 include/llaisys/models/model.h
 src/llaisys/models/model.cc
-src/models/core/{model,model_context}.*
-src/models/qwen2/*    src/models/llama/*
-src/layers/{layer.hpp,qwen2/*,llama/*}
+src/models/core/model/*
+src/models/core/context/*          # ModelContext / DecoderContext
+src/models/qwen2/*                 # + qwen2_context.hpp
+src/models/llama/*                 # + llama_context.hpp
+src/layers/{layer.hpp,qwen2/*,llama/*,utils/*}
 python/llaisys/libllaisys/models/model.py
 python/llaisys/models/{qwen2,llama}.py
 ```
 
 验证：symbols / request API / weight_map / layer-cpu / `test_infer` 短步 / Llama smoke — PASS。
 
-非目标：rope_scaling；改调度/KV 生命周期；NF4/KV 量化（后续阶段）。
+非目标：改调度/KV 生命周期；NF4/KV 量化（后续阶段）。（Llama-3 `rope_scaling` 已由预计算 `inv_freq` 支持。）
 
 相关提交：`6d94873`（统一 API + core）、`766589e`（交付收口）。

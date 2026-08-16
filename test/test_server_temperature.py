@@ -34,10 +34,10 @@ class FakeModel:
 
 class ServerTemperatureTest(unittest.TestCase):
     def test_explicit_zero_temperature_reaches_both_non_stream_endpoints(self):
-        original_qwen2 = server.Qwen2
+        original_loader = server.load_causal_lm
         original_transformers = sys.modules.get("transformers")
         FakeModel.temperatures = []
-        server.Qwen2 = FakeModel
+        server.load_causal_lm = lambda *_args, **_kwargs: FakeModel()
         sys.modules["transformers"] = types.SimpleNamespace(
             AutoTokenizer=types.SimpleNamespace(from_pretrained=lambda *_args, **_kwargs: FakeTokenizer())
         )
@@ -56,7 +56,7 @@ class ServerTemperatureTest(unittest.TestCase):
             self.assertEqual(completion.status_code, 200)
             self.assertEqual(FakeModel.temperatures, [0, 0])
         finally:
-            server.Qwen2 = original_qwen2
+            server.load_causal_lm = original_loader
             if original_transformers is None:
                 del sys.modules["transformers"]
             else:

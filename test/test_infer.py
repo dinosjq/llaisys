@@ -60,8 +60,7 @@ def hf_infer(
 
 
 def load_llaisys_model(model_path, device_name):
-    model = llaisys.models.Qwen2(model_path, llaisys_device(device_name))
-    return model
+    return llaisys.models.load_causal_lm(model_path, llaisys_device(device_name))
 
 
 def llaisys_infer(

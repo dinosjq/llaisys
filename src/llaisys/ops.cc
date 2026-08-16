@@ -63,6 +63,10 @@ void llaisysROPE(llaisysTensor_t out, llaisysTensor_t in, llaisysTensor_t pos_id
     llaisys::ops::rope(out->tensor, in->tensor, pos_ids->tensor, theta);
 }
 
+void llaisysROPEInvFreq(llaisysTensor_t out, llaisysTensor_t in, llaisysTensor_t pos_ids, llaisysTensor_t inv_freq) {
+    llaisys::ops::rope(out->tensor, in->tensor, pos_ids->tensor, inv_freq->tensor);
+}
+
 void llaisysPagedAttention(llaisysTensor_t attn_val,
                            llaisysTensor_t q,
                            llaisysTensor_t k_cache,

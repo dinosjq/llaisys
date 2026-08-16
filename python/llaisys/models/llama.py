@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from typing import Callable, Sequence
@@ -68,6 +69,12 @@ class Llama:
         meta.epsilon = float(config.get("rms_norm_eps", 1e-5))
         meta.theta = float(config.get("rope_theta", 500000.0))
         meta.end_token = int(eos_token)
+        meta.rope_scale = 1.0
+        rope_scaling_cfg = config.get("rope_scaling")
+        if isinstance(rope_scaling_cfg, dict):
+            rope_type = rope_scaling_cfg.get("rope_type") or rope_scaling_cfg.get("type")
+            if rope_type == "llama3":
+                meta.rope_scale = float(rope_scaling_cfg.get("factor", 1.0))
 
         try:
             import ml_dtypes  # noqa: F401
@@ -201,3 +208,65 @@ class Llama:
         finally:
             LIB_LLAISYS.llaisysModelRequestRelease(request)
         return tokens
+
+    async def generate_async(
+        self,
+        inputs: Sequence[int],
+        max_new_tokens: int = -1,
+        top_k: int = 10,
+        top_p: float = 0.9,
+        temperature: float = 0.8,
+    ):
+        loop_bound = max_new_tokens if max_new_tokens >= 0 else 128
+        tokens = list(int(t) for t in inputs)
+        request = self._submit_request(tokens, max_new_tokens, top_k, top_p, temperature)
+        released = False
+        release_deferred = False
+        await_task = None
+
+        def release_once():
+            nonlocal released
+            if not released:
+                released = True
+                LIB_LLAISYS.llaisysModelRequestRelease(request)
+
+        try:
+            for step in range(loop_bound):
+                def _await():
+                    return int(LIB_LLAISYS.llaisysModelRequestAwait(request))
+
+                await_task = asyncio.create_task(asyncio.to_thread(_await))
+                next_token = await asyncio.shield(await_task)
+
+                if next_token == -2:
+                    break
+                if next_token == -1:
+                    raise RuntimeError("llaisysModelRequestAwait failed")
+
+                tokens.append(next_token)
+
+                chunk = {
+                    "token": next_token,
+                    "index": step,
+                    "finish_reason": None,
+                }
+
+                is_eos = next_token == int(self._meta.end_token)
+                if is_eos:
+                    chunk["finish_reason"] = "stop"
+
+                yield chunk
+
+                if is_eos:
+                    break
+        except asyncio.CancelledError:
+            LIB_LLAISYS.llaisysModelRequestAbort(request)
+            if await_task is None or await_task.done():
+                release_once()
+            else:
+                release_deferred = True
+                await_task.add_done_callback(lambda _: release_once())
+            raise
+        finally:
+            if not release_deferred:
+                release_once()

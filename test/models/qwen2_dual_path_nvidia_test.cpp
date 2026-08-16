@@ -15,7 +15,7 @@ namespace {
 
 using llaisys::Qwen2;
 using llaisys::Qwen2Meta;
-using llaisys::core::BatchPack;
+using llaisys::model::BatchPack;
 using llaisys::Tensor;
 using llaisys::tensor_t;
 
@@ -61,8 +61,8 @@ Qwen2Meta tiny_meta() {
 }
 
 void fill_tiny_weights(Qwen2 &model) {
-    using llaisys::core::Model;
-    using llaisys::core::WeightRole;
+    using llaisys::model::Model;
+    using llaisys::model::WeightRole;
     auto &ctx = model.ctx();
     const auto &meta = model.meta();
     Model::set_weight(ctx, WeightRole::InEmbed, 0, nvidia_f32({meta.voc, meta.hs}, sequence(meta.voc * meta.hs)));

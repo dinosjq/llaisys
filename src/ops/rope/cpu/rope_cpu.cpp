@@ -3,9 +3,11 @@
 #include "../../../utils.hpp"
 
 #include <cmath>
+#include <type_traits>
 
 template <typename T>
-void rope_(T *out, const T *in, const int64_t *pos_ids, const float &theta, const size_t &seqlen, const size_t &head, const size_t &d) {
+void rope_(T *out, const T *in, const int64_t *pos_ids, const float &theta, const size_t &seqlen, const size_t &head,
+           const size_t &d) {
     const size_t stride_0 = head * d;
     const size_t stride_1 = d;
     for (size_t i = 0; i < seqlen; ++i) {
@@ -18,14 +20,50 @@ void rope_(T *out, const T *in, const int64_t *pos_ids, const float &theta, cons
             T *out_a = out + offset_a;
             T *out_b = out + offset_b;
             for (size_t j = 0; j < d / 2; ++j) {
-                 const float den = std::pow(theta, 2.0f * static_cast<float>(j) / static_cast<float>(d));
-                 const float phi = static_cast<float>(pi) / den;
-                 const float cos_phi = std::cos(phi);
-                 const float sin_phi = std::sin(phi);
+                const float den = std::pow(theta, 2.0f * static_cast<float>(j) / static_cast<float>(d));
+                const float phi = static_cast<float>(pi) / den;
+                const float cos_phi = std::cos(phi);
+                const float sin_phi = std::sin(phi);
 
                 if constexpr (std::is_same_v<T, llaisys::bf16_t> || std::is_same_v<T, llaisys::fp16_t>) {
-                    out_a[j] = llaisys::utils::cast<T>(llaisys::utils::cast<float>(in_a[j]) * cos_phi - llaisys::utils::cast<float>(in_b[j]) * sin_phi);
-                    out_b[j] = llaisys::utils::cast<T>(llaisys::utils::cast<float>(in_b[j]) * cos_phi + llaisys::utils::cast<float>(in_a[j]) * sin_phi);
+                    out_a[j] = llaisys::utils::cast<T>(llaisys::utils::cast<float>(in_a[j]) * cos_phi -
+                                                       llaisys::utils::cast<float>(in_b[j]) * sin_phi);
+                    out_b[j] = llaisys::utils::cast<T>(llaisys::utils::cast<float>(in_b[j]) * cos_phi +
+                                                       llaisys::utils::cast<float>(in_a[j]) * sin_phi);
+                } else {
+                    out_a[j] = in_a[j] * cos_phi - in_b[j] * sin_phi;
+                    out_b[j] = in_b[j] * cos_phi + in_a[j] * sin_phi;
+                }
+            }
+        }
+    }
+}
+
+template <typename T>
+void rope_inv_freq_(T *out, const T *in, const int64_t *pos_ids, const float *inv_freq, const size_t &seqlen,
+                    const size_t &head, const size_t &d) {
+    const size_t stride_0 = head * d;
+    const size_t stride_1 = d;
+    const size_t half = d >> 1;
+    for (size_t i = 0; i < seqlen; ++i) {
+        const float pi = static_cast<float>(pos_ids[i]);
+        for (size_t h = 0; h < head; ++h) {
+            const size_t offset_a = i * stride_0 + h * stride_1;
+            const size_t offset_b = offset_a + half;
+            const T *in_a = in + offset_a;
+            const T *in_b = in + offset_b;
+            T *out_a = out + offset_a;
+            T *out_b = out + offset_b;
+            for (size_t j = 0; j < half; ++j) {
+                const float phi = pi * inv_freq[j];
+                const float cos_phi = std::cos(phi);
+                const float sin_phi = std::sin(phi);
+
+                if constexpr (std::is_same_v<T, llaisys::bf16_t> || std::is_same_v<T, llaisys::fp16_t>) {
+                    out_a[j] = llaisys::utils::cast<T>(llaisys::utils::cast<float>(in_a[j]) * cos_phi -
+                                                       llaisys::utils::cast<float>(in_b[j]) * sin_phi);
+                    out_b[j] = llaisys::utils::cast<T>(llaisys::utils::cast<float>(in_b[j]) * cos_phi +
+                                                       llaisys::utils::cast<float>(in_a[j]) * sin_phi);
                 } else {
                     out_a[j] = in_a[j] * cos_phi - in_b[j] * sin_phi;
                     out_b[j] = in_b[j] * cos_phi + in_a[j] * sin_phi;
@@ -36,17 +74,36 @@ void rope_(T *out, const T *in, const int64_t *pos_ids, const float &theta, cons
 }
 
 namespace llaisys::ops::cpu {
-void rope(std::byte *out, const std::byte *in, const std::byte *pos_ids, const float &theta, llaisysDataType_t dtype, const size_t &seqlen, const size_t &head, const size_t &d) {
+void rope(std::byte *out, const std::byte *in, const std::byte *pos_ids, const float &theta, llaisysDataType_t dtype,
+          const size_t &seqlen, const size_t &head, const size_t &d) {
     switch (dtype) {
     case LLAISYS_DTYPE_F32:
-        return rope_(reinterpret_cast<float *>(out), reinterpret_cast<const float *>(in), 
-                    reinterpret_cast<const int64_t *>(pos_ids), theta, seqlen, head, d);
+        return rope_(reinterpret_cast<float *>(out), reinterpret_cast<const float *>(in),
+                     reinterpret_cast<const int64_t *>(pos_ids), theta, seqlen, head, d);
     case LLAISYS_DTYPE_BF16:
         return rope_(reinterpret_cast<llaisys::bf16_t *>(out), reinterpret_cast<const llaisys::bf16_t *>(in),
-                    reinterpret_cast<const int64_t *>(pos_ids), theta, seqlen, head, d);
+                     reinterpret_cast<const int64_t *>(pos_ids), theta, seqlen, head, d);
     case LLAISYS_DTYPE_F16:
         return rope_(reinterpret_cast<llaisys::fp16_t *>(out), reinterpret_cast<const llaisys::fp16_t *>(in),
-                    reinterpret_cast<const int64_t *>(pos_ids), theta, seqlen, head, d);
+                     reinterpret_cast<const int64_t *>(pos_ids), theta, seqlen, head, d);
+    default:
+        EXCEPTION_UNSUPPORTED_DATATYPE(dtype);
+    }
+}
+
+void rope_inv_freq(std::byte *out, const std::byte *in, const std::byte *pos_ids, const std::byte *inv_freq,
+                   llaisysDataType_t dtype, const size_t &seqlen, const size_t &head, const size_t &d) {
+    const float *freq = reinterpret_cast<const float *>(inv_freq);
+    switch (dtype) {
+    case LLAISYS_DTYPE_F32:
+        return rope_inv_freq_(reinterpret_cast<float *>(out), reinterpret_cast<const float *>(in),
+                              reinterpret_cast<const int64_t *>(pos_ids), freq, seqlen, head, d);
+    case LLAISYS_DTYPE_BF16:
+        return rope_inv_freq_(reinterpret_cast<llaisys::bf16_t *>(out), reinterpret_cast<const llaisys::bf16_t *>(in),
+                              reinterpret_cast<const int64_t *>(pos_ids), freq, seqlen, head, d);
+    case LLAISYS_DTYPE_F16:
+        return rope_inv_freq_(reinterpret_cast<llaisys::fp16_t *>(out), reinterpret_cast<const llaisys::fp16_t *>(in),
+                              reinterpret_cast<const int64_t *>(pos_ids), freq, seqlen, head, d);
     default:
         EXCEPTION_UNSUPPORTED_DATATYPE(dtype);
     }

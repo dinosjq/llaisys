@@ -62,6 +62,7 @@ class Qwen2:
         meta.epsilon = float(config.get("rms_norm_eps", 1e-6))
         meta.theta = float(config.get("rope_theta", 10000.0))
         meta.end_token = int(eos_token)
+        meta.rope_scale = 1.0
 
         try:
             import ml_dtypes  # noqa: F401

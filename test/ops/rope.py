@@ -5,7 +5,7 @@ parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, parent_dir)
 import llaisys
 import torch
-from test_utils import arrange_tensor, random_tensor, check_equal, benchmark
+from test_utils import arrange_tensor, random_tensor, check_equal, benchmark, llaisys_device
 
 
 def torch_rope(y: torch.Tensor, x: torch.Tensor, pos_ids: torch.Tensor, theta: float):
@@ -32,6 +32,23 @@ def torch_rope(y: torch.Tensor, x: torch.Tensor, pos_ids: torch.Tensor, theta: f
     y[..., head_dim // 2 :] = x_b * cos + x_a * sin
 
 
+def make_inv_freq_tensor(head_dim: int, theta: float, device_name: str):
+    from test_utils import torch_device
+
+    # 与 C++ make_rope_inv_freq / theta 入口一致：1 / theta^(2j/d)
+    j = torch.arange(0, head_dim // 2, dtype=torch.float32, device=torch_device(device_name))
+    inv_torch = 1.0 / torch.pow(theta, 2.0 * j / head_dim)
+    inv_ = llaisys.Tensor((head_dim // 2,), dtype=llaisys.DataType.F32, device=llaisys_device(device_name))
+    api = llaisys.RuntimeAPI(llaisys_device(device_name))
+    api.memcpy_sync(
+        inv_.data_ptr(),
+        inv_torch.data_ptr(),
+        inv_torch.numel() * inv_torch.element_size(),
+        llaisys.MemcpyKind.D2D,
+    )
+    return inv_
+
+
 def test_op_rope(
     shape,
     start_end,
@@ -51,6 +68,12 @@ def test_op_rope(
 
     assert check_equal(y_, y, atol=atol, rtol=rtol)
 
+    # inv_freq 入口应与 torch / theta 入口一致
+    inv_ = make_inv_freq_tensor(shape[2], theta, device_name)
+    y_inv, y_inv_ = random_tensor(shape, dtype_name, device_name)
+    llaisys.Ops.rope_inv_freq(y_inv_, x_, pos_ids_, inv_)
+    assert check_equal(y_inv_, y, atol=atol, rtol=rtol)
+
     if profile:
         benchmark(
             lambda: torch_rope(y, x, pos_ids, theta),
@@ -67,8 +90,9 @@ if __name__ == "__main__":
     parser.add_argument("--profile", action="store_true")
     args = parser.parse_args()
     testShapes = [
-        ((2, 1, 4), (0, 2)), 
-        ((512, 4, 4096), (512, 1024))]
+        ((2, 1, 4), (0, 2)),
+        ((512, 4, 4096), (512, 1024)),
+    ]
     testDtypePrec = [
         # type, atol, rtol
         ("f32", 1e-4, 1e-4),

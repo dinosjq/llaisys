@@ -15,10 +15,12 @@ lib/
 *.dylib
 *.pyd
 
-# Benchmark outputs
-test/benchmark/ops/results/
+# Benchmark outputs / test run artifacts
 test/benchmark/results/
+test/results/
 *.ncu-rep
+*.nsys-rep
+*.sqlite
 .ncu_metrics_cache
 
 # MacOS

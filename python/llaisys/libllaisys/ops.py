@@ -35,6 +35,8 @@ def load_ops(lib):
 
     lib.llaisysROPE.argtypes = [llaisysTensor_t, llaisysTensor_t, llaisysTensor_t, c_float]
     lib.llaisysROPE.restype = None
+    lib.llaisysROPEInvFreq.argtypes = [llaisysTensor_t, llaisysTensor_t, llaisysTensor_t, llaisysTensor_t]
+    lib.llaisysROPEInvFreq.restype = None
 
     lib.llaisysPagedAttention.argtypes = [
         llaisysTensor_t,  # attn_val
