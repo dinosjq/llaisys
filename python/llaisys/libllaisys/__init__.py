@@ -13,9 +13,6 @@ from .tensor import llaisysTensor_t
 from .tensor import load_tensor
 from .ops import load_ops
 from .models.model import (
-    LlaisysModelArch,
-    LlaisysWeightRole,
-    LlaisysModelMeta,
     llaisysModel_t,
     llaisysRequest_t,
     load_model,
@@ -60,9 +57,6 @@ __all__ = [
     "DeviceType",
     "llaisysMemcpyKind_t",
     "MemcpyKind",
-    "LlaisysModelArch",
-    "LlaisysWeightRole",
-    "LlaisysModelMeta",
     "llaisysModel_t",
     "llaisysRequest_t",
 ]

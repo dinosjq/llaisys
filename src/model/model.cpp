@@ -8,24 +8,6 @@
 
 namespace llaisys::model {
 
-namespace {
-
-// 验证注意力层索引
-void validate_attn_layer(const ModelContext &ctx, size_t layer) {
-    if (layer >= ctx.meta.nlayer || layer >= ctx.attns.size()) {
-        throw std::invalid_argument("attention weight layer is out of range");
-    }
-}
-
-// 验证 FFN 层索引
-void validate_ffn_layer(const ModelContext &ctx, size_t layer) {
-    if (layer >= ctx.meta.nlayer || layer >= ctx.ffns.size()) {
-        throw std::invalid_argument("FFN weight layer is out of range");
-    }
-}
-
-} // namespace
-
 // 销毁模型
 Model::~Model() {
     this->stop();
@@ -35,7 +17,15 @@ Model::~Model() {
     this->_ctx.reset();
 }
 
-// 启动模型
+/**
+ * 启动模型
+ * 1. 权重加载结束后、worker 启动前
+ * 2. 根据调度器决定本次计算的序列
+ * 3. 预处理块表
+ * 4. prefill / decode 预处理
+ * 5. 子类 forward（Layer 组装）
+ * 6. 后处理更新 kv cache 信息
+ */
 void Model::start() {
     if (this->_running) {
         return;
@@ -68,9 +58,19 @@ void Model::stop() {
     this->_running = false;
 }
 
-// 提交请求
+/**
+ * 提交请求
+ * 1. 首次提交时再 sync + 启动 worker
+ * 2. 创建请求对象
+ * 3. 添加到活跃请求列表
+ * 4. 添加到调度器
+ * 5. 返回请求对象
+ */
 model_request_t Model::submit(int64_t *token_ids, size_t ntoken, int64_t max_new_tokens, int top_k, float top_p,
                               float temperature) {
+    if (!this->_meta_ready || !this->_ctx || !this->_scheduler) {
+        throw std::runtime_error("model meta is not ready; call set_meta before submit");
+    }
     // 首次提交时再 sync + 启动 worker
     this->start();
     size_t limit = (max_new_tokens < 0) ? MAX_TOKEN_NUM : ntoken + static_cast<size_t>(max_new_tokens);
@@ -85,7 +85,13 @@ model_request_t Model::submit(int64_t *token_ids, size_t ntoken, int64_t max_new
     return request;
 }
 
-// 等待请求完成
+/**
+ * 等待请求完成
+ * 1. 检查请求对象
+ * 2. 等待请求完成
+ * 3. 如果请求未完成，返回 -2
+ * 4. 如果请求完成，返回下一个 token
+ */
 int64_t Model::await(const model_request_t &request) {
     CHECK_ARGUMENT(request != nullptr && request->sequence != nullptr, "invalid request handle");
     std::lock_guard<std::mutex> lock(request->mutex);
@@ -97,14 +103,23 @@ int64_t Model::await(const model_request_t &request) {
     return token;
 }
 
-// 取消请求
+/**
+ * 取消请求
+ * 1. 检查请求对象
+ * 2. 取消请求
+ */
 void Model::abort(const model_request_t &request) {
     if (request && request->sequence) {
         this->_scheduler->abort(request->sequence);
     }
 }
 
-// 释放请求
+/**
+ * 释放请求
+ * 1. 检查请求对象
+ * 2. 如果请求未完成，取消请求
+ * 3. 从活跃请求列表中删除
+ */
 void Model::release(const model_request_t &request) {
     if (!request) {
         return;
@@ -116,69 +131,6 @@ void Model::release(const model_request_t &request) {
     auto it = std::find(this->_active_requests.begin(), this->_active_requests.end(), request);
     if (it != this->_active_requests.end()) {
         this->_active_requests.erase(it);
-    }
-}
-
-// 上传权重
-void Model::set_weight(ModelContext &ctx, WeightRole role, size_t layer, tensor_t tensor) {
-    switch (role) {
-    case WeightRole::InEmbed:
-        ctx.in_embed = std::move(tensor);
-        return;
-    case WeightRole::OutEmbed:
-        ctx.out_embed = std::move(tensor);
-        return;
-    case WeightRole::OutNorm:
-        ctx.out_norm_w = std::move(tensor);
-        return;
-    case WeightRole::AttnNorm:
-        validate_attn_layer(ctx, layer);
-        ctx.attns[layer].norm_w = std::move(tensor);
-        return;
-    case WeightRole::AttnQ_W:
-        validate_attn_layer(ctx, layer);
-        ctx.attns[layer].q_w = std::move(tensor);
-        return;
-    case WeightRole::AttnQ_B:
-        validate_attn_layer(ctx, layer);
-        ctx.attns[layer].q_b = std::move(tensor);
-        return;
-    case WeightRole::AttnK_W:
-        validate_attn_layer(ctx, layer);
-        ctx.attns[layer].k_w = std::move(tensor);
-        return;
-    case WeightRole::AttnK_B:
-        validate_attn_layer(ctx, layer);
-        ctx.attns[layer].k_b = std::move(tensor);
-        return;
-    case WeightRole::AttnV_W:
-        validate_attn_layer(ctx, layer);
-        ctx.attns[layer].v_w = std::move(tensor);
-        return;
-    case WeightRole::AttnV_B:
-        validate_attn_layer(ctx, layer);
-        ctx.attns[layer].v_b = std::move(tensor);
-        return;
-    case WeightRole::AttnO_W:
-        validate_attn_layer(ctx, layer);
-        ctx.attns[layer].o_w = std::move(tensor);
-        return;
-    case WeightRole::MlpNorm:
-        validate_ffn_layer(ctx, layer);
-        ctx.ffns[layer].norm_w = std::move(tensor);
-        return;
-    case WeightRole::MlpGate_W:
-        validate_ffn_layer(ctx, layer);
-        ctx.ffns[layer].gate_w = std::move(tensor);
-        return;
-    case WeightRole::MlpUp_W:
-        validate_ffn_layer(ctx, layer);
-        ctx.ffns[layer].up_w = std::move(tensor);
-        return;
-    case WeightRole::MlpDown_W:
-        validate_ffn_layer(ctx, layer);
-        ctx.ffns[layer].down_w = std::move(tensor);
-        return;
     }
 }
 

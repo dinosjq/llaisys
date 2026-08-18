@@ -66,7 +66,7 @@ std::pair<std::vector<seq_t>, bool> Scheduler::schedule(){
             if(cached_block_num == -1){
                 break;
             }
-            // 够分配就计算 promot 待计算的 token 数
+            // 够分配就计算 prompt 待计算的 token 数
             token_num = seq->token_num() - cached_block_num * this->_token_num;
         }else{
             token_num = seq->token_num() - seq->cached_token_num();

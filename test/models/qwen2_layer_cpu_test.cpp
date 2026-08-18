@@ -1,6 +1,8 @@
-#include "../../src/model/model_context.hpp"
-#include "../../src/models/qwen2/qwen2_context.hpp"
-#include "../../src/layer/qwen2/qwen2.hpp"
+#include "../../src/model/runtime/model_context.hpp"
+#include "../../src/models/qwen2/runtime/qwen2_context.hpp"
+#include "../../src/models/qwen2/layer/qwen2.hpp"
+#include "../../src/models/qwen2/weight/qwen2_weights.hpp"
+#include "../../src/models/qwen2/meta/qwen2_meta.hpp"
 #include "../../src/ops/add/op.hpp"
 #include "../../src/ops/embedding/op.hpp"
 #include "../../src/ops/linear/op.hpp"
@@ -11,6 +13,7 @@
 #include <cmath>
 #include <cstdint>
 #include <iostream>
+#include <memory>
 #include <stdexcept>
 #include <vector>
 
@@ -42,8 +45,8 @@ void require_close(const tensor_t &actual, const tensor_t &expected, float atol 
     }
 }
 
-void legacy_ffn_block(ModelContext &ctx, const llaisys::model::FfnWeights &weights) {
-    llaisys::ops::rms_norm(ctx.workspace.m_norm, ctx.workspace.x, weights.norm_w, ctx.meta.epsilon);
+void legacy_ffn_block(ModelContext &ctx, const llaisys::model::QwenFfnWeights &weights) {
+    llaisys::ops::rms_norm(ctx.workspace.m_norm, ctx.workspace.x, weights.norm_w, llaisys::model::qwen_meta(ctx).epsilon);
     llaisys::ops::linear(ctx.workspace.gate, ctx.workspace.m_norm, weights.gate_w, nullptr);
     llaisys::ops::linear(ctx.workspace.up, ctx.workspace.m_norm, weights.up_w, nullptr);
     llaisys::ops::swiglu(ctx.workspace.swiglu, ctx.workspace.gate, ctx.workspace.up);
@@ -54,35 +57,39 @@ void legacy_ffn_block(ModelContext &ctx, const llaisys::model::FfnWeights &weigh
 
 ModelContext make_ffn_context() {
     ModelContext ctx;
-    ctx.meta.dtype = LLAISYS_DTYPE_F32;
-    ctx.meta.hs = 4;
-    ctx.meta.di = 8;
-    ctx.meta.epsilon = 1e-5f;
+    ctx.meta = std::make_shared<llaisys::model::Qwen2Meta>();
+    auto &meta = llaisys::model::qwen_meta(ctx);
+    meta.dtype = LLAISYS_DTYPE_F32;
+    meta.hs = 4;
+    meta.di = 8;
+    meta.epsilon = 1e-5f;
     ctx.ffns.resize(1);
+    ctx.ffns[0] = std::make_shared<llaisys::model::QwenFfnWeights>();
+    auto &ffn = *llaisys::model::Qwen2Weights::ffn(ctx, 0);
 
     const std::vector<float> x_values{
         0.1f, -0.2f, 0.3f, -0.4f,
         0.5f, -0.6f, 0.7f, -0.8f,
     };
-    ctx.workspace.x = cpu_f32({2, ctx.meta.hs}, x_values);
-    ctx.workspace.x_mlp = Tensor::create({2, ctx.meta.hs}, LLAISYS_DTYPE_F32);
-    ctx.workspace.m_norm = Tensor::create({2, ctx.meta.hs}, LLAISYS_DTYPE_F32);
-    ctx.workspace.gate = Tensor::create({2, ctx.meta.di}, LLAISYS_DTYPE_F32);
-    ctx.workspace.up = Tensor::create({2, ctx.meta.di}, LLAISYS_DTYPE_F32);
-    ctx.workspace.swiglu = Tensor::create({2, ctx.meta.di}, LLAISYS_DTYPE_F32);
-    ctx.workspace.down = Tensor::create({2, ctx.meta.hs}, LLAISYS_DTYPE_F32);
+    ctx.workspace.x = cpu_f32({2, meta.hs}, x_values);
+    ctx.workspace.x_mlp = Tensor::create({2, meta.hs}, LLAISYS_DTYPE_F32);
+    ctx.workspace.m_norm = Tensor::create({2, meta.hs}, LLAISYS_DTYPE_F32);
+    ctx.workspace.gate = Tensor::create({2, meta.di}, LLAISYS_DTYPE_F32);
+    ctx.workspace.up = Tensor::create({2, meta.di}, LLAISYS_DTYPE_F32);
+    ctx.workspace.swiglu = Tensor::create({2, meta.di}, LLAISYS_DTYPE_F32);
+    ctx.workspace.down = Tensor::create({2, meta.hs}, LLAISYS_DTYPE_F32);
 
-    ctx.ffns[0].norm_w = cpu_f32({ctx.meta.hs}, {1.0f, 0.9f, 1.1f, 0.8f});
-    ctx.ffns[0].gate_w = cpu_f32(
-        {ctx.meta.di, ctx.meta.hs},
+    ffn.norm_w = cpu_f32({meta.hs}, {1.0f, 0.9f, 1.1f, 0.8f});
+    ffn.gate_w = cpu_f32(
+        {meta.di, meta.hs},
         {0.1f, 0.2f, 0.3f, 0.4f, 0.5f, 0.6f, 0.7f, 0.8f, 0.9f, 1.0f, 1.1f, 1.2f, 1.3f, 1.4f, 1.5f, 1.6f,
          1.7f, 1.8f, 1.9f, 2.0f, 2.1f, 2.2f, 2.3f, 2.4f, 2.5f, 2.6f, 2.7f, 2.8f, 2.9f, 3.0f, 3.1f, 3.2f});
-    ctx.ffns[0].up_w = cpu_f32(
-        {ctx.meta.di, ctx.meta.hs},
+    ffn.up_w = cpu_f32(
+        {meta.di, meta.hs},
         {0.2f, 0.1f, 0.4f, 0.3f, 0.6f, 0.5f, 0.8f, 0.7f, 1.0f, 0.9f, 1.2f, 1.1f, 1.4f, 1.3f, 1.6f, 1.5f,
          1.8f, 1.7f, 2.0f, 1.9f, 2.2f, 2.1f, 2.4f, 2.3f, 2.6f, 2.5f, 2.8f, 2.7f, 3.0f, 2.9f, 3.2f, 3.1f});
-    ctx.ffns[0].down_w = cpu_f32(
-        {ctx.meta.hs, ctx.meta.di},
+    ffn.down_w = cpu_f32(
+        {meta.hs, meta.di},
         {0.1f, 0.2f, 0.3f, 0.4f, 0.5f, 0.6f, 0.7f, 0.8f, 0.8f, 0.7f, 0.6f, 0.5f, 0.4f, 0.3f, 0.2f, 0.1f,
          0.3f, 0.5f, 0.7f, 0.9f, 0.9f, 0.7f, 0.5f, 0.3f, 0.2f, 0.4f, 0.6f, 0.8f, 0.8f, 0.6f, 0.4f, 0.2f});
     return ctx;
@@ -107,8 +114,8 @@ void test_ffn_matches_legacy_block() {
     auto actual = make_ffn_context();
     auto expected = make_ffn_context();
 
-    llaisys::model::Qwen2FFN(&actual.ffns[0]).forward(actual);
-    legacy_ffn_block(expected, expected.ffns[0]);
+    llaisys::model::Qwen2FFN(llaisys::model::Qwen2Weights::ffn(actual, 0)).forward(actual);
+    legacy_ffn_block(expected, *llaisys::model::Qwen2Weights::ffn(expected, 0));
 
     require_close(actual.workspace.x, expected.workspace.x);
 }

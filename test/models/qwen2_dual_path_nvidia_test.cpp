@@ -1,6 +1,7 @@
 #include "../../src/config.hpp"
 #include "../../src/models/qwen2/qwen2.hpp"
 #include "../../src/tensor/tensor.hpp"
+#include "../../src/utils/byte_map.hpp"
 
 #include <cmath>
 #include <cstdint>
@@ -9,12 +10,13 @@
 #include <random>
 #include <sstream>
 #include <stdexcept>
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace {
 
 using llaisys::Qwen2;
-using llaisys::Qwen2Meta;
 using llaisys::model::BatchPack;
 using llaisys::Tensor;
 using llaisys::tensor_t;
@@ -43,58 +45,58 @@ tensor_t nvidia_f32(const std::vector<size_t> &shape, const std::vector<float> &
     return host->to(kDevice, kDeviceId);
 }
 
-Qwen2Meta tiny_meta() {
-    Qwen2Meta meta{};
-    meta.dtype = LLAISYS_DTYPE_F32;
-    meta.nlayer = 1;
-    meta.hs = 64;
-    meta.nh = 2;
-    meta.nkvh = 2;
-    meta.dh = 32; // paged_attention requires d in {32,64,96,128}
-    meta.di = 128;
-    meta.maxseq = 16;
-    meta.voc = 32;
-    meta.epsilon = 1e-5f;
-    meta.theta = 10000.0f;
-    meta.end_token = 0;
-    return meta;
-}
-
 void fill_tiny_weights(Qwen2 &model) {
-    using llaisys::model::Model;
-    using llaisys::model::WeightRole;
-    auto &ctx = model.ctx();
     const auto &meta = model.meta();
-    Model::set_weight(ctx, WeightRole::InEmbed, 0, nvidia_f32({meta.voc, meta.hs}, sequence(meta.voc * meta.hs)));
-    Model::set_weight(ctx, WeightRole::OutEmbed, 0, nvidia_f32({meta.voc, meta.hs}, sequence(meta.voc * meta.hs, 0.02f)));
-    Model::set_weight(ctx, WeightRole::OutNorm, 0, nvidia_f32({meta.hs}, sequence(meta.hs)));
+    auto layer_name = [](size_t layer, const char *suffix) {
+        return "model.layers." + std::to_string(layer) + "." + suffix;
+    };
+    model.set_weight("model.embed_tokens.weight", nvidia_f32({meta.voc, meta.hs}, sequence(meta.voc * meta.hs)));
+    model.set_weight("lm_head.weight", nvidia_f32({meta.voc, meta.hs}, sequence(meta.voc * meta.hs, 0.02f)));
+    model.set_weight("model.norm.weight", nvidia_f32({meta.hs}, sequence(meta.hs)));
     for (size_t layer = 0; layer < meta.nlayer; ++layer) {
-        Model::set_weight(ctx, WeightRole::AttnNorm, layer, nvidia_f32({meta.hs}, sequence(meta.hs)));
-        Model::set_weight(ctx, WeightRole::AttnQ_W, layer,
-                          nvidia_f32({meta.nh * meta.dh, meta.hs}, sequence(meta.nh * meta.dh * meta.hs)));
-        Model::set_weight(ctx, WeightRole::AttnQ_B, layer,
-                          nvidia_f32({meta.nh * meta.dh}, sequence(meta.nh * meta.dh, 0.001f)));
-        Model::set_weight(ctx, WeightRole::AttnK_W, layer,
-                          nvidia_f32({meta.nkvh * meta.dh, meta.hs}, sequence(meta.nkvh * meta.dh * meta.hs)));
-        Model::set_weight(ctx, WeightRole::AttnK_B, layer,
-                          nvidia_f32({meta.nkvh * meta.dh}, sequence(meta.nkvh * meta.dh, 0.001f)));
-        Model::set_weight(ctx, WeightRole::AttnV_W, layer,
-                          nvidia_f32({meta.nkvh * meta.dh, meta.hs}, sequence(meta.nkvh * meta.dh * meta.hs)));
-        Model::set_weight(ctx, WeightRole::AttnV_B, layer,
-                          nvidia_f32({meta.nkvh * meta.dh}, sequence(meta.nkvh * meta.dh, 0.001f)));
-        Model::set_weight(ctx, WeightRole::AttnO_W, layer,
-                          nvidia_f32({meta.hs, meta.nh * meta.dh}, sequence(meta.hs * meta.nh * meta.dh)));
-        Model::set_weight(ctx, WeightRole::MlpNorm, layer, nvidia_f32({meta.hs}, sequence(meta.hs, 0.02f)));
-        Model::set_weight(ctx, WeightRole::MlpGate_W, layer, nvidia_f32({meta.di, meta.hs}, sequence(meta.di * meta.hs)));
-        Model::set_weight(ctx, WeightRole::MlpUp_W, layer,
-                          nvidia_f32({meta.di, meta.hs}, sequence(meta.di * meta.hs, 0.015f)));
-        Model::set_weight(ctx, WeightRole::MlpDown_W, layer, nvidia_f32({meta.hs, meta.di}, sequence(meta.hs * meta.di)));
+        model.set_weight(layer_name(layer, "input_layernorm.weight"), nvidia_f32({meta.hs}, sequence(meta.hs)));
+        model.set_weight(layer_name(layer, "self_attn.q_proj.weight"),
+                         nvidia_f32({meta.nh * meta.dh, meta.hs}, sequence(meta.nh * meta.dh * meta.hs)));
+        model.set_weight(layer_name(layer, "self_attn.q_proj.bias"),
+                         nvidia_f32({meta.nh * meta.dh}, sequence(meta.nh * meta.dh, 0.001f)));
+        model.set_weight(layer_name(layer, "self_attn.k_proj.weight"),
+                         nvidia_f32({meta.nkvh * meta.dh, meta.hs}, sequence(meta.nkvh * meta.dh * meta.hs)));
+        model.set_weight(layer_name(layer, "self_attn.k_proj.bias"),
+                         nvidia_f32({meta.nkvh * meta.dh}, sequence(meta.nkvh * meta.dh, 0.001f)));
+        model.set_weight(layer_name(layer, "self_attn.v_proj.weight"),
+                         nvidia_f32({meta.nkvh * meta.dh, meta.hs}, sequence(meta.nkvh * meta.dh * meta.hs)));
+        model.set_weight(layer_name(layer, "self_attn.v_proj.bias"),
+                         nvidia_f32({meta.nkvh * meta.dh}, sequence(meta.nkvh * meta.dh, 0.001f)));
+        model.set_weight(layer_name(layer, "self_attn.o_proj.weight"),
+                         nvidia_f32({meta.hs, meta.nh * meta.dh}, sequence(meta.hs * meta.nh * meta.dh)));
+        model.set_weight(layer_name(layer, "post_attention_layernorm.weight"),
+                         nvidia_f32({meta.hs}, sequence(meta.hs, 0.02f)));
+        model.set_weight(layer_name(layer, "mlp.gate_proj.weight"),
+                         nvidia_f32({meta.di, meta.hs}, sequence(meta.di * meta.hs)));
+        model.set_weight(layer_name(layer, "mlp.up_proj.weight"),
+                         nvidia_f32({meta.di, meta.hs}, sequence(meta.di * meta.hs, 0.015f)));
+        model.set_weight(layer_name(layer, "mlp.down_proj.weight"),
+                         nvidia_f32({meta.hs, meta.di}, sequence(meta.hs * meta.di)));
     }
 }
 
 std::unique_ptr<Qwen2> make_model() {
     int device_id = kDeviceId;
-    auto model = std::make_unique<Qwen2>(tiny_meta(), kDevice, &device_id, 1);
+    auto model = std::make_unique<Qwen2>(kDevice, &device_id, 1);
+    llaisys::utils::ByteMap kv;
+    llaisys::utils::put_string(kv, "torch_dtype", "float32");
+    llaisys::utils::put_as<int64_t>(kv, "num_hidden_layers", 1);
+    llaisys::utils::put_as<int64_t>(kv, "hidden_size", 64);
+    llaisys::utils::put_as<int64_t>(kv, "num_attention_heads", 2);
+    llaisys::utils::put_as<int64_t>(kv, "num_key_value_heads", 2);
+    llaisys::utils::put_as<int64_t>(kv, "head_dim", 32);
+    llaisys::utils::put_as<int64_t>(kv, "intermediate_size", 128);
+    llaisys::utils::put_as<int64_t>(kv, "max_position_embeddings", 16);
+    llaisys::utils::put_as<int64_t>(kv, "vocab_size", 32);
+    llaisys::utils::put_as<float>(kv, "rms_norm_eps", 1e-5f);
+    llaisys::utils::put_as<float>(kv, "rope_theta", 10000.f);
+    llaisys::utils::put_as<int64_t>(kv, "eos_token_id", 0);
+    model->set_meta(kv);
     model->stop();
     fill_tiny_weights(*model);
     return model;

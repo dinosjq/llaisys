@@ -1,6 +1,6 @@
 #include "../../src/config.hpp"
 #include "../../src/model/model.hpp"
-#include "../../src/model/model_context.hpp"
+#include "../../src/model/runtime/model_context.hpp"
 #include "../../src/sequence/sequence.hpp"
 
 #include <algorithm>

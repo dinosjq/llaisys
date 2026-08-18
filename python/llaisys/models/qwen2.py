@@ -4,18 +4,16 @@ import asyncio
 import json
 import numpy as np
 import safetensors
-from ctypes import c_int64, c_size_t, c_int, c_float, c_void_p, byref
+from ctypes import c_int64, c_size_t, c_int, c_float, c_void_p, c_char_p
 
 from ..libllaisys import (
     LIB_LLAISYS,
     DeviceType,
     DataType,
-    LlaisysModelArch,
-    LlaisysModelMeta,
     llaisysModel_t,
 )
 from ..tensor import Tensor
-from .qwen2_weight_map import WeightRole, resolve_hf_weight
+from .meta_utils import SimpleMeta, flatten_config, resolve_eos_token, set_model_meta
 
 
 class Qwen2:
@@ -33,36 +31,8 @@ class Qwen2:
         with open(config_path, "r", encoding="utf-8") as f:
             config = json.load(f)
 
-        eos = config.get("eos_token_id", config.get("eos_token_ids", None))
-        if isinstance(eos, list):
-            eos_token = int(eos[0]) if eos else 0
-        elif eos is None:
-            eos_token = 0
-        else:
-            eos_token = int(eos)
-
-        dtype_name = str(config.get("torch_dtype", "bfloat16")).lower()
-        if "bfloat" in dtype_name:
-            dtype = DataType.BF16
-        elif "float16" in dtype_name or "fp16" in dtype_name:
-            dtype = DataType.F16
-        else:
-            dtype = DataType.F32
-
-        meta = LlaisysModelMeta()
-        meta.dtype = int(dtype)
-        meta.nlayer = int(config["num_hidden_layers"])
-        meta.hs = int(config["hidden_size"])
-        meta.nh = int(config["num_attention_heads"])
-        meta.nkvh = int(config.get("num_key_value_heads", meta.nh))
-        meta.dh = int(meta.hs // meta.nh)
-        meta.di = int(config["intermediate_size"])
-        meta.maxseq = int(config.get("max_position_embeddings", config.get("max_seq_len", 0)))
-        meta.voc = int(config["vocab_size"])
-        meta.epsilon = float(config.get("rms_norm_eps", 1e-6))
-        meta.theta = float(config.get("rope_theta", 10000.0))
-        meta.end_token = int(eos_token)
-        meta.rope_scale = 1.0
+        eos_token = resolve_eos_token(config, pick_last=False)
+        meta_map = flatten_config(config, eos_token_id=eos_token)
 
         try:
             import ml_dtypes  # noqa: F401
@@ -75,17 +45,17 @@ class Qwen2:
                 "Loading bfloat16 weights requires ml_dtypes. Please install ml_dtypes."
             ) from exc
 
-        self._meta = meta
+        self._meta = SimpleMeta(eos_token)
         device_ids = (c_int * 1)(0)
         self._model: llaisysModel_t = LIB_LLAISYS.llaisysModelCreate(
-            int(LlaisysModelArch.QWEN2),
-            byref(meta),
+            b"qwen2",
             int(device),
             device_ids,
             1,
         )
         if not self._model:
             raise RuntimeError("Failed to create Qwen2 model")
+        set_model_meta(LIB_LLAISYS, self._model, meta_map)
 
         for file in sorted(model_path.glob("*.safetensors")):
             with safetensors.safe_open(file, framework="numpy", device="cpu") as data_:
@@ -96,8 +66,7 @@ class Qwen2:
         if not self._out_embed_set and self._in_embed is not None:
             LIB_LLAISYS.llaisysModelSetWeight(
                 self._model,
-                int(WeightRole.OutEmbed),
-                c_size_t(0),
+                b"lm_head.weight",
                 self._in_embed.lib_tensor(),
             )
 
@@ -134,21 +103,14 @@ class Qwen2:
         return t
 
     def _assign_weight(self, name: str, arr: np.ndarray):
-        resolved = resolve_hf_weight(name)
-        if resolved is None:
-            return
-        role, layer = resolved
         t = self._tensor_from_numpy(arr)
-        if role == WeightRole.InEmbed:
+        if name == "model.embed_tokens.weight":
             self._in_embed = t
-        if role == WeightRole.OutEmbed:
+        if name == "lm_head.weight":
             self._out_embed_set = True
-        LIB_LLAISYS.llaisysModelSetWeight(
-            self._model,
-            int(role),
-            c_size_t(layer),
-            t.lib_tensor(),
-        )
+        rc = int(LIB_LLAISYS.llaisysModelSetWeight(self._model, name.encode("utf-8"), t.lib_tensor()))
+        if rc != 0:
+            raise RuntimeError(f"llaisysModelSetWeight failed for {name}")
 
     def _submit_request(self, tokens, max_new_tokens, top_k, top_p, temperature):
         arr = (c_int64 * len(tokens))(*tokens)

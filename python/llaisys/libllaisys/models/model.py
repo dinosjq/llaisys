@@ -1,50 +1,8 @@
 import ctypes
-from ctypes import POINTER, c_int, c_size_t, c_int64, c_float
-from enum import IntEnum
+from ctypes import POINTER, c_char_p, c_int, c_size_t, c_int64, c_float
 
-from ..llaisys_types import llaisysDataType_t, llaisysDeviceType_t
+from ..llaisys_types import llaisysDeviceType_t
 from ..tensor import llaisysTensor_t
-
-
-class LlaisysModelArch(IntEnum):
-    QWEN2 = 0
-    LLAMA = 1
-
-
-class LlaisysWeightRole(IntEnum):
-    IN_EMBED = 0
-    OUT_EMBED = 1
-    OUT_NORM = 2
-    ATTN_NORM = 3
-    ATTN_Q_W = 4
-    ATTN_Q_B = 5
-    ATTN_K_W = 6
-    ATTN_K_B = 7
-    ATTN_V_W = 8
-    ATTN_V_B = 9
-    ATTN_O_W = 10
-    MLP_NORM = 11
-    MLP_GATE_W = 12
-    MLP_UP_W = 13
-    MLP_DOWN_W = 14
-
-
-class LlaisysModelMeta(ctypes.Structure):
-    _fields_ = [
-        ("dtype", llaisysDataType_t),
-        ("nlayer", c_size_t),
-        ("hs", c_size_t),
-        ("nh", c_size_t),
-        ("nkvh", c_size_t),
-        ("dh", c_size_t),
-        ("di", c_size_t),
-        ("maxseq", c_size_t),
-        ("voc", c_size_t),
-        ("epsilon", c_float),
-        ("theta", c_float),
-        ("end_token", c_int64),
-        ("rope_scale", c_float),
-    ]
 
 
 llaisysModel_t = ctypes.c_void_p
@@ -53,8 +11,7 @@ llaisysRequest_t = ctypes.c_void_p
 
 def load_model(lib):
     lib.llaisysModelCreate.argtypes = [
-        c_int,
-        POINTER(LlaisysModelMeta),
+        c_char_p,
         llaisysDeviceType_t,
         POINTER(c_int),
         c_int,
@@ -64,13 +21,21 @@ def load_model(lib):
     lib.llaisysModelDestroy.argtypes = [llaisysModel_t]
     lib.llaisysModelDestroy.restype = None
 
+    lib.llaisysModelSetMeta.argtypes = [
+        llaisysModel_t,
+        POINTER(c_char_p),
+        POINTER(ctypes.c_void_p),
+        POINTER(c_size_t),
+        c_size_t,
+    ]
+    lib.llaisysModelSetMeta.restype = c_int
+
     lib.llaisysModelSetWeight.argtypes = [
         llaisysModel_t,
-        c_int,
-        c_size_t,
+        c_char_p,
         llaisysTensor_t,
     ]
-    lib.llaisysModelSetWeight.restype = None
+    lib.llaisysModelSetWeight.restype = c_int
 
     lib.llaisysModelRequestSubmit.argtypes = [
         llaisysModel_t,
@@ -92,9 +57,6 @@ def load_model(lib):
 
 
 __all__ = [
-    "LlaisysModelArch",
-    "LlaisysWeightRole",
-    "LlaisysModelMeta",
     "llaisysModel_t",
     "llaisysRequest_t",
     "load_model",

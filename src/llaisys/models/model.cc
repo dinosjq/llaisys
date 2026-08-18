@@ -1,10 +1,13 @@
 #include "llaisys/models/model.h"
 
 #include "../llaisys_tensor.hpp"
+#include "../../model/registry/model_registry.hpp"
 #include "../../models/qwen2/qwen2.hpp"
 #include "../../models/llama/llama.hpp"
+#include "../../utils/byte_map.hpp"
 
 #include <memory>
+#include <mutex>
 
 struct LlaisysModel {
     std::shared_ptr<llaisys::model::Model> model;
@@ -17,40 +20,33 @@ struct LlaisysRequest {
 
 namespace {
 
-llaisys::Qwen2Meta to_qwen2_meta(const LlaisysModelMeta *meta) {
-    llaisys::Qwen2Meta out{};
-    out.dtype = meta->dtype;
-    out.nlayer = meta->nlayer;
-    out.hs = meta->hs;
-    out.nh = meta->nh;
-    out.nkvh = meta->nkvh;
-    out.dh = meta->dh;
-    out.di = meta->di;
-    out.maxseq = meta->maxseq;
-    out.voc = meta->voc;
-    out.epsilon = meta->epsilon;
-    out.theta = meta->theta;
-    out.end_token = meta->end_token;
-    out.rope_scale = meta->rope_scale > 0.f ? meta->rope_scale : 1.f;
-    return out;
+std::once_flag g_register_once;
+
+void register_builtin_models() {
+    llaisys::model::ModelRegistry::register_model(
+        "qwen2", [](llaisysDeviceType_t device, int *device_ids, int ndevice) {
+            return std::shared_ptr<llaisys::model::Model>(
+                std::make_shared<llaisys::Qwen2>(device, device_ids, ndevice));
+        });
+    llaisys::model::ModelRegistry::register_model(
+        "llama", [](llaisysDeviceType_t device, int *device_ids, int ndevice) {
+            return std::shared_ptr<llaisys::model::Model>(
+                std::make_shared<llaisys::Llama>(device, device_ids, ndevice));
+        });
 }
 
 } // namespace
 
 __C {
-    struct LlaisysModel *llaisysModelCreate(LlaisysModelArch arch, LlaisysModelMeta *meta, llaisysDeviceType_t device,
-                                            int *device_ids, int ndevice) {
-        if (!meta || !device_ids || ndevice <= 0) {
+    struct LlaisysModel *llaisysModelCreate(const char *arch, llaisysDeviceType_t device, int *device_ids, int ndevice) {
+        if (!arch || !device_ids || ndevice <= 0) {
             return nullptr;
         }
+        std::call_once(g_register_once, register_builtin_models);
         auto *handle = new LlaisysModel();
-        const llaisys::Qwen2Meta cpp_meta = to_qwen2_meta(meta);
         try {
-            if (arch == LLAISYS_MODEL_QWEN2) {
-                handle->model = std::make_shared<llaisys::Qwen2>(cpp_meta, device, device_ids, ndevice);
-            } else if (arch == LLAISYS_MODEL_LLAMA) {
-                handle->model = std::make_shared<llaisys::Llama>(cpp_meta, device, device_ids, ndevice);
-            } else {
+            handle->model = llaisys::model::ModelRegistry::create(arch, device, device_ids, ndevice);
+            if (!handle->model) {
                 delete handle;
                 return nullptr;
             }
@@ -71,12 +67,30 @@ __C {
         delete model;
     }
 
-    void llaisysModelSetWeight(struct LlaisysModel *model, LlaisysWeightRole role, size_t layer, llaisysTensor_t tensor) {
-        if (!model || !model->model || !tensor) {
-            return;
+    int llaisysModelSetMeta(struct LlaisysModel *model, const char *const *keys, const void *const *vals,
+                            const size_t *val_nbytes, size_t n) {
+        if (!model || !model->model) {
+            return -1;
         }
-        llaisys::model::Model::set_weight(model->model->ctx(), static_cast<llaisys::model::WeightRole>(role),
-                                              layer, tensor->tensor);
+        try {
+            auto kv = llaisys::utils::make_byte_map(keys, vals, val_nbytes, n);
+            model->model->set_meta(kv);
+            return 0;
+        } catch (...) {
+            return -1;
+        }
+    }
+
+    int llaisysModelSetWeight(struct LlaisysModel *model, const char *name, llaisysTensor_t tensor) {
+        if (!model || !model->model || !name || !tensor) {
+            return -1;
+        }
+        try {
+            model->model->set_weight(name, tensor->tensor);
+            return 0;
+        } catch (...) {
+            return -1;
+        }
     }
 
     struct LlaisysRequest *llaisysModelRequestSubmit(struct LlaisysModel *model, int64_t *token_ids, size_t ntoken,
@@ -92,9 +106,6 @@ __C {
             request->request = std::move(submitted);
             return request;
         } catch (...) {
-            if (submitted) {
-                model->model->release(submitted);
-            }
             return nullptr;
         }
     }
@@ -111,9 +122,10 @@ __C {
     }
 
     void llaisysModelRequestAbort(struct LlaisysRequest *request) {
-        if (request && request->model && request->request) {
-            request->model->abort(request->request);
+        if (!request || !request->model || !request->request) {
+            return;
         }
+        request->model->abort(request->request);
     }
 
     void llaisysModelRequestRelease(struct LlaisysRequest *request) {

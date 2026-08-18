@@ -1,8 +1,10 @@
 #include "../../src/kv_cache/block_manager.hpp"
 #include "../../src/sampling/sampling.hpp"
 #include "../../src/model/model.hpp"
-#include "../../src/model/model_context.hpp"
-#include "../../src/models/qwen2/qwen2_context.hpp"
+#include "../../src/model/runtime/model_context.hpp"
+#include "../../src/models/qwen2/runtime/qwen2_context.hpp"
+#include "../../src/models/qwen2/weight/qwen2_weights.hpp"
+#include "../../src/models/qwen2/meta/qwen2_meta.hpp"
 #include "../../src/scheduler/scheduler.hpp"
 #include "../../src/tensor/tensor.hpp"
 
@@ -104,29 +106,26 @@ void test_sequence_rejects_zero_token_prompt_before_dereference() {
 
 void test_set_weight_fills_attn_slot() {
     llaisys::model::Qwen2Context ctx;
-    ctx.meta.nlayer = 2;
-    ctx.meta.hs = 4;
-    ctx.attns.resize(2);
-    ctx.ffns.resize(2);
+    ctx.meta = std::make_shared<llaisys::model::Qwen2Meta>();
+    auto &meta = llaisys::model::qwen_meta(ctx);
+    meta.nlayer = 2;
+    meta.hs = 4;
+    llaisys::model::Qwen2Weights::init(ctx);
     auto w = llaisys::Tensor::create({4, 4}, LLAISYS_DTYPE_F32, LLAISYS_DEVICE_CPU, 0);
-    llaisys::model::Model::set_weight(ctx, llaisys::model::WeightRole::AttnQ_W, 1, w);
-    require(ctx.attns[1].q_w.get() == w.get(), "AttnQ_W must land in attns[layer].q_w");
-    require(ctx.attns[0].q_w.get() == nullptr, "other layer slot must stay empty");
+    require(llaisys::model::Qwen2Weights::set_weight(ctx, "model.layers.1.self_attn.q_proj.weight", w),
+            "AttnQ_W name must apply");
+    require(llaisys::model::Qwen2Weights::attn(ctx, 1)->q_w.get() == w.get(), "q_w must land in layer 1");
+    require(llaisys::model::Qwen2Weights::attn(ctx, 0)->q_w.get() == nullptr, "other layer slot must stay empty");
 }
 
 void test_set_weight_rejects_oob_layer() {
     llaisys::model::Qwen2Context ctx;
-    ctx.meta.nlayer = 1;
-    ctx.attns.resize(1);
-    ctx.ffns.resize(1);
+    ctx.meta = std::make_shared<llaisys::model::Qwen2Meta>();
+    llaisys::model::qwen_meta(ctx).nlayer = 1;
+    llaisys::model::Qwen2Weights::init(ctx);
     auto w = llaisys::Tensor::create({1}, LLAISYS_DTYPE_F32, LLAISYS_DEVICE_CPU, 0);
-    bool threw = false;
-    try {
-        llaisys::model::Model::set_weight(ctx, llaisys::model::WeightRole::MlpGate_W, 3, w);
-    } catch (const std::invalid_argument &) {
-        threw = true;
-    }
-    require(threw, "oob layer must throw invalid_argument");
+    require(!llaisys::model::Qwen2Weights::set_weight(ctx, "model.layers.3.mlp.gate_proj.weight", w),
+            "oob layer name must not apply");
 }
 
 } // namespace

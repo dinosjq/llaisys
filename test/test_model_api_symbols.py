@@ -8,6 +8,7 @@ class ModelApiSymbolsTest(unittest.TestCase):
         for name in (
             "llaisysModelCreate",
             "llaisysModelDestroy",
+            "llaisysModelSetMeta",
             "llaisysModelSetWeight",
             "llaisysModelRequestSubmit",
             "llaisysModelRequestAwait",
