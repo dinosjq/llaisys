@@ -17,7 +17,7 @@ from .meta_utils import SimpleMeta, flatten_config, resolve_eos_token, set_model
 
 
 class Qwen2:
-    def __init__(self, model_path, device: DeviceType = DeviceType.CPU):
+    def __init__(self, model_path, device: DeviceType = DeviceType.CPU, *, quantize_weights: bool = False):
         model_path = Path(model_path)
         self._device = device
         self._tensors = []
@@ -33,6 +33,8 @@ class Qwen2:
 
         eos_token = resolve_eos_token(config, pick_last=False)
         meta_map = flatten_config(config, eos_token_id=eos_token)
+        if quantize_weights:
+            meta_map["quantize_weights"] = 1
 
         try:
             import ml_dtypes  # noqa: F401

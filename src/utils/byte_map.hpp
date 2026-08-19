@@ -70,6 +70,28 @@ inline T get_or_as(const ByteMap &kv, const std::string &key, T fallback) {
     return as<T>(it->second);
 }
 
+// HF configs often store numeric scalars as JSON ints (e.g. rope_theta=10000).
+inline float as_f32(const std::vector<std::uint8_t> &bytes) {
+    if (bytes.size() == sizeof(float)) {
+        return as<float>(bytes);
+    }
+    if (bytes.size() == sizeof(std::int64_t)) {
+        return static_cast<float>(as<std::int64_t>(bytes));
+    }
+    if (bytes.size() == sizeof(double)) {
+        return static_cast<float>(as<double>(bytes));
+    }
+    throw std::invalid_argument("byte blob size mismatch for f32 read");
+}
+
+inline float get_or_f32(const ByteMap &kv, const std::string &key, float fallback) {
+    auto it = kv.find(key);
+    if (it == kv.end()) {
+        return fallback;
+    }
+    return as_f32(it->second);
+}
+
 inline std::string as_string(const std::vector<std::uint8_t> &bytes) {
     return std::string(reinterpret_cast<const char *>(bytes.data()), bytes.size());
 }

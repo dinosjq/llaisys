@@ -29,6 +29,9 @@ KERNEL_GROUPS = {
     # Handwritten small-M GEMV (must precede generic cuBLAS "gemv"/"gemm").
     "gemv_simt":      "warp_per_column_kernel",
     "gemv_simt_long": "block_per_column_kernel",
+    "gemv_w8_dp4a":   "gemv_w8a16_dp4a_kernel",
+    "gemv_dp4a":      "gemv_dp4a_kernel",
+    "act_quant_w8":   "quantize_act_kernel",
     # cuBLAS names vary by toolkit and matrix dimensions.
     "gemm_reduction": "splitKreduce",
     "gemv":           "gemv",
@@ -49,6 +52,9 @@ KERNEL_NAMES = {
     "topk":           "topk",
     "gemv_simt":      "linear (gemv)",
     "gemv_simt_long": "linear (gemv)",
+    "gemv_w8_dp4a":   "linear (gemv)",
+    "gemv_dp4a":      "linear (gemv)",
+    "act_quant_w8":   "act_quant_w8",
     "gemm_reduction": "linear (reduction)",
     "gemv":           "linear (gemv)",
     "gemm":           "linear (gemm)",

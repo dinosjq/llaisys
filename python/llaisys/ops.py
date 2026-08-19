@@ -32,6 +32,24 @@ class Ops:
         )
 
     @staticmethod
+    def dequant_w8(out: Tensor, weight_i8: Tensor, scale: Tensor):
+        LIB_LLAISYS.llaisysDequantW8(out.lib_tensor(), weight_i8.lib_tensor(), scale.lib_tensor())
+
+    @staticmethod
+    def quantize_w8(weight_i8: Tensor, scale: Tensor, weight_fp: Tensor):
+        LIB_LLAISYS.llaisysQuantizeW8(weight_i8.lib_tensor(), scale.lib_tensor(), weight_fp.lib_tensor())
+
+    @staticmethod
+    def linear_w8a16(out: Tensor, inp: Tensor, weight_i8: Tensor, scale: Tensor, bias: Tensor = None):
+        LIB_LLAISYS.llaisysLinearW8A16(
+            out.lib_tensor(),
+            inp.lib_tensor(),
+            weight_i8.lib_tensor(),
+            scale.lib_tensor(),
+            bias.lib_tensor() if bias is not None else None,
+        )
+
+    @staticmethod
     def kv_cache_move(out: Tensor, inp: Tensor, block_ids: Tensor, cut_idx: Tensor, pos_ids: Tensor, max_seq_len: int):
         LIB_LLAISYS.llaisysKvCacheMove(
             out.lib_tensor(),

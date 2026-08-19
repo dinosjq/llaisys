@@ -8,6 +8,9 @@
 #include "../ops/embedding/op.hpp"
 #include "../ops/kv_cache_move/op.hpp"
 #include "../ops/linear/op.hpp"
+#include "../ops/dequant_w8/op.hpp"
+#include "../ops/quantize_w8/op.hpp"
+#include "../ops/linear_w8a16/op.hpp"
 #include "../ops/paged_attention/op.hpp"
 #include "../ops/rearrange/op.hpp"
 #include "../ops/rms_norm/op.hpp"
@@ -35,6 +38,20 @@ void llaisysEmbedding(llaisysTensor_t out, llaisysTensor_t index, llaisysTensor_
 
 void llaisysLinear(llaisysTensor_t out, llaisysTensor_t in, llaisysTensor_t weight, llaisysTensor_t bias) {
     llaisys::ops::linear(out->tensor, in->tensor, weight->tensor, bias ? bias->tensor : nullptr);
+}
+
+void llaisysDequantW8(llaisysTensor_t out, llaisysTensor_t weight_i8, llaisysTensor_t scale) {
+    llaisys::ops::dequant_w8(out->tensor, weight_i8->tensor, scale->tensor);
+}
+
+void llaisysQuantizeW8(llaisysTensor_t weight_i8, llaisysTensor_t scale, llaisysTensor_t weight_fp) {
+    llaisys::ops::quantize_w8(weight_i8->tensor, scale->tensor, weight_fp->tensor);
+}
+
+void llaisysLinearW8A16(llaisysTensor_t out, llaisysTensor_t in, llaisysTensor_t weight_i8, llaisysTensor_t scale,
+                        llaisysTensor_t bias) {
+    llaisys::ops::linear_w8a16(out->tensor, in->tensor, weight_i8->tensor, scale->tensor,
+                               bias ? bias->tensor : nullptr);
 }
 
 void llaisysKvCacheMove(llaisysTensor_t out,

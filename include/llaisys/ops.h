@@ -9,6 +9,10 @@ __C {
     __export void llaisysTopk(llaisysTensor_t out_idx, llaisysTensor_t out_val, llaisysTensor_t vals, size_t k);
     __export void llaisysEmbedding(llaisysTensor_t out, llaisysTensor_t index, llaisysTensor_t weight);
     __export void llaisysLinear(llaisysTensor_t out, llaisysTensor_t in, llaisysTensor_t weight, llaisysTensor_t bias);
+    __export void llaisysDequantW8(llaisysTensor_t out, llaisysTensor_t weight_i8, llaisysTensor_t scale);
+    __export void llaisysQuantizeW8(llaisysTensor_t weight_i8, llaisysTensor_t scale, llaisysTensor_t weight_fp);
+    __export void llaisysLinearW8A16(llaisysTensor_t out, llaisysTensor_t in, llaisysTensor_t weight_i8,
+                                     llaisysTensor_t scale, llaisysTensor_t bias);
     __export void llaisysKvCacheMove(llaisysTensor_t out, llaisysTensor_t in, llaisysTensor_t block_ids_tensor, llaisysTensor_t cut_idx_tensor, llaisysTensor_t pos_ids_tensor, size_t max_seq_len);
     __export void llaisysRearrange(llaisysTensor_t out, llaisysTensor_t in);
     __export void llaisysRmsNorm(llaisysTensor_t out, llaisysTensor_t in, llaisysTensor_t weight, float eps);

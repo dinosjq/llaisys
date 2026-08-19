@@ -91,6 +91,11 @@ def main():
     parser.add_argument("--no-warmup", action="store_true",
                         help="Skip warmup and measure cold-start behavior")
     parser.add_argument("--device", default="nvidia", choices=["nvidia"])
+    parser.add_argument("--quantize-weights", action="store_true",
+                        help="Enable W8A16 projection weights (meta quantize_weights=1)")
+    parser.add_argument("--top_k", type=int, default=1)
+    parser.add_argument("--top_p", type=float, default=1.0)
+    parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--output", default="", help="Path to save output tokens (optional)")
 
     args = parser.parse_args()
@@ -127,7 +132,16 @@ def main():
 
     # ── LLAISYS model (no HF model loaded) ───────────────────
     device = llaisys.DeviceType.NVIDIA
-    model = llaisys.models.load_causal_lm(args.model, device)
+    model = llaisys.models.load_causal_lm(
+        args.model, device, quantize_weights=args.quantize_weights
+    )
+
+    gen_kwargs = dict(
+        max_new_tokens=args.max_steps,
+        top_k=args.top_k,
+        top_p=args.top_p,
+        temperature=args.temperature,
+    )
 
     # ── Warmup ───────────────────────────────────────────────
     # Change the first token so the warmup has the same shape but cannot reuse
@@ -135,11 +149,13 @@ def main():
     warmup_steps = 0 if args.no_warmup else args.warmup_steps
     if warmup_steps:
         warmup_ids = make_warmup_input(input_ids, tokenizer.vocab_size)
-        _ = model.generate(warmup_ids, max_new_tokens=warmup_steps)
+        _ = model.generate(warmup_ids, max_new_tokens=warmup_steps, **{
+            k: v for k, v in gen_kwargs.items() if k != "max_new_tokens"
+        })
 
     # ── Timed inference ──────────────────────────────────────
     t0 = time.perf_counter()
-    output_ids = model.generate(input_ids, max_new_tokens=args.max_steps)
+    output_ids = model.generate(input_ids, **gen_kwargs)
     elapsed_s = time.perf_counter() - t0
 
     model.close()
@@ -148,7 +164,8 @@ def main():
 
     # ── Summary ──────────────────────────────────────────────
     decoded = tokenizer.decode(output_ids[input_len:], skip_special_tokens=True)
-    print(f"\n  input: {input_len} tokens  output: {output_tokens} tokens  "
+    print(f"\n  quantize_weights: {args.quantize_weights}")
+    print(f"  input: {input_len} tokens  output: {output_tokens} tokens  "
           f"elapsed: {elapsed_s:.2f}s  "
           f"throughput: {output_tokens / elapsed_s:.1f} tok/s")
     print(f"  warmup: {warmup_steps} tokens")

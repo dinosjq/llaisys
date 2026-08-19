@@ -22,6 +22,7 @@ public:
     float epsilon = 1e-6f, theta = 10000.f;
     int64_t end_token = 0;
     float rope_scale = 1.f; // Llama-3 factor；<=1 表示不 scaling
+    bool quantize_weights = false; // W8A16 projections when true
 
     void load_from_map(const std::unordered_map<std::string, std::vector<std::uint8_t>> &kv);
 
@@ -32,6 +33,7 @@ using qwen2_meta_t = std::shared_ptr<Qwen2Meta>;
 
 inline void Qwen2Meta::load_from_map(const std::unordered_map<std::string, std::vector<std::uint8_t>> &kv) {
     using llaisys::utils::get_or_as;
+    using llaisys::utils::get_or_f32;
     using llaisys::utils::get_or_string;
     using llaisys::utils::parse_torch_dtype;
     using llaisys::utils::require_as;
@@ -58,10 +60,11 @@ inline void Qwen2Meta::load_from_map(const std::unordered_map<std::string, std::
         this->maxseq = 0;
     }
     this->voc = static_cast<size_t>(require_as<int64_t>(kv, "vocab_size"));
-    this->epsilon = get_or_as<float>(kv, "rms_norm_eps", 1e-6f);
-    this->theta = get_or_as<float>(kv, "rope_theta", 10000.f);
+    this->epsilon = get_or_f32(kv, "rms_norm_eps", 1e-6f);
+    this->theta = get_or_f32(kv, "rope_theta", 10000.f);
     this->end_token = get_or_as<int64_t>(kv, "eos_token_id", 0);
-    this->rope_scale = get_or_as<float>(kv, "rope_scaling.factor", 1.f);
+    this->rope_scale = get_or_f32(kv, "rope_scaling.factor", 1.f);
+    this->quantize_weights = get_or_as<int64_t>(kv, "quantize_weights", 0) != 0;
 }
 
 inline qwen2_meta_t Qwen2Meta::from_map(const std::unordered_map<std::string, std::vector<std::uint8_t>> &kv) {

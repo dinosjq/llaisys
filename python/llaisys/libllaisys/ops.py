@@ -17,6 +17,21 @@ def load_ops(lib):
     lib.llaisysLinear.argtypes = [llaisysTensor_t, llaisysTensor_t, llaisysTensor_t, llaisysTensor_t]
     lib.llaisysLinear.restype = None
 
+    lib.llaisysDequantW8.argtypes = [llaisysTensor_t, llaisysTensor_t, llaisysTensor_t]
+    lib.llaisysDequantW8.restype = None
+
+    lib.llaisysQuantizeW8.argtypes = [llaisysTensor_t, llaisysTensor_t, llaisysTensor_t]
+    lib.llaisysQuantizeW8.restype = None
+
+    lib.llaisysLinearW8A16.argtypes = [
+        llaisysTensor_t,
+        llaisysTensor_t,
+        llaisysTensor_t,
+        llaisysTensor_t,
+        llaisysTensor_t,
+    ]
+    lib.llaisysLinearW8A16.restype = None
+
     lib.llaisysKvCacheMove.argtypes = [
         llaisysTensor_t,  # out
         llaisysTensor_t,  # in

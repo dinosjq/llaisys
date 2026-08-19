@@ -2,6 +2,7 @@
 
 #include "layer/qwen2.hpp"
 #include "weight/qwen2_weights.hpp"
+#include "weight/qwen2_w8_weight.hpp"
 #include "../../ops/embedding/op.hpp"
 #include "../../ops/linear/op.hpp"
 #include "../../ops/rms_norm/op.hpp"
@@ -61,7 +62,14 @@ void Qwen2::allocate_runtime() {
     const int device_id = this->_device_ids[0];
 
     // 初始化权重槽位
-    model::Qwen2Weights::init(ctx);
+    if (meta.quantize_weights) {
+        if (this->_device_type != LLAISYS_DEVICE_NVIDIA) {
+            throw std::runtime_error("quantize_weights requires NVIDIA device");
+        }
+        model::Qwen2W8Weights::init(ctx);
+    } else {
+        model::Qwen2Weights::init(ctx);
+    }
 
     // 分配上下文内存，初始化中间张量
     ctx.allocate(this->_device_type, device_id);
@@ -91,7 +99,11 @@ void Qwen2::allocate_runtime() {
     if (!this->_meta_ready || !this->_ctx) {
         throw std::runtime_error("set_weight before set_meta");
     }
-    model::Qwen2Weights::set_weight(*this->_ctx, hf_name, std::move(tensor));
+    if (model::qwen_meta(*this->_ctx).quantize_weights) {
+        model::Qwen2W8Weights::set_weight(*this->_ctx, hf_name, std::move(tensor));
+    } else {
+        model::Qwen2Weights::set_weight(*this->_ctx, hf_name, std::move(tensor));
+    }
 }
 
 /**

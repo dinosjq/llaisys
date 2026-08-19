@@ -39,11 +39,16 @@ def detect_model_arch(model_path: str | Path) -> str:
     )
 
 
-def load_causal_lm(model_path: str | Path, device: DeviceType = DeviceType.CPU) -> CausalLM:
+def load_causal_lm(
+    model_path: str | Path,
+    device: DeviceType = DeviceType.CPU,
+    *,
+    quantize_weights: bool = False,
+) -> CausalLM:
     arch = detect_model_arch(model_path)
     if arch == "llama":
-        return Llama(model_path, device)
-    return Qwen2(model_path, device)
+        return Llama(model_path, device, quantize_weights=quantize_weights)
+    return Qwen2(model_path, device, quantize_weights=quantize_weights)
 
 
 __all__ = [

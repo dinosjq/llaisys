@@ -10,6 +10,7 @@
 | [04-linear-gemv.md](./04-linear-gemv.md) | Linear 小 batch GEMV：M=1–15 重构、Qwen2/Llama 扫表、失败路径与限制 |
 | [05-inference-baseline.md](./05-inference-baseline.md) | **当前端到端 + nsys 正式基线**（配置、吞吐、P0/D0/D1） |
 | [06-phase4-decode-prep.md](./06-phase4-decode-prep.md) | 下一阶段准备：短 decode / Llama gate·down / 验收口径 |
+| [07-w8a16-performance.md](./07-w8a16-performance.md) | **W8A16**：linear microbench + Qwen e2e FP vs INT8、显存与结论 |
 | [archive/flash-decoding/](./archive/flash-decoding/) | 各版原始专题报告（v1–v9、演进、ncu 等） |
 
 **相关收口报告（不在本目录）：**
@@ -19,6 +20,9 @@
 [05-inference-baseline.md](./05-inference-baseline.md)。
 
 **GEMV：** 当前实现覆盖 `M=1..15`；详见 [04-linear-gemv.md](./04-linear-gemv.md)。
+
+**W8A16（2026-08-19）：** 朴素 `linear_w8a16` vs BF16 GEMV；Qwen 1.5B e2e 吞吐约持平、清加载副本后显存约 −29%。详见
+[07-w8a16-performance.md](./07-w8a16-performance.md)。
 
 ---
 
