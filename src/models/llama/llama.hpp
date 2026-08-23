@@ -8,17 +8,18 @@
 #include <unordered_map>
 #include <vector>
 
-namespace llaisys {
+namespace llaisys::model {
 
 class Llama : public Qwen2 {
 public:
-    Llama(llaisysDeviceType_t device, int *device_ids, int ndevice);
+    Llama(llaisysDeviceType_t device, int device_id);
     ~Llama() override = default;
 
     void set_meta(const std::unordered_map<std::string, std::vector<std::uint8_t>> &kv) override;
-    std::vector<int64_t> forward(model::BatchPack &pack, std::vector<int64_t> &block_ids, bool is_prefill) override;
+    void _build_layers();
+    engine::BatchOutput forward(const engine::BatchInput &input) override;
 
-    model::LlamaContext &llama_ctx();
+    LlamaContext &llama_ctx();
 };
 
-} // namespace llaisys
+} // namespace llaisys::model

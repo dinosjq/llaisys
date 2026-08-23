@@ -1,6 +1,6 @@
 #include "sequence.hpp"
 #include "../kv_cache/block_manager.hpp"
-#include "../sampling/sampling.hpp"
+#include "../sampler/sampler.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -14,8 +14,7 @@ const int64_t *validate_prompt_tokens(const int64_t *token_ids, size_t ntoken) {
 } // namespace
 
 namespace llaisys{
-Sequence::Sequence(int64_t *token_ids, size_t ntoken, size_t max_ntoken,
-                   int top_k, float top_p, float temperature):
+Sequence::Sequence(int64_t *token_ids, size_t ntoken, size_t max_ntoken, int top_k, float top_p, float temperature):
                     _seq_id(Sequence::counter()),
                     _status(SeqStatus::WAITING),
                     _is_prefill(true),
@@ -122,7 +121,7 @@ void Sequence::add(int64_t token){
 }
 
 // condvar 真等待: 直到 token 数超过 ntoken 或被取消
-// 返回 true=有新token false=已取消
+// 返回 true => 有新 token; false => 已取消
 bool Sequence::wait_for_token(size_t ntoken) {
     std::unique_lock<std::mutex> lock(this->_token_mutex);
     this->_token_cv.wait(lock, [&]{

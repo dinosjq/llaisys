@@ -2,54 +2,44 @@
 
 #include "qwen2_weights.hpp"
 #include "../../../model/weight/utils/quantize_per_channel.hpp"
+#include "../../../utils/check.hpp"
 
 #include <stdexcept>
 #include <utility>
 
 namespace llaisys::model {
 
-class QwenW8AttnWeights : public QwenAttnWeights {
-public:
+// W8A16 量化层：在纯 FP 权重基础上补充 per-channel scale
+struct QwenW8AttnWeights : QwenAttnWeights {
     tensor_t q_scale, k_scale, v_scale, o_scale;
 };
-using qwen_w8_attn_weights_t = std::shared_ptr<QwenW8AttnWeights>;
 
-class QwenW8FfnWeights : public QwenFfnWeights {
-public:
+struct QwenW8FfnWeights : QwenFfnWeights {
     tensor_t gate_scale, up_scale, down_scale;
 };
-using qwen_w8_ffn_weights_t = std::shared_ptr<QwenW8FfnWeights>;
 
-class Qwen2W8Weights {
+class Qwen2W8Weights : public Qwen2Weights {
 public:
-    static qwen_w8_attn_weights_t attn(ModelContext &ctx, size_t layer) {
-        return std::static_pointer_cast<QwenW8AttnWeights>(ctx.attns.at(layer));
-    }
-
-    static qwen_w8_ffn_weights_t ffn(ModelContext &ctx, size_t layer) {
-        return std::static_pointer_cast<QwenW8FfnWeights>(ctx.ffns.at(layer));
-    }
-
-    static void init(ModelContext &ctx) {
-        const size_t nlayer = qwen_meta(ctx).nlayer;
-        ctx.resize_layers(nlayer);
+    // W8 路径：所有层都创建为量化层类型（基类 set 处理 norm/bias，本类处理量化 weight）
+    void init(const size_t nlayer) override {
+        this->_nlayer = nlayer;
+        this->_attns.resize(nlayer);
+        this->_ffns.resize(nlayer);
         for (size_t i = 0; i < nlayer; ++i) {
-            ctx.attns[i] = std::make_shared<QwenW8AttnWeights>();
-            ctx.ffns[i] = std::make_shared<QwenW8FfnWeights>();
+            this->_attns[i] = std::make_unique<QwenW8AttnWeights>();
+            this->_ffns[i] = std::make_unique<QwenW8FfnWeights>();
         }
     }
 
-    // Online-quantize projection weights; other tensors stay FP via Qwen2Weights routing.
-    static bool set_weight(ModelContext &ctx, const std::string &hf_name, tensor_t tensor) {
+    bool set(const std::string &hf_name, tensor_t tensor) {
         if (!tensor) {
             return false;
         }
-        auto quant_assign = [&](tensor_t &w_slot, tensor_t &scale_slot, tensor_t src) {
+        auto quant_assign = [](tensor_t &w_slot, tensor_t &scale_slot, tensor_t src) {
             auto [w_i8, scale] = weight::utils::quantize_weight_per_channel(src);
             w_slot = std::move(w_i8);
             scale_slot = std::move(scale);
         };
-
         static const char kPrefix[] = "model.layers.";
         if (hf_name.rfind(kPrefix, 0) == 0) {
             const size_t start = sizeof(kPrefix) - 1;
@@ -63,44 +53,46 @@ public:
             } catch (...) {
                 return false;
             }
-            if (layer >= ctx.attns.size() || layer >= ctx.ffns.size() || !ctx.attns[layer] || !ctx.ffns[layer]) {
+            if (layer >= this->_nlayer) {
                 return false;
             }
             const std::string suffix = hf_name.substr(dot + 1);
-            auto a = attn(ctx, layer);
-            auto f = ffn(ctx, layer);
+            // init() 保证该层是量化类型；dynamic_cast 失败则不是 W8 路径
+            auto *attn = dynamic_cast<QwenW8AttnWeights *>(this->_attns[layer].get());
+            auto *ffn = dynamic_cast<QwenW8FfnWeights *>(this->_ffns[layer].get());
+            ASSERT(attn != nullptr && ffn != nullptr, "Qwen2W8Weights: layer is not quantized type");
 
             if (suffix == "self_attn.q_proj.weight") {
-                quant_assign(a->q_w, a->q_scale, std::move(tensor));
+                quant_assign(attn->q_w, attn->q_scale, std::move(tensor));
                 return true;
             }
             if (suffix == "self_attn.k_proj.weight") {
-                quant_assign(a->k_w, a->k_scale, std::move(tensor));
+                quant_assign(attn->k_w, attn->k_scale, std::move(tensor));
                 return true;
             }
             if (suffix == "self_attn.v_proj.weight") {
-                quant_assign(a->v_w, a->v_scale, std::move(tensor));
+                quant_assign(attn->v_w, attn->v_scale, std::move(tensor));
                 return true;
             }
             if (suffix == "self_attn.o_proj.weight") {
-                quant_assign(a->o_w, a->o_scale, std::move(tensor));
+                quant_assign(attn->o_w, attn->o_scale, std::move(tensor));
                 return true;
             }
             if (suffix == "mlp.gate_proj.weight") {
-                quant_assign(f->gate_w, f->gate_scale, std::move(tensor));
+                quant_assign(ffn->gate_w, ffn->gate_scale, std::move(tensor));
                 return true;
             }
             if (suffix == "mlp.up_proj.weight") {
-                quant_assign(f->up_w, f->up_scale, std::move(tensor));
+                quant_assign(ffn->up_w, ffn->up_scale, std::move(tensor));
                 return true;
             }
             if (suffix == "mlp.down_proj.weight") {
-                quant_assign(f->down_w, f->down_scale, std::move(tensor));
+                quant_assign(ffn->down_w, ffn->down_scale, std::move(tensor));
                 return true;
             }
         }
 
-        return Qwen2Weights::set_weight(ctx, hf_name, std::move(tensor));
+        return Qwen2Weights::set(hf_name, std::move(tensor));
     }
 };
 

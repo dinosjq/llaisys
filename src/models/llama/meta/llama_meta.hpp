@@ -20,13 +20,13 @@ public:
     static constexpr int64_t kRopeOriginalMaxPos = 8192;
     static constexpr size_t kMaxSeqCap = 8192;
 
-    // Llama defaults → Qwen2Meta::load_from_map → clamp maxseq.
-    static std::shared_ptr<LlamaMeta> from_map(const std::unordered_map<std::string, std::vector<std::uint8_t>> &kv);
+    // Llama defaults → Qwen2Meta::_load → clamp maxseq.
+    static std::unique_ptr<LlamaMeta> from_map(const std::unordered_map<std::string, std::vector<std::uint8_t>> &kv);
 
     // Host inv_freq[dh/2]，含可选 llama3 rope scaling。
     std::vector<float> make_inv_freq() const;
 };
-using llama_meta_t = std::shared_ptr<LlamaMeta>;
+using llama_meta_t = std::unique_ptr<LlamaMeta>;
 
 inline llama_meta_t LlamaMeta::from_map(const std::unordered_map<std::string, std::vector<std::uint8_t>> &kv) {
     using llaisys::utils::get_or_string;
@@ -53,8 +53,8 @@ inline llama_meta_t LlamaMeta::from_map(const std::unordered_map<std::string, st
         put_as<float>(m, "rope_scaling.factor", 1.f);
     }
 
-    auto meta = std::make_shared<LlamaMeta>();
-    meta->load_from_map(m);
+    auto meta = std::make_unique<LlamaMeta>();
+    meta->_load(m);
     if (meta->maxseq > kMaxSeqCap) {
         meta->maxseq = kMaxSeqCap;
     }
@@ -68,14 +68,6 @@ inline std::vector<float> LlamaMeta::make_inv_freq() const {
                                                             kRopeHighFreqFactor, kRopeOriginalMaxPos);
     }
     return host_inv;
-}
-
-inline LlamaMeta &llama_meta(ModelContext &ctx) {
-    return *std::static_pointer_cast<LlamaMeta>(ctx.meta);
-}
-
-inline const LlamaMeta &llama_meta(const ModelContext &ctx) {
-    return *std::static_pointer_cast<const LlamaMeta>(ctx.meta);
 }
 
 } // namespace llaisys::model

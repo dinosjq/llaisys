@@ -1,55 +1,44 @@
 #pragma once
 
-#include "runtime/model_context.hpp"
-#include "../sequence/sequence.hpp"
-#include "../scheduler/scheduler.hpp"
-#include "../config.hpp"
-
 #include <cstddef>
 #include <cstdint>
 #include <memory>
-#include <mutex>
 #include <string>
-#include <thread>
 #include <unordered_map>
 #include <vector>
 
+#include "../engine/engine.hpp"
+#include "../config.hpp"
+#include "../tensor/tensor.hpp"
+#include "llaisys/runtime.h"
+#include "runtime/model_context.hpp"
+#include "meta/model_meta.hpp"
+#include "weight/model_weights.hpp"
+#include "layer/layer.hpp"
+
 namespace llaisys::model {
 
-struct ModelRequest {
-    seq_t sequence;
-    size_t observed_tokens;
-    std::mutex mutex;
-};
-using model_request_t = std::shared_ptr<ModelRequest>;
+class Model;
+using model_t = std::unique_ptr<Model>;
 
 class Model {
 protected:
     // 设备
     llaisysDeviceType_t _device_type = LLAISYS_DEVICE_CPU;
-    std::vector<int> _device_ids;
-    // 请求调度、kv cache
-    scheduler_t _scheduler;
-    std::vector<tensor_t> _k_cache;
-    std::vector<tensor_t> _v_cache;
-    std::mutex _request_lock;
-    std::vector<model_request_t> _active_requests;
-    // 事件循环
-    bool _running = false;
-    std::thread _worker;
-    // 分层上下文（由子类构造具体派生类型）
-    std::unique_ptr<ModelContext> _ctx;
+    int _device_id;
+    // 元信息
+    model_meta_t _meta;
     bool _meta_ready = false;
-
-    // 子类实现：组装 Layer → logits → 采样返回 token
-    virtual std::vector<int64_t> forward(BatchPack &pack, std::vector<int64_t> &block_ids, bool is_prefill) = 0;
-    // 子类实现：绑定 KV 缓存
-    virtual void bind_kv_caches() = 0;
-    // 子类实现：绑定上下文运行时信息
-    virtual void bind_context_runtime(BatchPack &pack, std::vector<int64_t> &block_ids, bool is_prefill) = 0;
+    // 权重
+    model_weights_t _weights;
+    bool _weight_ready = false;
+    // 上下文（中间张量 / KV cache）
+    model_context_t _ctx;
+    // 分层 layer
+    std::vector<std::unique_ptr<Layer>> _layers;
 
 public:
-    virtual ~Model();
+    virtual ~Model() = default;
 
     Model(const Model &) = delete;
     Model &operator=(const Model &) = delete;
@@ -58,32 +47,28 @@ public:
 
     Model() = default;
 
-    // Loader surface (C API byte map → subclass typed readers via utils::as / as_string)
+    // 前向传播（Worker 调用）
+    virtual engine::BatchOutput forward(const engine::BatchInput &input) = 0;
+
+    // load data
     virtual void set_meta(const std::unordered_map<std::string, std::vector<std::uint8_t>> &kv) = 0;
     virtual void set_weight(const std::string &hf_name, tensor_t tensor) = 0;
 
-    bool meta_ready() const { return this->_meta_ready; }
+    // check ready
+    bool meta_ready() const { return this->_meta_ready; };
+    bool weight_ready() const { return this->_weight_ready; };
 
-    void start();
-    void stop();
+    ModelMeta &meta() { return *this->_meta; };
+    const ModelMeta &meta() const { return *this->_meta; };
 
-    // 提交请求
-    model_request_t submit(int64_t *token_ids, size_t ntoken, int64_t max_new_tokens,
-                           int top_k = TOP_K, float top_p = TOP_P, float temperature = 1.0f);
-    // 等待请求完成
-    int64_t await(const model_request_t &request);
-    // 取消请求
-    void abort(const model_request_t &request);
-    // 释放请求
-    void release(const model_request_t &request);
+    ModelContext &ctx() { return *this->_ctx; };
+    const ModelContext &ctx() const { return *this->_ctx; };
 
-    // 预处理：准备分层表、预填充、解码
-    static std::vector<int64_t> prepare_block_table(const std::vector<seq_t> &seqs, size_t block_table_width);
-    static BatchPack prepare_prefill(const std::vector<seq_t> &seqs);
-    static BatchPack prepare_decode(const std::vector<seq_t> &seqs);
+    ModelWeights &weights() { return *this->_weights; };
+    const ModelWeights &weights() const { return *this->_weights; };
 
-    ModelContext &ctx() { return *_ctx; }
-    const ModelContext &ctx() const { return *_ctx; }
+    // 结束符（Engine 构建 Scheduler 需要）
+    virtual int64_t end_token() const = 0;
 };
 
 } // namespace llaisys::model

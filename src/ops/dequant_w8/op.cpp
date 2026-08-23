@@ -21,6 +21,8 @@ void dequant_w8(tensor_t out, tensor_t weight_i8, tensor_t scale) {
 
     const size_t n = weight_i8->shape()[0];
     const size_t k = weight_i8->shape()[1];
+    (void)n;
+    (void)k;
     llaisys::core::context().setDevice(out->deviceType(), out->deviceId());
 
     switch (out->deviceType()) {

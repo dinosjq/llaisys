@@ -535,19 +535,6 @@ tensor_t Tensor::contiguous() const {
     return out;
 }
 
-/*
- * ==== 旧 reshape 实现（保留以供对照）====
- *
- * tensor_t Tensor::reshape(const std::vector<size_t> &shape) const {
- *     size_t new_numel = std::accumulate(shape.begin(), shape.end(), (size_t)1, std::multiplies<size_t>());
- *     ASSERT(new_numel == this->numel(), "Tensor::reshape : shape size mismatch");
- *     if (this->isContiguous()) {
- *         return this->view(shape);
- *     }
- *     return this->contiguous()->view(shape);
- * }
- */
-
 /**
  * @brief 返回一个新形状的张量视图或副本。
  *        先用泛化 view 尝试零拷贝变形；不兼容时退化为 contiguous()->view() 拷贝。

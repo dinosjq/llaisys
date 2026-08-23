@@ -68,6 +68,8 @@ void quantize_w8(tensor_t weight_i8, tensor_t scale, tensor_t weight_fp) {
 
     const size_t n = weight_fp->shape()[0];
     const size_t k = weight_fp->shape()[1];
+    (void)n;
+    (void)k;
     llaisys::core::context().setDevice(weight_fp->deviceType(), weight_fp->deviceId());
 
     switch (weight_fp->deviceType()) {

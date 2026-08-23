@@ -17,21 +17,32 @@ namespace llaisys::model {
 
 class Qwen2Meta : public ModelMeta {
 public:
+    // info
     llaisysDataType_t dtype = LLAISYS_DTYPE_BF16;
-    size_t nlayer = 0, hs = 0, nh = 0, nkvh = 0, dh = 0, di = 0, maxseq = 0, voc = 0;
-    float epsilon = 1e-6f, theta = 10000.f;
+    size_t nlayer = 0;
+    size_t hs = 0;
+    size_t nh = 0;
+    size_t nkvh = 0;
+    size_t dh = 0;
+    size_t di = 0;
+    size_t maxseq = 0;
+    size_t voc = 0;
+    float epsilon = 1e-6f;
+    float theta = 10000.f;
     int64_t end_token = 0;
-    float rope_scale = 1.f; // Llama-3 factor；<=1 表示不 scaling
-    bool quantize_weights = false; // W8A16 projections when true
+    float rope_scale = 1.f;         // Llama-3 factor <=1 表示不 scaling
+    bool quantize_weights = false;  // W8A16 when true
 
-    void load_from_map(const std::unordered_map<std::string, std::vector<std::uint8_t>> &kv);
+    // transfer
+    static Qwen2Meta cast(const std::unordered_map<std::string, std::vector<std::uint8_t>> &kv);
 
-    // ByteMap (C API SetMeta) → typed Qwen2Meta.
-    static std::shared_ptr<Qwen2Meta> from_map(const std::unordered_map<std::string, std::vector<std::uint8_t>> &kv);
+protected:
+    void _load(const std::unordered_map<std::string, std::vector<std::uint8_t>> &kv);
 };
-using qwen2_meta_t = std::shared_ptr<Qwen2Meta>;
 
-inline void Qwen2Meta::load_from_map(const std::unordered_map<std::string, std::vector<std::uint8_t>> &kv) {
+using qwen2_meta_t = std::unique_ptr<Qwen2Meta>;
+
+inline void Qwen2Meta::_load(const std::unordered_map<std::string, std::vector<std::uint8_t>> &kv) {
     using llaisys::utils::get_or_as;
     using llaisys::utils::get_or_f32;
     using llaisys::utils::get_or_string;
@@ -67,18 +78,9 @@ inline void Qwen2Meta::load_from_map(const std::unordered_map<std::string, std::
     this->quantize_weights = get_or_as<int64_t>(kv, "quantize_weights", 0) != 0;
 }
 
-inline qwen2_meta_t Qwen2Meta::from_map(const std::unordered_map<std::string, std::vector<std::uint8_t>> &kv) {
-    auto meta = std::make_shared<Qwen2Meta>();
-    meta->load_from_map(kv);
+inline Qwen2Meta Qwen2Meta::cast(const std::unordered_map<std::string, std::vector<std::uint8_t>> &kv) {
+    auto meta = Qwen2Meta();
+    meta._load(kv);
     return meta;
 }
-
-inline Qwen2Meta &qwen_meta(ModelContext &ctx) {
-    return *std::static_pointer_cast<Qwen2Meta>(ctx.meta);
-}
-
-inline const Qwen2Meta &qwen_meta(const ModelContext &ctx) {
-    return *std::static_pointer_cast<const Qwen2Meta>(ctx.meta);
-}
-
 } // namespace llaisys::model

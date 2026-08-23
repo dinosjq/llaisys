@@ -45,8 +45,7 @@ private:
     std::mt19937 _rng;
 
 public:
-    Sequence(int64_t *token_ids, size_t ntoken,
-             size_t max_ntoken = MAX_TOKEN_NUM,
+    Sequence(int64_t *token_ids, size_t ntoken, size_t max_ntoken = MAX_TOKEN_NUM,
              int top_k = TOP_K, float top_p = TOP_P, float temperature = 1.0f);
 
     ~Sequence() = default;

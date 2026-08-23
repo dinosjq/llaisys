@@ -8,12 +8,12 @@ namespace llaisys::model {
 
 class Qwen2FFN : public Layer {
 public:
-    explicit Qwen2FFN(qwen_ffn_weights_t weights);
+    explicit Qwen2FFN(QwenFfnWeights &weights);
     void forward(ModelContext &ctx) override;
     void forward(Qwen2Context &ctx);
 
 private:
-    qwen_ffn_weights_t _w;
+    QwenFfnWeights &_w;
 };
 
 } // namespace llaisys::model

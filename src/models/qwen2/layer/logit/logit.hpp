@@ -4,19 +4,17 @@
 #include "../../runtime/qwen2_context.hpp"
 #include "../../weight/qwen2_weights.hpp"
 
-#include <cstddef>
-
 namespace llaisys::model {
 
-class Qwen2Attention : public Layer {
+// 输出层：gather 每序列最后一个 token 的 hidden state → rms_norm → linear(lm_head)
+class Qwen2Logit : public Layer {
 public:
-    explicit Qwen2Attention(QwenAttnWeights &weights, size_t layer = 0);
+    explicit Qwen2Logit(Qwen2Weights &weights);
     void forward(ModelContext &ctx) override;
     void forward(Qwen2Context &ctx);
 
 private:
-    QwenAttnWeights &_w;
-    size_t _layer;
+    Qwen2Weights &_w;
 };
 
 } // namespace llaisys::model

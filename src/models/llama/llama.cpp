@@ -1,8 +1,10 @@
 #include "llama.hpp"
 
-#include "layer/llama.hpp"
+#include "layer/attn/attn.hpp"
+#include "layer/ffn/ffn.hpp"
+#include "layer/embedding/embedding.hpp"
+#include "../qwen2/layer/logit/logit.hpp"
 #include "meta/llama_meta.hpp"
-#include "weight/llama_weights.hpp"
 #include "../../ops/embedding/op.hpp"
 #include "../../ops/linear/op.hpp"
 #include "../../ops/rms_norm/op.hpp"
@@ -10,84 +12,89 @@
 #include <stdexcept>
 #include <utility>
 
-namespace llaisys {
+namespace llaisys::model {
 
-Llama::Llama(llaisysDeviceType_t device, int *device_ids, int ndevice)
-    : Qwen2(device, device_ids, ndevice, std::make_unique<model::LlamaContext>()) {}
+Llama::Llama(llaisysDeviceType_t device, int device_id)
+    : Qwen2(device, device_id) {
+    // Llama 需要扩展上下文（预计算 inv_freq）
+    this->_ctx = std::make_unique<LlamaContext>();
+}
 
 /**
  * 设置 meta
  * 1. 检查 meta_ready
- * 2. 设置 meta
- * 3. 分配上下文内存
+ * 2. 设置 meta（Qwen2 布局 + Llama 专属默认）
+ * 3. 分配上下文内存 / 权重槽位
+ * 4. 预计算 RoPE inv_freq
  */
 void Llama::set_meta(const std::unordered_map<std::string, std::vector<std::uint8_t>> &kv) {
     if (this->_meta_ready) {
         throw std::runtime_error("set_meta called twice");
     }
-    // 设置 meta
-    this->_ctx->meta = model::LlamaMeta::from_map(kv);
-    auto &meta = model::llama_meta(*this->_ctx);
-    auto &lctx = this->llama_ctx();
+    this->_meta = LlamaMeta::from_map(kv);
+    this->_meta_ready = true;
+    // 权重槽位 + 中间张量 + KV cache
+    this->_allocate_runtime();
+    // 预构建层对象（Llama 组装）
+    this->_build_layers();
+    // 预计算 inv_freq[dh/2]
+    auto &meta = dynamic_cast<LlamaMeta &>(*this->_meta);
     auto host_inv = meta.make_inv_freq();
-    lctx.inv_freq = Tensor::create({meta.dh / 2}, LLAISYS_DTYPE_F32, this->_device_type, this->_device_ids[0]);
+    auto &lctx = this->llama_ctx();
+    lctx.inv_freq = Tensor::create({meta.dh / 2}, LLAISYS_DTYPE_F32, this->_device_type, this->_device_id);
     lctx.inv_freq->load(host_inv.data());
-
-    // 分配上下文内存
-    this->allocate_runtime();
 }
 
 /**
  * 获取 llama 上下文
  * 1. 返回 llama 上下文
  */
-model::LlamaContext &Llama::llama_ctx() {
-    return static_cast<model::LlamaContext &>(*this->_ctx);
+LlamaContext &Llama::llama_ctx() {
+    return static_cast<LlamaContext &>(*this->_ctx);
+}
+
+/**
+ * 组装全部层：embedding → (attn + ffn) × nlayer → logit
+ * Llama 用独立的 Attention/FFN（rope 走 inv_freq），logit 复用 Qwen2 实现
+ */
+void Llama::_build_layers() {
+    this->_clear_layers();
+    auto &w = this->weights();
+    this->_add_layer(std::make_unique<LlamaEmbedding>(w));
+    for (size_t layer = 0; layer < this->meta().nlayer; ++layer) {
+        this->_add_layer(std::make_unique<LlamaAttention>(w.attn(layer), layer));
+        this->_add_layer(std::make_unique<LlamaFFN>(w.ffn(layer)));
+    }
+    this->_add_layer(std::make_unique<Qwen2Logit>(w));
 }
 
 /**
  * 前向推理
- * 1. 绑定 kv cache
- * 2. 绑定上下文运行时
- * 3. 设置上下文运行时
- * 4. 前向推理 embedding
- * 5. 前向推理 attention
- * 6. 前向推理 ffn
+ * 1. 绑定上下文运行时
+ * 2. 遍历预构建的层（set_meta 时已构建）
+ * 3. 采样
  */
-std::vector<int64_t> Llama::forward(model::BatchPack &pack, std::vector<int64_t> &block_ids, bool is_prefill) {
-    // 获取上下文
+engine::BatchOutput Llama::forward(const engine::BatchInput &input) {
     auto &ctx = this->llama_ctx();
-    // 获取模型参数
-    const auto &meta = model::llama_meta(ctx);
-    // 设置上下文运行时
-    ctx.runtime.is_prefill = is_prefill;
+    const auto &meta = dynamic_cast<const LlamaMeta &>(this->meta());
+    const auto &pack = std::get<engine::BatchPack>(input);
 
     // 绑定上下文运行时信息
-    this->bind_context_runtime(pack, block_ids, is_prefill);
+    ctx.bind(input, meta);
 
-    // 绑定 kv cache
-    this->bind_kv_caches();
-
-    // 前向推理 embedding
-    model::LlamaEmbedding{}.forward(ctx);
-
-    for (size_t layer = 0; layer < meta.nlayer; ++layer) {
-        // 前向推理 attention
-        model::LlamaAttention(model::LlamaWeights::attn(ctx, layer), layer).forward(ctx);
-        // 前向推理 ffn
-        model::LlamaFFN(model::LlamaWeights::ffn(ctx, layer)).forward(ctx);
+    // 遍历预构建的层（防御：未构建则构建）
+    if (this->_layers.empty()) {
+        this->_build_layers();
+    }
+    for (auto &layer : this->_layers) {
+        layer->forward(ctx);
     }
 
-    // 获取最后一层的 logits
-    const size_t batch_size = ctx.runtime.cut_idx.size() - 1;
-    auto last_token_indices = ctx.workspace.cut_idx->slice(0, 1, batch_size + 1);
-    // 前向推理 embedding
-    ops::embedding(ctx.workspace.x_part, last_token_indices, ctx.workspace.x, -1);
-    // 前向推理 rms norm
-    ops::rms_norm(ctx.workspace.x_part_norm, ctx.workspace.x_part, ctx.out_norm_w, meta.epsilon);
-    ops::linear(ctx.workspace.logits, ctx.workspace.x_part_norm, ctx.out_embed, nullptr);
-
-    return this->sample_from_logits(ctx.workspace.logits, pack);
+    // 采样 token 独立 Sampler
+    auto token_ids = this->_sampler.sample(ctx.current().logits, pack, this->_device_type, this->_device_id, meta.dtype);
+    engine::BatchOutput output;
+    output.emplace<std::vector<int64_t>>(std::move(token_ids));
+    return output;
 }
 
-} // namespace llaisys
+} // namespace llaisys::model

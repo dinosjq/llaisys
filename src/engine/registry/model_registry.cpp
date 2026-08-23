@@ -17,14 +17,13 @@ void ModelRegistry::register_model(const std::string &arch, ModelFactory factory
     g_factories[arch] = std::move(factory);
 }
 
-std::shared_ptr<Model> ModelRegistry::create(const std::string &arch, llaisysDeviceType_t device, int *device_ids,
-                                             int ndevice) {
+model_t ModelRegistry::create(const std::string &arch, llaisysDeviceType_t device, int device_id) {
     std::lock_guard<std::mutex> lock(g_mu);
     auto it = g_factories.find(arch);
     if (it == g_factories.end()) {
         return nullptr;
     }
-    return it->second(device, device_ids, ndevice);
+    return it->second(device, device_id);
 }
 
 } // namespace llaisys::model

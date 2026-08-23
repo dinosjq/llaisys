@@ -24,14 +24,29 @@ static constexpr size_t ELEMS_PER_LANE = 4;    // HD=128 / 32 lanes
 // v5 的 ncu 分析显示 Block Limit Registers=1 (occupancy 16%)。
 // 将 block 从 256→128 threads，每 SM 可驻留更多 block，提高 occupancy。
 // 每个 warp 处理 TILE_K/4 token（stride NW=4），Q load 用 for(h=warp_id; h<HEADS; h+=NW)。
-template <typename T, size_t HD, size_t HEADS, size_t TILE_K, size_t COALESCE,
-          size_t NUM_STAGES = 2, bool UNROLL = false>
-__global__ void flash_decoding_v6_kernel(
-    float *__restrict__ _attn_acc, float *__restrict__ _attn_sum, float *__restrict__ _attn_max,
-    const T *__restrict__ _q, const T *__restrict__ _k_cache, const T *__restrict__ _v_cache,
-    const int64_t *_block_ids, const int64_t *_cut_idx, const int64_t *_tot_len,
-    const size_t _token_num, const size_t _batch_size, const size_t _max_block_num,
-    const float _scale, const size_t _nh, const size_t _nkvh)
+ 
+template <typename T, 
+          size_t HD, 
+          size_t HEADS, 
+          size_t TILE_K, 
+          size_t COALESCE,
+          size_t NUM_STAGES = 2, 
+          bool UNROLL = false>
+__global__ void flash_decoding_v6_parallel_kernel(float *__restrict__ _attn_acc, 
+                                                  float *__restrict__ _attn_sum,
+                                                  float *__restrict__ _attn_max,
+                                                  const T *__restrict__ _q, 
+                                                  const T *__restrict__ _k_cache, 
+                                                  const T *__restrict__ _v_cache, 
+                                                  const int64_t *_block_ids,
+                                                  const int64_t *_cut_idx,
+                                                  const int64_t *_tot_len,
+                                                  const size_t _token_num,
+                                                  const size_t _batch_size,
+                                                  const size_t _max_block_num,
+                                                  const float _scale, 
+                                                  const size_t _nh,
+                                                  const size_t _nkvh)
 {
     const size_t rep = _nh / _nkvh;
     const size_t head_base = HEADS * blockIdx.y;
@@ -303,8 +318,13 @@ __global__ void flash_decoding_v6_reduce(
 }
 
 // ── Host launch ────────────────────────────────────────────────────
-template <typename T, size_t HD, size_t HEADS, size_t TILE_K, size_t COALESCE,
-          size_t NUM_STAGES = 2, bool UNROLL = false>
+template <typename T, 
+          size_t HD, 
+          size_t HEADS, 
+          size_t TILE_K, 
+          size_t COALESCE,
+          size_t NUM_STAGES = 2, 
+          bool UNROLL = false>
 void launch_v6_kernel(std::byte *attn_val, std::byte *attn_acc, std::byte *attn_sum, std::byte *attn_max,
                       const std::byte *q, const std::byte *k_cache, const std::byte *v_cache,
                       const std::byte *block_ids, const std::byte *cut_idx, const std::byte *tot_len,
@@ -345,130 +365,6 @@ void launch_v6_kernel(std::byte *attn_val, std::byte *attn_acc, std::byte *attn_
         d_attn, d_acc, d_sum, d_max, db, max_block_num, nh);
     CUDA_CHECK(cudaGetLastError());
 }
-
-// Archived parameter sweep. Retain it for research, but do not instantiate
-// thousands of CUDA variants in the experimental build.
-#if 0
-// ── NUM_STAGES/UNROLL 运行时分发 helper ─────────────────────────
-template <typename T, size_t HD, size_t H, size_t TK, size_t CO>
-static void launch_v6_dispatch(
-    std::byte *attn_val, std::byte *attn_acc, std::byte *attn_sum, std::byte *attn_max,
-    const std::byte *q, const std::byte *k_cache, const std::byte *v_cache,
-    const std::byte *block_ids, const std::byte *cut_idx, const std::byte *tot_len,
-    size_t token_num, size_t batch_size, size_t max_block_num,
-    size_t tot_block_num, size_t tot_task_num,
-    float scale, size_t nh, size_t nkvh, int ns, int ur)
-{
-    if (ns == 2 && !ur) launch_v6_kernel<T, HD, H, TK, CO, 2, false>(attn_val, attn_acc, attn_sum, attn_max,
-        q, k_cache, v_cache, block_ids, cut_idx, tot_len, token_num, batch_size, max_block_num,
-        tot_block_num, tot_task_num, scale, nh, nkvh);
-    else if (ns == 2 && ur) launch_v6_kernel<T, HD, H, TK, CO, 2, true>(attn_val, attn_acc, attn_sum, attn_max,
-        q, k_cache, v_cache, block_ids, cut_idx, tot_len, token_num, batch_size, max_block_num,
-        tot_block_num, tot_task_num, scale, nh, nkvh);
-    else if (ns == 3 && !ur) launch_v6_kernel<T, HD, H, TK, CO, 3, false>(attn_val, attn_acc, attn_sum, attn_max,
-        q, k_cache, v_cache, block_ids, cut_idx, tot_len, token_num, batch_size, max_block_num,
-        tot_block_num, tot_task_num, scale, nh, nkvh);
-    else launch_v6_kernel<T, HD, H, TK, CO, 3, true>(attn_val, attn_acc, attn_sum, attn_max,
-        q, k_cache, v_cache, block_ids, cut_idx, tot_len, token_num, batch_size, max_block_num,
-        tot_block_num, tot_task_num, scale, nh, nkvh);
-}
-
-// ── 模板分发: 4 HEADS × 2 TILE_K × 6 COALESCE = 48 路 ─────────
-template <typename T, size_t HD>
-static void flash_decoding_v6_impl(
-    std::byte *attn_val, std::byte *attn_acc, std::byte *attn_sum, std::byte *attn_max,
-    const std::byte *q, const std::byte *k_cache, const std::byte *v_cache,
-    const std::byte *block_ids, const std::byte *cut_idx, const std::byte *tot_len,
-    size_t token_num, size_t batch_size, size_t max_block_num,
-    size_t tot_block_num, size_t tot_task_num,
-    float scale, size_t nh, size_t nkvh, int heads, int tile_k, int coalesce, int ns, int ur)
-{
-#define V6_LAUNCH(H, TK, CO)                                                          \
-    launch_v6_dispatch<T, HD, H, TK, CO>(attn_val, attn_acc, attn_sum, attn_max,     \
-        q, k_cache, v_cache, block_ids, cut_idx, tot_len,                             \
-        token_num, batch_size, max_block_num, tot_block_num, tot_task_num, scale, nh, nkvh, ns, ur)
-
-    if (heads == 6 && tile_k == 8  && coalesce == 1) V6_LAUNCH(6, 8, 1);
-    else if (heads == 6 && tile_k == 8  && coalesce == 2) V6_LAUNCH(6, 8, 2);
-    else if (heads == 6 && tile_k == 8  && coalesce == 3) V6_LAUNCH(6, 8, 3);
-    else if (heads == 6 && tile_k == 8  && coalesce == 4) V6_LAUNCH(6, 8, 4);
-    else if (heads == 6 && tile_k == 8  && coalesce == 6) V6_LAUNCH(6, 8, 6);
-    else if (heads == 6 && tile_k == 8  && coalesce == 8) V6_LAUNCH(6, 8, 8);
-    else if (heads == 6 && tile_k == 16 && coalesce == 1) V6_LAUNCH(6, 16, 1);
-    else if (heads == 6 && tile_k == 16 && coalesce == 2) V6_LAUNCH(6, 16, 2);
-    else if (heads == 6 && tile_k == 16 && coalesce == 3) V6_LAUNCH(6, 16, 3);
-    else if (heads == 6 && tile_k == 16 && coalesce == 4) V6_LAUNCH(6, 16, 4);
-    else if (heads == 6 && tile_k == 16 && coalesce == 6) V6_LAUNCH(6, 16, 6);
-    else if (heads == 6 && tile_k == 16 && coalesce == 8) V6_LAUNCH(6, 16, 8);
-    else if (heads == 3 && tile_k == 8  && coalesce == 1) V6_LAUNCH(3, 8, 1);
-    else if (heads == 3 && tile_k == 8  && coalesce == 2) V6_LAUNCH(3, 8, 2);
-    else if (heads == 3 && tile_k == 8  && coalesce == 3) V6_LAUNCH(3, 8, 3);
-    else if (heads == 3 && tile_k == 8  && coalesce == 4) V6_LAUNCH(3, 8, 4);
-    else if (heads == 3 && tile_k == 8  && coalesce == 6) V6_LAUNCH(3, 8, 6);
-    else if (heads == 3 && tile_k == 8  && coalesce == 8) V6_LAUNCH(3, 8, 8);
-    else if (heads == 3 && tile_k == 16 && coalesce == 1) V6_LAUNCH(3, 16, 1);
-    else if (heads == 3 && tile_k == 16 && coalesce == 2) V6_LAUNCH(3, 16, 2);
-    else if (heads == 3 && tile_k == 16 && coalesce == 3) V6_LAUNCH(3, 16, 3);
-    else if (heads == 3 && tile_k == 16 && coalesce == 4) V6_LAUNCH(3, 16, 4);
-    else if (heads == 3 && tile_k == 16 && coalesce == 6) V6_LAUNCH(3, 16, 6);
-    else if (heads == 3 && tile_k == 16 && coalesce == 8) V6_LAUNCH(3, 16, 8);
-    else if (heads == 2 && tile_k == 8  && coalesce == 1) V6_LAUNCH(2, 8, 1);
-    else if (heads == 2 && tile_k == 8  && coalesce == 2) V6_LAUNCH(2, 8, 2);
-    else if (heads == 2 && tile_k == 8  && coalesce == 3) V6_LAUNCH(2, 8, 3);
-    else if (heads == 2 && tile_k == 8  && coalesce == 4) V6_LAUNCH(2, 8, 4);
-    else if (heads == 2 && tile_k == 8  && coalesce == 6) V6_LAUNCH(2, 8, 6);
-    else if (heads == 2 && tile_k == 8  && coalesce == 8) V6_LAUNCH(2, 8, 8);
-    else if (heads == 2 && tile_k == 16 && coalesce == 1) V6_LAUNCH(2, 16, 1);
-    else if (heads == 2 && tile_k == 16 && coalesce == 2) V6_LAUNCH(2, 16, 2);
-    else if (heads == 2 && tile_k == 16 && coalesce == 3) V6_LAUNCH(2, 16, 3);
-    else if (heads == 2 && tile_k == 16 && coalesce == 4) V6_LAUNCH(2, 16, 4);
-    else if (heads == 2 && tile_k == 16 && coalesce == 6) V6_LAUNCH(2, 16, 6);
-    else if (heads == 2 && tile_k == 16 && coalesce == 8) V6_LAUNCH(2, 16, 8);
-    else if (heads == 1 && tile_k == 8  && coalesce == 1) V6_LAUNCH(1, 8, 1);
-    else if (heads == 1 && tile_k == 8  && coalesce == 2) V6_LAUNCH(1, 8, 2);
-    else if (heads == 1 && tile_k == 8  && coalesce == 3) V6_LAUNCH(1, 8, 3);
-    else if (heads == 1 && tile_k == 8  && coalesce == 4) V6_LAUNCH(1, 8, 4);
-    else if (heads == 1 && tile_k == 8  && coalesce == 6) V6_LAUNCH(1, 8, 6);
-    else if (heads == 1 && tile_k == 8  && coalesce == 8) V6_LAUNCH(1, 8, 8);
-    else if (heads == 1 && tile_k == 16 && coalesce == 1) V6_LAUNCH(1, 16, 1);
-    else if (heads == 1 && tile_k == 16 && coalesce == 2) V6_LAUNCH(1, 16, 2);
-    else if (heads == 1 && tile_k == 16 && coalesce == 3) V6_LAUNCH(1, 16, 3);
-    else if (heads == 1 && tile_k == 16 && coalesce == 4) V6_LAUNCH(1, 16, 4);
-    else if (heads == 1 && tile_k == 16 && coalesce == 6) V6_LAUNCH(1, 16, 6);
-    else if (heads == 1 && tile_k == 16 && coalesce == 8) V6_LAUNCH(1, 16, 8);
-    else ASSERT(false, "flash_decoding_v6: unsupported (heads, tile_k, coalesce)");
-
-#undef V6_LAUNCH
-    CUDA_CHECK(cudaGetLastError());
-}
-
-template <typename T>
-static void flash_decoding_v6_dispatch(
-    std::byte *attn_val, std::byte *attn_acc, std::byte *attn_sum, std::byte *attn_max,
-    const std::byte *q, const std::byte *k_cache, const std::byte *v_cache,
-    const std::byte *block_ids, const std::byte *cut_idx, const std::byte *tot_len,
-    size_t token_num, size_t batch_size, size_t max_block_num,
-    size_t tot_block_num, size_t tot_task_num,
-    float scale, size_t nh, size_t dv, size_t d, size_t nkvh,
-    int heads, int tile_k, int coalesce, int ns, int ur)
-{
-    ASSERT(d == dv, "flash_decoding_v6: d must equal dv.");
-#define V6_IMPL(HD)                                                                   \
-    flash_decoding_v6_impl<T, HD>(attn_val, attn_acc, attn_sum, attn_max,            \
-        q, k_cache, v_cache, block_ids, cut_idx, tot_len,                             \
-        token_num, batch_size, max_block_num, tot_block_num, tot_task_num,            \
-        scale, nh, nkvh, heads, tile_k, coalesce, ns, ur)
-    switch (d) {
-    case 128: V6_IMPL(128); break;
-    case 64:  V6_IMPL(64);  break;
-    case 32:  V6_IMPL(32);  break;
-    case 16:  V6_IMPL(16);  break;
-    case 8:   V6_IMPL(8);   break;
-    default:  ASSERT(false, "flash_decoding_v6: unsupported head_dim.");
-    }
-#undef V6_IMPL
-}
-#endif
 
 // The only retained experimental configuration. It is the documented optimum
 // for the RTX 4060 / Qwen2-1.5B BF16 profile: H6/T16/C1/S2/U1.
