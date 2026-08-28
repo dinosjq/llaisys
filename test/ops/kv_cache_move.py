@@ -1,9 +1,13 @@
 import argparse
+import os
 from pathlib import Path
 import sys
 
 import torch
 
+
+parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, parent_dir)
 
 ROOT = Path(__file__).resolve().parents[2]
 KERNEL_SOURCE = ROOT / "src/ops/kv_cache_move/nvidia/kv_cache_move_nvidia.cu"
@@ -33,16 +37,17 @@ def torch_kv_cache_move_reference(
 
 
 def test_static_guards() -> None:
-    """Keep the no-GPU safety and vector-copy paths from regressing."""
+    """Keep the no-GPU safety and 1D-grid/batch-lookup paths from regressing."""
     kernel_source = KERNEL_SOURCE.read_text()
     op_source = OP_SOURCE.read_text()
     test_source = Path(__file__).read_text()
 
-    assert "copy_4d(in + i, out + i)" in kernel_source
-    assert "numel % kVectorWidth" in kernel_source
+    # 1D grid over tot_token_num; kernel maps each global token back to its batch.
+    assert "gridDim(tot_token_num)" in kernel_source
+    assert "cut_idx[batch + 1]" in kernel_source
     assert "tensor" + ".load(" not in test_source
     assert "MemcpyKind.D2D" in test_source
-    for parameter in ("token_num", "max_block_num", "max_seq_len", "numel"):
+    for parameter in ("block_size", "max_block_num", "tot_token_num", "numel"):
         assert f"{parameter} > 0" in op_source
 
 
@@ -113,7 +118,7 @@ def test_kv_cache_move(dtype_name: str) -> None:
     cut_idx_ll = copy_to_llaisys(cut_idx, llaisys.DataType.I64, llaisys_device)
     pos_ids_ll = copy_to_llaisys(pos_ids, llaisys.DataType.I64, llaisys_device)
 
-    llaisys.Ops.kv_cache_move(out_ll, inp_ll, block_ids_ll, cut_idx_ll, pos_ids_ll, max_seq_len=3)
+    llaisys.Ops.kv_cache_move(out_ll, inp_ll, block_ids_ll, cut_idx_ll, pos_ids_ll)
 
     actual = copy_from_llaisys(out_ll, torch_dtype)
     assert torch.equal(actual, expected), f"kv_cache_move mismatch for {dtype_name}"

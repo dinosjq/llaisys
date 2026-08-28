@@ -37,13 +37,11 @@ target("llaisys-ops-nvidia")
     end
     -- 目标 GPU (RTX 4060 = Ada sm_89)；mma/cp.async 需 sm_80+
 
-    -- v3 is the active Decode implementation. v4 is archival; v6 is compiled
-    -- only for explicit experiments so unused CUDA modules do not inflate
-    -- first-inference module loading time.
-    add_files("../src/ops/*/nvidia/*.cu|paged_attention/nvidia/flash_decoding_v4_nvidia.cu|paged_attention/nvidia/flash_decoding_v6_nvidia.cu")
-    if has_config("flash-v6-experiment") then
-        add_files("../src/ops/paged_attention/nvidia/flash_decoding_v6_nvidia.cu")
-    end
+    -- flash_decoding_nvidia.cu (warp-per-q 重写版) is the active Decode
+    -- implementation. v4/v6_plus are archival; v3/v6 kept for A/B benchmark
+    -- (llaisysFlashDecodingV3/V6 C API), v3's legacy `flash_decoding` renamed
+    -- to flash_decoding_v3_legacy to avoid symbol clash with the active impl.
+    add_files("../src/ops/*/nvidia/*.cu|paged_attention/nvidia/flash_decoding_v4_nvidia.cu|paged_attention/nvidia/flash_decoding_v6_nvidia_plus.cu")
 
     on_install(function (target) end)
 target_end()

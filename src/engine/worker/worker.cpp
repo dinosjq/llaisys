@@ -1,7 +1,9 @@
 #include "worker.hpp"
 
-
 namespace llaisys::engine{
+
+// prefill 分块粒度，与 paged_attention_nvidia.cu 的 BLOCK_M 保持一致
+static constexpr size_t PREFILL_BLOCK_M = 8;
 
 Worker::Worker(llaisysDeviceType_t device_type, int device_id, model::model_t model)
     : _device_type(device_type), _device_id(device_id), _model(std::move(model)) {}
@@ -28,9 +30,8 @@ BatchInput Worker::prepare(const std::vector<seq_t> &seqs, const size_t table_wi
     std::vector<float> top_ps;
     std::vector<float> temperatures;
     std::vector<std::mt19937 *> rngs;
-    // 批次信息
-    size_t max_seq_len = 0;
-    size_t tot_block_num = 0;
+    // 任务总数
+    size_t tot_task_num = 0;
 
     // 预处理块表
     for (size_t i = 0; i < batch_size; ++i) {
@@ -43,9 +44,7 @@ BatchInput Worker::prepare(const std::vector<seq_t> &seqs, const size_t table_wi
         // 复制
         std::copy(seqs[i]->block_ids().begin(), seqs[i]->block_ids().end(), block_ids.begin() + offset + 1);
     }
-    // 总块数 = 最后一行第一列（累计块数）；back() 可能是未使用的 -1 位置
-    tot_block_num = static_cast<size_t>(block_ids[(batch_size - 1) * table_width]);
-    
+
     // 预处理序列信息
     for (size_t i = 0; i < batch_size; ++i) {
         seq_t seq = seqs[i];
@@ -59,7 +58,11 @@ BatchInput Worker::prepare(const std::vector<seq_t> &seqs, const size_t table_wi
         }
         cut_idx.push_back(cut_idx.back() + seq_len);
         tot_len.push_back(begin + seq_len);
-        max_seq_len = std::max(max_seq_len, seq_len);
+        if (is_prefill) {
+            tot_task_num += (seq_len + PREFILL_BLOCK_M - 1) / PREFILL_BLOCK_M;
+        } else {
+            tot_task_num += seqs[i]->block_ids().size();
+        }
     }
 
     // 采样参数
@@ -69,7 +72,7 @@ BatchInput Worker::prepare(const std::vector<seq_t> &seqs, const size_t table_wi
         temperatures.push_back(seqs[i]->temperature());
         rngs.push_back(&seqs[i]->rng());
     }
-    return BatchPack{token_ids, pos_ids, cut_idx, tot_len, block_ids, top_ks, top_ps, temperatures, rngs, batch_size, max_seq_len, tot_block_num, is_prefill};
+    return BatchPack{token_ids, pos_ids, cut_idx, tot_len, block_ids, top_ks, top_ps, temperatures, rngs, batch_size, tot_task_num, is_prefill};
 }
 
 BatchOutput Worker::forward(const BatchInput &input) {

@@ -25,7 +25,7 @@ Engine::~Engine() {
 
 void Engine::_ensure_scheduler() {
     if (!this->_scheduler) {
-        this->_scheduler = std::make_shared<Scheduler>(KV_CACHE_TOKEN_NUM, KV_CACHE_BLOCK_NUM, BATCH_MAX_TOKEN_NUM,
+        this->_scheduler = std::make_shared<Scheduler>(KV_CACHE_BLOCK_SIZE, KV_CACHE_BLOCK_NUM, BATCH_MAX_TOKEN_NUM,
                                                        BATCH_MAX_SEQ_NUM, this->_worker->model().end_token());
     }
 }

@@ -48,12 +48,11 @@ void Qwen2Attention::forward(Qwen2Context &ctx) {
     ops::rope(ws.q_rope, ws.q->view({token_count, nh, dh}), ws.pos_ids, meta.theta);
     ops::rope(ws.k_rope, ws.k->view({token_count, nkvh, dh}), ws.pos_ids, meta.theta);
 
-    ops::kv_cache_move(ctx.k_caches[layer], ws.k_rope, ws.block_ids, ws.cut_idx, ws.pos_ids, ctx.runtime().max_seq_len);
-    ops::kv_cache_move(ctx.v_caches[layer], ws.v->view({token_count, nkvh, dh}), ws.block_ids, ws.cut_idx, ws.pos_ids,
-                       ctx.runtime().max_seq_len);
+    ops::kv_cache_move(ctx.k_caches[layer], ws.k_rope, ws.block_ids, ws.cut_idx, ws.pos_ids);
+    ops::kv_cache_move(ctx.v_caches[layer], ws.v->view({token_count, nkvh, dh}), ws.block_ids, ws.cut_idx, ws.pos_ids);
 
     ops::paged_attention(ws.attn_val, ws.q_rope, ctx.k_caches[layer], ctx.v_caches[layer], ws.block_ids, ws.cut_idx,
-                         ws.tot_len, ctx.runtime().max_seq_len, ctx.runtime().tot_block_num, scale, ctx.runtime().is_prefill,
+                         ws.tot_len, ctx.runtime().tot_task_num, scale, ctx.runtime().is_prefill,
                          ws.attn_acc, ws.attn_sum, ws.attn_max);
 
     layers::utils::linear_proj(ws.attn_out, ws.attn_val->view({token_count, hs}), w.o_w, w8 ? w8->o_scale : nullptr,

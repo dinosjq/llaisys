@@ -450,9 +450,9 @@ static void flash_decoding_v3_dispatch(
 #undef V3_IMPL
 }
 
-// ── 主接口（op.cpp 通过 .cuh 声明调用；自动选参）──────────────
+// ── legacy 主接口：仅经 llaisysFlashDecodingV3 C API 调用（改名避免与当前 flash_decoding 符号冲突）──
 namespace llaisys::ops::nvidia {
-void flash_decoding(std::byte *attn_val, std::byte *attn_acc, std::byte *attn_sum, std::byte *attn_max,
+void flash_decoding_v3_legacy(std::byte *attn_val, std::byte *attn_acc, std::byte *attn_sum, std::byte *attn_max,
                     const std::byte *q, const std::byte *k_cache, const std::byte *v_cache,
                     const std::byte *block_ids, const std::byte *cut_idx, const std::byte *tot_len,
                     const size_t token_num, const size_t batch_size, const size_t max_block_num,

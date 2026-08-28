@@ -67,5 +67,5 @@ C/C++ 用 `clang-format`（`-style=file`，见根目录 `.clang-format`），Pyt
 6. **`docs/format.md` 是误导**：文件名像代码格式文档，实际内容是 profile 输出格式示例，别引用来解释 clang-format。
 7. **bf16 权重加载**需要 `ml_dtypes` 已安装，否则显式抛 RuntimeError。
 8. **历史回归点**（`docs/record/`）：`max_new_tokens` 曾因未贯穿到 C++ 导致已完成 sequence 不被调度器清理——动序列生命周期代码时注意参数贯穿。
-9. **模型层易错点**（见 `memory/` 与过往修复）：`llaisysLinear` 的 `bias==nullptr` 是合法无偏置路径；`Sequence::_cached_ntoken` 必须初始化为 0；`Sequence::last_block_token_num()` 用 `KV_CACHE_TOKEN_NUM`（不是 `KV_CACHE_BLOCK_NUM`）。
+9. **模型层易错点**（见 `memory/` 与过往修复）：`llaisysLinear` 的 `bias==nullptr` 是合法无偏置路径；`Sequence::_cached_ntoken` 必须初始化为 0；`Sequence::last_block_token_num()` 用 `KV_CACHE_BLOCK_SIZE`（不是 `KV_CACHE_BLOCK_NUM`）。
 10. **`docs/improve/` 里的 NF4 / Hadamard** 是训练营作业题文档，不是已实现功能；量化现状是 NVIDIA 专用 W8A16（`linear_w8a16` 等）。

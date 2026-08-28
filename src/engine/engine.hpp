@@ -35,8 +35,7 @@ struct BatchPack {
     std::vector<float> temperatures;
     std::vector<std::mt19937 *> rngs;
     size_t batch_size = 0;
-    size_t max_seq_len = 0;
-    size_t tot_block_num = 0;
+    size_t tot_task_num = 0;
     bool is_prefill = true;
 };
 

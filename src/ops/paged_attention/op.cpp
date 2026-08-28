@@ -9,7 +9,7 @@
 #include "nvidia/flash_decoding_nvidia.cuh"
 
 namespace llaisys::ops {
-void paged_attention(tensor_t attn_val, tensor_t q, tensor_t k_cache, tensor_t v_cache, tensor_t block_ids, tensor_t cut_idx, tensor_t tot_len, size_t max_seq_len, size_t tot_block_num, float scale, bool is_prefill, tensor_t attn_acc, tensor_t attn_sum, tensor_t attn_max)
+void paged_attention(tensor_t attn_val, tensor_t q, tensor_t k_cache, tensor_t v_cache, tensor_t block_ids, tensor_t cut_idx, tensor_t tot_len, size_t tot_task_num, float scale, bool is_prefill, tensor_t attn_acc, tensor_t attn_sum, tensor_t attn_max)
 {
     // 检查设备一致性
     CHECK_SAME_DEVICE(attn_val, q, k_cache, v_cache, block_ids, cut_idx, tot_len);
@@ -37,13 +37,13 @@ void paged_attention(tensor_t attn_val, tensor_t q, tensor_t k_cache, tensor_t v
     ASSERT(q_shape[2] == k_shape[3], "paged_attention: d is not satisfied.");
     ASSERT(k_shape[2] == v_shape[2], "paged_attention: nkvh is not satisfied.");
     ASSERT(k_shape[0] == v_shape[0], "paged_attention: block_num is not satisfied.");
-    ASSERT(k_shape[1] == v_shape[1], "paged_attention: token_num is not satisfied.");
+    ASSERT(k_shape[1] == v_shape[1], "paged_attention: block_size is not satisfied.");
     ASSERT(k_shape[2] != 0 && q_shape[1] % k_shape[2] == 0, "paged_attention: nh and nkvh are not satisfied.");
 
     const size_t nh = attn_val_shape[1];
     const size_t dv = attn_val_shape[2];
     const size_t d = q_shape[2];
-    const size_t token_num = k_shape[1];
+    const size_t block_size = k_shape[1];
     const size_t nkvh = k_shape[2];
     
     const size_t batch_size = block_ids_shape[0];
@@ -56,17 +56,17 @@ void paged_attention(tensor_t attn_val, tensor_t q, tensor_t k_cache, tensor_t v
     switch (attn_val->deviceType()) {
     case LLAISYS_DEVICE_CPU:
         return cpu::paged_attention(attn_val->data(), q->data(), k_cache->data(), v_cache->data(), block_ids->data(), cut_idx->data(), tot_len->data(),
-                                        token_num, batch_size, max_block_num, max_seq_len, attn_val->dtype(), scale, nh, dv, d, nkvh);
+                                        block_size, batch_size, max_block_num, tot_task_num, attn_val->dtype(), scale, nh, dv, d, nkvh);
 #ifdef ENABLE_NVIDIA_API
     case LLAISYS_DEVICE_NVIDIA:
         if(is_prefill){
             return nvidia::paged_attention(attn_val->data(), q->data(), k_cache->data(), v_cache->data(), block_ids->data(), cut_idx->data(), tot_len->data(),
-                                    token_num, batch_size, max_block_num, max_seq_len, attn_val->dtype(), scale, nh, dv, d, nkvh);
+                                    block_size, batch_size, max_block_num, tot_task_num, attn_val->dtype(), scale, nh, dv, d, nkvh);
         } else {
             ASSERT(attn_acc && attn_sum && attn_max, "paged_attention: flash_decoding requires attn_acc/sum/max buffers.");
             return nvidia::flash_decoding(attn_val->data(), attn_acc->data(), attn_sum->data(), attn_max->data(),  q->data(), k_cache->data(),
-                                        v_cache->data(), block_ids->data(), cut_idx->data(), tot_len->data(), token_num, batch_size, max_block_num,
-                                        tot_block_num, max_seq_len, attn_val->dtype(), scale, nh, dv, d, nkvh);
+                                        v_cache->data(), block_ids->data(), cut_idx->data(), tot_len->data(), block_size, batch_size, max_block_num,
+                                        tot_task_num, attn_val->dtype(), scale, nh, dv, d, nkvh);
         }
 #endif
     default:

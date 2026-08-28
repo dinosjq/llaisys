@@ -14,8 +14,8 @@ void Qwen2Context::allocate(llaisysDeviceType_t device, int device_id, Qwen2Meta
     const size_t batch_max_token_num = BATCH_MAX_TOKEN_NUM;
     const size_t batch_max_seq_num = BATCH_MAX_SEQ_NUM;
     const size_t max_block_num = MAX_BLOCK_NUM;
-    const size_t token_num = KV_CACHE_TOKEN_NUM;
-    const size_t block_num = KV_CACHE_BLOCK_NUM;
+    const size_t block_size = KV_CACHE_BLOCK_SIZE;   // 每块 token 数
+    const size_t block_num = KV_CACHE_BLOCK_NUM;     // 块总数
 
     // 保存模型配置（layer 通过 ctx.meta 读取）
     this->meta = std::move(meta);
@@ -50,15 +50,15 @@ void Qwen2Context::allocate(llaisysDeviceType_t device, int device_id, Qwen2Meta
     _buf._token_ids = Tensor::create({BATCH_MAX_TOKEN_NUM}, LLAISYS_DTYPE_I64, device, device_id);
 
     // 分层 KV cache
-    const size_t block_size = block_num * token_num * nkvh * dh;
+    const size_t cache_numel = block_num * block_size * nkvh * dh;
     this->k_caches = std::vector<tensor_t>(nlayer, nullptr);
     this->v_caches = std::vector<tensor_t>(nlayer, nullptr);
-    tensor_t cache = Tensor::create({2, nlayer, block_size}, dtype, device, device_id);
-    tensor_t k_cache = cache->slice(0, 0, 1)->reshape({nlayer, block_size});
-    tensor_t v_cache = cache->slice(0, 1, 2)->reshape({nlayer, block_size});
+    tensor_t cache = Tensor::create({2, nlayer, cache_numel}, dtype, device, device_id);
+    tensor_t k_cache = cache->slice(0, 0, 1)->reshape({nlayer, cache_numel});
+    tensor_t v_cache = cache->slice(0, 1, 2)->reshape({nlayer, cache_numel});
     for (size_t i = 0; i < nlayer; ++i) {
-        this->k_caches[i] = k_cache->slice(0, i, i + 1)->reshape({block_num, token_num, nkvh, dh});
-        this->v_caches[i] = v_cache->slice(0, i, i + 1)->reshape({block_num, token_num, nkvh, dh});
+        this->k_caches[i] = k_cache->slice(0, i, i + 1)->reshape({block_num, block_size, nkvh, dh});
+        this->v_caches[i] = v_cache->slice(0, i, i + 1)->reshape({block_num, block_size, nkvh, dh});
     }
 }
 
@@ -71,8 +71,7 @@ void Qwen2Context::bind(const engine::BatchInput &input, Qwen2Meta meta) {
     const std::vector<int64_t> &cut_idx = pack.cut_idx;
     const std::vector<int64_t> &tot_len = pack.tot_len;
     const std::vector<int64_t> &block_ids = pack.block_ids;
-    const size_t max_seq_len = pack.max_seq_len;
-    const size_t tot_block_num = pack.tot_block_num;
+    const size_t tot_task_num = pack.tot_task_num;
     const size_t batch_size = tot_len.size();
     const size_t tot_seq_len = token_ids.size();
     const size_t max_block_num = MAX_BLOCK_NUM;
@@ -120,8 +119,7 @@ void Qwen2Context::bind(const engine::BatchInput &input, Qwen2Meta meta) {
     _cur.token_ids->load(token_ids.data());
 
     // 保存运行时标量（layer 通过 ctx.runtime() 读取）
-    this->_runtime.max_seq_len = max_seq_len;
-    this->_runtime.tot_block_num = tot_block_num;
+    this->_runtime.tot_task_num = tot_task_num;
     this->_runtime.is_prefill = pack.is_prefill;
     this->meta = std::move(meta);
 }

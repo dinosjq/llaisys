@@ -62,7 +62,7 @@ size_t Sequence::token_num(){
 }
 
 size_t Sequence::block_num(){ 
-    return (this->_ntoken + KV_CACHE_TOKEN_NUM  - 1) / KV_CACHE_TOKEN_NUM; 
+    return (this->_ntoken + KV_CACHE_BLOCK_SIZE  - 1) / KV_CACHE_BLOCK_SIZE; 
 }
 
 size_t &Sequence::cached_token_num(){
@@ -82,7 +82,7 @@ size_t &Sequence::scheduled_token_num(){
 }
 
 size_t Sequence::last_block_token_num() { 
-    return this->_ntoken - (this->block_num() - 1) * KV_CACHE_TOKEN_NUM; 
+    return this->_ntoken - (this->block_num() - 1) * KV_CACHE_BLOCK_SIZE; 
 }
 
 int64_t Sequence::last_token(){
@@ -105,8 +105,8 @@ std::vector<int64_t> &Sequence::block_ids(){
 
 std::pair<int64_t *, size_t> Sequence::block(size_t i){ 
     ASSERT(0 <= i && i < this->block_num(), "Sequence_block: out range.");
-    size_t block_token_num = (i != this->block_num() - 1) ? KV_CACHE_TOKEN_NUM : this->last_block_token_num();
-    return std::make_pair(this->_token_ids.data() + i * KV_CACHE_TOKEN_NUM, block_token_num);
+    size_t block_token_num = (i != this->block_num() - 1) ? KV_CACHE_BLOCK_SIZE : this->last_block_token_num();
+    return std::make_pair(this->_token_ids.data() + i * KV_CACHE_BLOCK_SIZE, block_token_num);
 }
 
 void Sequence::add(int64_t token){

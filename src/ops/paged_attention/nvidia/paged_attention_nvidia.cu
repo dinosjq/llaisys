@@ -42,7 +42,7 @@ __device__ __forceinline__ void load_paged_kv_row(
     const size_t kv_end,
     const size_t buffer,
     const size_t row,
-    const size_t token_num,
+    const size_t block_size,
     const size_t nkvhead,
     const size_t nkvh,
     const size_t d,
@@ -51,10 +51,10 @@ __device__ __forceinline__ void load_paged_kv_row(
         return;
     }
 
-    const int64_t block_id = block_ids[logical_token / token_num + 1];
-    const size_t block_token = logical_token % token_num;
-    const T *k_src = k_cache + ((block_id * token_num + block_token) * nkvhead + nkvh) * d;
-    const T *v_src = v_cache + ((block_id * token_num + block_token) * nkvhead + nkvh) * dv;
+    const int64_t block_id = block_ids[logical_token / block_size + 1];
+    const size_t block_token = logical_token % block_size;
+    const T *k_src = k_cache + ((block_id * block_size + block_token) * nkvhead + nkvh) * d;
+    const T *v_src = v_cache + ((block_id * block_size + block_token) * nkvhead + nkvh) * dv;
     float *k_dst = s_k + (buffer * KV_TILE + row) * d;
     float *v_dst = s_v + (buffer * KV_TILE + row) * dv;
     const size_t col = (threadIdx.x & (WARP_SIZE - 1)) * VEC_SIZE;
@@ -76,8 +76,9 @@ __global__ void paged_attention_kernel(T *__restrict__ _attn,
                                        const int64_t *_block_ids,
                                        const int64_t *_cut_idx,
                                        const int64_t *_tot_len,
-                                       const size_t _token_num,
-                                       const size_t _max_block_num,
+                                       const size_t _block_size,
+                                       const size_t _batch_size,
+                                       const size_t _table_width,
                                        const float _scale, 
                                        const size_t _nhead, 
                                        const size_t _dv, 
@@ -100,7 +101,13 @@ __global__ void paged_attention_kernel(T *__restrict__ _attn,
     const int64_t seq_len_i64 = _cut_idx[batch_id + 1] - q_start;
     const int64_t total_len_i64 = _tot_len[batch_id];
     const int64_t prefix_len_i64 = total_len_i64 - seq_len_i64;
-    const size_t q_base = blockIdx.x * BLOCK_M;
+    // 全局 task -> 本 batch 的 q 分块：统计前面 batch 的任务数
+    size_t pre_task_num = 0;
+    for (size_t i = 0; i < batch_id && i < _batch_size; ++i) {
+        const int64_t slen = _cut_idx[i + 1] - _cut_idx[i];
+        pre_task_num += (slen + BLOCK_M - 1) / BLOCK_M;
+    }
+    const size_t q_base = (blockIdx.x - pre_task_num) * BLOCK_M;
 
     // Every predicate here is block-uniform, so returning before the first
     // block-wide barrier is safe.
@@ -117,7 +124,7 @@ __global__ void paged_attention_kernel(T *__restrict__ _attn,
     const size_t nh = blockIdx.y;
     const size_t kv_rep = _nhead / _nkvhead;
     const size_t nkvh = nh / kv_rep;
-    const int64_t *batch_block_ids = _block_ids + batch_id * _max_block_num;
+    const int64_t *batch_block_ids = _block_ids + batch_id * _table_width;
 
     float4 q_frag[2] = {zero_float4(), zero_float4()};
     float4 acc_frag[2] = {zero_float4(), zero_float4()};
@@ -148,7 +155,7 @@ __global__ void paged_attention_kernel(T *__restrict__ _attn,
     if (producer_warp) {
         load_paged_kv_row(
             s_k, s_v, _K_cache, _V_cache, batch_block_ids,
-            producer_row, kv_end, 0, producer_row, _token_num,
+            producer_row, kv_end, 0, producer_row, _block_size,
             _nkvhead, nkvh, _d, _dv);
     }
 
@@ -162,7 +169,7 @@ __global__ void paged_attention_kernel(T *__restrict__ _attn,
             load_paged_kv_row(
                 s_k, s_v, _K_cache, _V_cache, batch_block_ids,
                 next_token, kv_end, buffer ^ 1, producer_row,
-                _token_num, _nkvhead, nkvh, _d, _dv);
+                _block_size, _nkvhead, nkvh, _d, _dv);
         }
 
         if (consumer_warp) {
@@ -256,13 +263,13 @@ void paged_attention_launch(std::byte *attn_val,       // 输出 (tot_seqlen, nh
                             const std::byte *q,        // q (tot_seqlen, nh, d)
                             const std::byte *k_cache,  // k底层缓存 (tot_len, nkvh, d) 
                             const std::byte *v_cache,  // q底层缓存 (tot_len, nkvh, dv)
-                            const std::byte *block_ids,// 块表 (batch, block_ids_size | block_ids)  kv cache布局: (block_num, token_num, nkvh, d | dv) 
+                            const std::byte *block_ids,// 块表 (batch, block_ids_size | block_ids)  kv cache布局: (block_num, block_size, nkvh, d | dv) 
                             const std::byte *cut_idx,  // 记录对应序列起始位置，也可计算seqlen
                             const std::byte *tot_len,  // 已计算kv总长
-                            const size_t token_num,    // 每个块的token数 (批次无关)
+                            const size_t block_size,   // 每个块的token数 (批次无关)
                             const size_t batch_size,   // 批次大小 (批次有关)
-                            const size_t max_block_num,// 块表最多块数 (批次无关)
-                            const size_t max_seq_len,  // 最大序列长度 用于分块 (批次无关)
+                            const size_t table_width,  // 块表最多块数 (批次无关)
+                            const size_t tot_task_num, // 任务总数 Σceil(seq_len/BLOCK_M) (批次有关)
                             const float &scale,        // 缩放因子
                             const size_t &nh,          // 其他参数 ...
                             const size_t &dv, 
@@ -272,12 +279,12 @@ void paged_attention_launch(std::byte *attn_val,       // 输出 (tot_seqlen, nh
     if (d == 0 || dv == 0
         || d > HEAD_DIM_MAX || dv > HEAD_DIM_MAX
         || d % 32 != 0 || dv % 32 != 0
-        || token_num == 0 || nkvh == 0 || nh % nkvh != 0) {
+        || block_size == 0 || nkvh == 0 || nh % nkvh != 0) {
         throw std::invalid_argument(
             "paged_attention requires d,dv in {32,64,96,128}, "
-            "token_num > 0, nkvh > 0, and nh divisible by nkvh");
+            "block_size > 0, nkvh > 0, and nh divisible by nkvh");
     }
-    if (batch_size == 0 || nh == 0 || max_seq_len == 0) {
+    if (batch_size == 0 || nh == 0 || tot_task_num == 0) {
         return;
     }
 
@@ -290,13 +297,13 @@ void paged_attention_launch(std::byte *attn_val,       // 输出 (tot_seqlen, nh
     const auto *d_tot_len = reinterpret_cast<const int64_t *>(tot_len);
 
     dim3 blockDim(BLOCK_DIM);
-    dim3 gridDim((max_seq_len + BLOCK_M - 1) / BLOCK_M, nh, batch_size);
+    dim3 gridDim(tot_task_num, nh, batch_size);
 
     const size_t smem_bytes = sizeof(float) * 2 * KV_TILE * (d + dv);
 
     paged_attention_kernel<<<gridDim, blockDim, smem_bytes>>>(
         d_attn, d_q, d_k_cache, d_v_cache, d_block_ids, d_cut_idx,
-        d_tot_len, token_num, max_block_num, scale, nh, dv, d, nkvh);
+        d_tot_len, block_size, batch_size, table_width, scale, nh, dv, d, nkvh);
 
     CUDA_CHECK(cudaGetLastError());
 }
@@ -306,13 +313,13 @@ void paged_attention(std::byte *attn_val,       // 输出 (tot_seqlen, nh, dv)
                      const std::byte *q,        // q (tot_seqlen, nh, d)
                      const std::byte *k_cache,  // k底层缓存 (tot_len, nkvh, d) 
                      const std::byte *v_cache,  // q底层缓存 (tot_len, nkvh, dv)
-                     const std::byte *block_ids,// 块表 (batch, block_ids_size | block_ids)  kv cache布局: (block_num, token_num, nkvh, d | dv) 
+                     const std::byte *block_ids,// 块表 (batch, block_ids_size | block_ids)  kv cache布局: (block_num, block_size, nkvh, d | dv) 
                      const std::byte *cut_idx,  // 记录对应序列起始位置，也可计算seqlen
                      const std::byte *tot_len,  // 已计算kv总长
-                     const size_t token_num,    // 每个块的token数
+                     const size_t block_size,   // 每个块的token数
                      const size_t batch_size,   // 批次大小
-                     const size_t max_block_num,// 块表最多块数
-                     const size_t max_seq_len,  // 最大序列长度 用于分块
+                     const size_t table_width,  // 块表最多块数
+                     const size_t tot_task_num, // 任务总数 Σceil(seq_len/BLOCK_M)（grid.x）
                      llaisysDataType_t dtype,   // 权重数据类型
                      const float &scale,        // 缩放因子
                      const size_t &nh,          // 其他参数 ...
@@ -322,14 +329,14 @@ void paged_attention(std::byte *attn_val,       // 输出 (tot_seqlen, nh, dv)
 {
     switch (dtype) {
     case LLAISYS_DTYPE_F32:
-        return paged_attention_launch<float>(attn_val, q, k_cache, v_cache, block_ids, cut_idx, tot_len, token_num,
-                                             batch_size, max_block_num, max_seq_len, scale, nh, dv, d, nkvh);
+        return paged_attention_launch<float>(attn_val, q, k_cache, v_cache, block_ids, cut_idx, tot_len, block_size,
+                                             batch_size, table_width, tot_task_num, scale, nh, dv, d, nkvh);
     case LLAISYS_DTYPE_BF16:
-        return paged_attention_launch<llaisys::bf16_t>(attn_val, q, k_cache, v_cache, block_ids, cut_idx, tot_len, token_num,
-                                             batch_size, max_block_num, max_seq_len, scale, nh, dv, d, nkvh);
+        return paged_attention_launch<llaisys::bf16_t>(attn_val, q, k_cache, v_cache, block_ids, cut_idx, tot_len, block_size,
+                                             batch_size, table_width, tot_task_num, scale, nh, dv, d, nkvh);
     case LLAISYS_DTYPE_F16:
-        return paged_attention_launch<llaisys::fp16_t>(attn_val, q, k_cache, v_cache, block_ids, cut_idx, tot_len, token_num,
-                                             batch_size, max_block_num, max_seq_len, scale, nh, dv, d, nkvh);
+        return paged_attention_launch<llaisys::fp16_t>(attn_val, q, k_cache, v_cache, block_ids, cut_idx, tot_len, block_size,
+                                             batch_size, table_width, tot_task_num, scale, nh, dv, d, nkvh);
     default:
         EXCEPTION_UNSUPPORTED_DATATYPE(dtype);
     }

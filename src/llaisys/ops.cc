@@ -58,14 +58,12 @@ void llaisysKvCacheMove(llaisysTensor_t out,
                         llaisysTensor_t in,
                         llaisysTensor_t block_ids_tensor,
                         llaisysTensor_t cut_idx_tensor,
-                        llaisysTensor_t pos_ids_tensor,
-                        size_t max_seq_len) {
+                        llaisysTensor_t pos_ids_tensor) {
     llaisys::ops::kv_cache_move(out->tensor,
                                 in->tensor,
                                 block_ids_tensor->tensor,
                                 cut_idx_tensor->tensor,
-                                pos_ids_tensor->tensor,
-                                max_seq_len);
+                                pos_ids_tensor->tensor);
 }
 
 void llaisysRearrange(llaisysTensor_t out, llaisysTensor_t in) {
@@ -91,8 +89,7 @@ void llaisysPagedAttention(llaisysTensor_t attn_val,
                            llaisysTensor_t block_ids_tensor,
                            llaisysTensor_t cut_idx_tensor,
                            llaisysTensor_t tot_len_tensor,
-                           size_t max_seq_len,
-                           size_t tot_block_num,
+                           size_t tot_task_num,
                            float scale,
                            bool is_prefill,
                            llaisysTensor_t attn_acc,
@@ -106,8 +103,7 @@ void llaisysPagedAttention(llaisysTensor_t attn_val,
                                    block_ids_tensor->tensor,
                                    cut_idx_tensor->tensor,
                                    tot_len_tensor->tensor,
-                                   max_seq_len,
-                                   tot_block_num,
+                                   tot_task_num,
                                    scale,
                                    is_prefill,
                                    attn_acc ? attn_acc->tensor : nullptr,

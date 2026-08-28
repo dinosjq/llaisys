@@ -29,8 +29,7 @@ struct Buffer {
 
 // 每步的运行时标量（bind 时填充）
 struct RuntimeInfo {
-    size_t max_seq_len = 0;
-    size_t tot_block_num = 0;
+    size_t tot_task_num = 0;
     bool is_prefill = true;
 };
 

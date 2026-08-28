@@ -106,8 +106,9 @@ def test_op_paged_attention(
     totlen_ll.load(c_void_p(totlen_t.data_ptr()))
 
     torch_paged_attention(attn_val, q, k_cache, v_cache, block_ids_values, scale)
-    # prefill 路径 tot_block_num 不被使用，传块数即可
-    llaisys.Ops.paged_attention(attn_val_, q_, k_cache_, v_cache_, block_ids, cut_idx_ll, totlen_ll, seqlen, len(block_ids_values), scale)
+    # prefill 路径 tot_task_num = Σceil(seq_len/BLOCK_M)，BLOCK_M=8
+    llaisys.Ops.paged_attention(attn_val_, q_, k_cache_, v_cache_, block_ids, cut_idx_ll, totlen_ll,
+                                (seqlen + 7) // 8, scale)
     assert check_equal(attn_val_, attn_val, atol=atol, rtol=rtol)
 
     if totlen > seqlen:
@@ -124,14 +125,16 @@ def test_op_paged_attention(
         totlen_ll2 = llaisys.Tensor((1,), dtype=llaisys.DataType.I64, device=llaisys_device(device_name), device_id=device_id)
         totlen_ll2.load(c_void_p(totlen_t2.data_ptr()))
 
-        llaisys.Ops.paged_attention(wrong_out_, q_, k_cache_, v_cache_, block_ids, cut_idx_ll2, totlen_ll2, seqlen, len(block_ids_values), scale)
+        llaisys.Ops.paged_attention(wrong_out_, q_, k_cache_, v_cache_, block_ids, cut_idx_ll2, totlen_ll2,
+                                    (seqlen + 7) // 8, scale)
         assert check_equal(wrong_out_, wrong_ref, atol=atol, rtol=rtol)
         assert not tensors_allclose(wrong_out, attn_val, atol=atol, rtol=rtol)
 
     if profile:
         benchmark(
             lambda: torch_paged_attention(attn_val, q, k_cache, v_cache, block_ids_values, scale),
-            lambda: llaisys.Ops.paged_attention(attn_val_, q_, k_cache_, v_cache_, block_ids, cut_idx_ll, totlen_ll, seqlen, len(block_ids_values), scale),
+            lambda: llaisys.Ops.paged_attention(attn_val_, q_, k_cache_, v_cache_, block_ids, cut_idx_ll, totlen_ll,
+                                                (seqlen + 7) // 8, scale),
             device_name,
         )
 
@@ -205,7 +208,9 @@ def test_op_paged_attention_batched(
     attn_val_ll = llaisys.Tensor((tot_seqlen, nh, hd), dtype=llaisys_dtype(dtype_name), device=llaisys_device(device_name), device_id=device_id)
     scale = 1.0 / (hd ** 0.5)
 
-    llaisys.Ops.paged_attention(attn_val_ll, q_cat_ll, k_cache_, v_cache_, block_ids_ll, cut_idx_ll, totlen_ll, max(seqlens), sum(len(bids) for bids in block_ids_list), scale)
+    # prefill: tot_task_num = Σceil(seq_len/BLOCK_M)，BLOCK_M=8
+    tot_task_num = sum((s + 7) // 8 for s in seqlens)
+    llaisys.Ops.paged_attention(attn_val_ll, q_cat_ll, k_cache_, v_cache_, block_ids_ll, cut_idx_ll, totlen_ll, tot_task_num, scale)
 
     reference = torch.empty_like(q_cat)
     offset = 0

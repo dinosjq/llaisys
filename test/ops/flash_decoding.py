@@ -114,9 +114,10 @@ def test_op_flash_decoding(
     torch_flash_decoding(attn_val, q, k_cache, v_cache, block_ids_values, scale, totlen)
 
     # llaisys flash_decoding (is_prefill=False)
-    tot_block_num = len(block_ids_values)
+    # tot_task_num = Σ块数（decode，COALESCE=1）
+    tot_task_num = len(block_ids_values)
     llaisys.Ops.paged_attention(attn_val_, q_, k_cache_, v_cache_, block_ids,
-                                 cut_idx_ll, totlen_ll, seqlen, tot_block_num, scale, False,
+                                 cut_idx_ll, totlen_ll, tot_task_num, scale, False,
                                  attn_acc, attn_sum, attn_max)
     assert check_equal(attn_val_, attn_val, atol=atol, rtol=rtol)
 
@@ -124,7 +125,7 @@ def test_op_flash_decoding(
         benchmark(
             lambda: torch_flash_decoding(attn_val, q, k_cache, v_cache, block_ids_values, scale, totlen),
             lambda: llaisys.Ops.paged_attention(attn_val_, q_, k_cache_, v_cache_, block_ids,
-                                                  cut_idx_ll, totlen_ll, seqlen, tot_block_num, scale, False,
+                                                  cut_idx_ll, totlen_ll, tot_task_num, scale, False,
                                                   attn_acc, attn_sum, attn_max),
             device_name,
         )
@@ -220,9 +221,9 @@ def test_op_flash_decoding_batched(
             q_torch_list[i], k_cache, v_cache, bids, scale, totlen)
         offset += seqlen
 
-    # llaisys batched flash_decoding
+    # llaisys batched flash_decoding；tot_task_num = Σ块数（COALESCE=1）
     llaisys.Ops.paged_attention(attn_val_ll, q_cat_ll, k_cache_, v_cache_, block_ids_ll,
-                                 cut_idx_ll, totlen_ll, max(seqlens), total_blocks, scale, False,
+                                 cut_idx_ll, totlen_ll, total_blocks, scale, False,
                                  attn_acc, attn_sum, attn_max)
 
     atol = {"f32": 1e-5, "f16": 1e-3, "bf16": 1e-2}[dtype_name]
@@ -236,7 +237,7 @@ def test_op_flash_decoding_batched(
                 q_torch_list[i], k_cache, v_cache, bids, scale, totlen_per_sample[i])
                 for i, bids in enumerate(block_ids_list)],
             lambda: llaisys.Ops.paged_attention(attn_val_ll, q_cat_ll, k_cache_, v_cache_, block_ids_ll,
-                                                  cut_idx_ll, totlen_ll, max(seqlens), total_blocks, scale, False,
+                                                  cut_idx_ll, totlen_ll, total_blocks, scale, False,
                                                   attn_acc, attn_sum, attn_max),
             device_name,
         )
@@ -251,13 +252,11 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # decode-specific shapes: seqlen=1, varying KV cache lengths
+    # 注意：flash_decoding 只支持 hd==128，GQA ratio ∈ {6(Qwen2-1.5B), 3(Llama-3.2-3B)}
     testShapes = [
-        (1, 4, 5, [4, 1, 3], 4, 2, 8),
-        (1, 4, 6, [5, 2, 4, 0], 4, 1, 8),
-        (1, 8, 10, [9, 3, 7, 1], 8, 2, 16),
-        (1, 4, 12, [11, 6, 2, 9, 0], 12, 3, 8),
-        # Qwen2-1.5B scale: nh=14, nkvh=2, hd=64, token_num=64
-        (1, 64, 3, [1, 0], 14, 2, 64),
+        (1, 4, 5, [4, 1, 3], 12, 2, 128),   # rep=6（Qwen2-1.5B）
+        (1, 4, 6, [5, 2, 4, 0], 6, 2, 128), # rep=3（Llama-3.2-3B）
+        (1, 64, 3, [1, 0], 12, 2, 128),     # Qwen2-1.5B: token_num=64
     ]
     testDtypePrec = [
         ("f32", 1e-5, 1e-5),

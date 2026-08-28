@@ -8,7 +8,7 @@
 
 
 namespace llaisys::ops {
-void kv_cache_move(tensor_t out, tensor_t in, tensor_t block_ids, tensor_t cut_idx, tensor_t pos_ids, size_t max_seq_len)
+void kv_cache_move(tensor_t out, tensor_t in, tensor_t block_ids, tensor_t cut_idx, tensor_t pos_ids)
 {
     // 检查设备一致性
     CHECK_SAME_DEVICE(out, in, block_ids, cut_idx);
@@ -20,16 +20,20 @@ void kv_cache_move(tensor_t out, tensor_t in, tensor_t block_ids, tensor_t cut_i
 
     // 检查是否符合任务描述
     const auto out_shape = out->shape();
+    const auto in_shape = in->shape();
     const auto block_ids_shape = block_ids->shape();
 
-    (void)out_shape; (void)block_ids_shape;   // 形状仅用于校验（TODO: 维度检查）
-    const size_t token_num = out_shape[1];
+    (void)out_shape; (void)in_shape; (void)block_ids_shape;   // 形状仅用于校验（TODO: 维度检查）
+    const size_t block_size = out_shape[1];   // 每块 token 数
     const size_t nkvh = out_shape[2];
     const size_t dh = out_shape[3];
     const size_t numel = nkvh * dh;
-    const size_t batch_size = block_ids_shape[0];
+    const size_t tot_token_num = in_shape[0];   // 本批次待搬移 token 总数
     const size_t max_block_num = block_ids_shape[1];
-    (void)token_num; (void)numel; (void)batch_size; (void)max_block_num;
+    ASSERT(block_size > 0, "kv_cache_move: block_size must be > 0.");
+    ASSERT(tot_token_num > 0, "kv_cache_move: tot_token_num must be > 0.");
+    ASSERT(max_block_num > 0, "kv_cache_move: max_block_num must be > 0.");
+    ASSERT(numel > 0, "kv_cache_move: numel must be > 0.");
 
     llaisys::core::context().setDevice(out->deviceType(), out->deviceId());
 
@@ -40,7 +44,7 @@ void kv_cache_move(tensor_t out, tensor_t in, tensor_t block_ids, tensor_t cut_i
 #ifdef ENABLE_NVIDIA_API
     case LLAISYS_DEVICE_NVIDIA:
         return nvidia::kv_cache_move(out->data(), in->data(), block_ids->data(), cut_idx->data(), pos_ids->data(),
-                                 token_num, batch_size, max_block_num, max_seq_len, out->dtype(), numel);
+                                 block_size, tot_token_num, max_block_num, out->dtype(), numel);
 #endif
     default:
         // 不支持的设备类型

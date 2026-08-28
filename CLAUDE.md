@@ -72,7 +72,7 @@ LLAISYS is an educational AI inference framework. The backend is a C++17 shared 
 
 | Constant | Default | Purpose |
 |---|---|---|
-| `KV_CACHE_TOKEN_NUM` | 64 | Tokens per KV-cache block |
+| `KV_CACHE_BLOCK_SIZE` | 64 | Tokens per KV-cache block |
 | `KV_CACHE_BLOCK_NUM` | 128 | Total number of KV-cache blocks |
 | `TOP_K` | 10 | Top-K candidates for sampling |
 | `TOP_P` | 0.9 | Cumulative probability threshold |
