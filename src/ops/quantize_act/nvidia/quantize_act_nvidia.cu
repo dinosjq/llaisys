@@ -2,6 +2,7 @@
 
 #include "../../../utils.hpp"
 #include "utils/nvidia_quant.cuh"
+#include "utils/nvidia_utils.cuh"
 
 #include <cuda_runtime.h>
 #include <cstdint>
@@ -9,7 +10,7 @@
 namespace {
 
 // 激活 per-token symmetric 量化 (量化前先做 K 维 Hadamard 旋转)
-// 加载整行到 smem => 复用公共量化 (Hadamard 蝶形 + absmax => scale => round)
+// 加载整行到 smem (float4 向量化) => 复用公共量化 (Hadamard 蝶形 + absmax => scale => round)
 template <typename T>
 __global__ void quantize_act_kernel(int8_t *__restrict__ out_q,
                                     float *__restrict__ out_scale,
@@ -20,9 +21,11 @@ __global__ void quantize_act_kernel(int8_t *__restrict__ out_q,
     const T *row_in = in + row * k;
     const size_t tid = threadIdx.x;
 
-    // 1. 加载整行到 smem (k 必须为 128 的倍数)
-    for (size_t j = tid; j < k; j += blockDim.x) {
-        s_row[j] = llaisys::utils::nvidia::cast<float>(row_in[j]);
+    // 1. 加载整行到 smem (k 必须为 128 的倍数), float4 向量化
+    const size_t nvec = k / 4;
+    for (size_t i = tid; i < nvec; i += blockDim.x) {
+        const float4 v = llaisys::utils::nvidia::load_4d(row_in + i * 4);
+        llaisys::utils::nvidia::save_4d(s_row + i * 4, v);
     }
     __syncthreads();
 
