@@ -23,5 +23,7 @@ void flash_decoding(std::byte *attn_val,       // 输出 (tot_seqlen, nh, dv) =>
                     const size_t &nh,          // 其他参数 ...
                     const size_t &dv, 
                     const size_t &d, 
-                    const size_t &nkvh);
+                    const size_t &nkvh,
+                    const std::byte *k_scale = nullptr,  // 量化 KV cache 的 per-token scale，非量化传 nullptr
+                    const std::byte *v_scale = nullptr);
 };

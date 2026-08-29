@@ -21,15 +21,16 @@ KERNEL_GROUPS = {
     "embedding":      "embedding_gather_kernel",
     "kv_cache_move":  "kv_cache_move_kernel",
     "rms_norm":       "rms_norm_kernel",
+    "rms_norm_quant": "rms_norm_quant_kernel",
     "rope":           "rope_",  # rope_kernel / rope_inv_freq_kernel
     "swiglu":         "swiglu_kernel",
+    "swiglu_quant":   "swiglu_quant_kernel",
     "add":            "add_kernel<llaisys",
     "add_bias":       "add_bias_kernel",
     "topk":           "_topk_kernel<llaisys",
     # Handwritten small-M GEMV (must precede generic cuBLAS "gemv"/"gemm").
     "gemv_simt":      "warp_per_column_kernel",
     "gemv_simt_long": "block_per_column_kernel",
-    "gemv_w8_dp4a":   "gemv_w8a16_dp4a_kernel",
     "gemv_dp4a":      "gemv_dp4a_kernel",
     "act_quant_w8":   "quantize_act_kernel",
     # cuBLAS names vary by toolkit and matrix dimensions.
@@ -45,8 +46,10 @@ KERNEL_NAMES = {
     "embedding":      "embedding",
     "kv_cache_move":  "kv_cache_move",
     "rms_norm":       "rms_norm",
+    "rms_norm_quant": "rms_norm (quant)",
     "rope":           "rope",
     "swiglu":         "swiglu",
+    "swiglu_quant":   "swiglu (quant)",
     "add":            "add",
     "add_bias":       "linear (bias)",
     "topk":           "topk",

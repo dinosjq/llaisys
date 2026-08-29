@@ -42,9 +42,9 @@ void Qwen2::set_weight(const std::string &hf_name, tensor_t tensor) {
     if (!this->_meta_ready) {
         throw std::runtime_error("set_weight before set_meta");
     }
-    if (this->meta().quantize_weights) {
+    if (this->meta().quantize) {
         if (this->_device_type != LLAISYS_DEVICE_NVIDIA) {
-            throw std::runtime_error("quantize_weights requires NVIDIA device");
+            throw std::runtime_error("quantize requires NVIDIA device");
         }
         this->w8weights().set(hf_name, std::move(tensor));
     } else {
@@ -57,9 +57,9 @@ void Qwen2::_allocate_runtime() {
     const auto &meta = this->meta();
     const size_t nlayer = meta.nlayer;
     // 权重
-    if (meta.quantize_weights) {
+    if (meta.quantize) {
         if (this->_device_type != LLAISYS_DEVICE_NVIDIA) {
-            throw std::runtime_error("quantize_weights requires NVIDIA device");
+            throw std::runtime_error("quantize requires NVIDIA device");
         }
         this->_weights = std::make_unique<Qwen2W8Weights>();
         this->w8weights().init(nlayer);
@@ -72,7 +72,7 @@ void Qwen2::_allocate_runtime() {
 }
 
 /**
- * 组装全部层：embedding → (attn + ffn) × nlayer → logit
+ * 组装全部层：embedding -> (attn + ffn) x nlayer -> logit
  * set_meta 后一次性构建，forward 复用
  */
 void Qwen2::_build_layers() {
@@ -110,7 +110,8 @@ engine::BatchOutput Qwen2::forward(const engine::BatchInput &input) {
     return output;
 }
 
-/** 测试用：获取最后一层的 logits
+/** 
+ * 测试用：获取最后一层的 logits
  * 1. 获取词汇表大小
  * 2. 获取最后一层的 logits
  */

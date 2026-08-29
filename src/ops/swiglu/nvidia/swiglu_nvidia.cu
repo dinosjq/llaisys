@@ -26,13 +26,6 @@ __global__ void swiglu_kernel(T *__restrict__ out, const T *__restrict__ gate, c
         const float4 flo4_s = llaisys::utils::nvidia::load_4d(gate + idx);
         const float4 flo4_v = calc(flo4_t, flo4_s);
         llaisys::utils::nvidia::save_4d(out + idx, flo4_v);
-    } else {
-        for (int j = idx; j < numel; ++ j){
-            const float t = llaisys::utils::nvidia::cast<float>(up[j]);
-            const float s = llaisys::utils::nvidia::cast<float>(gate[j]);
-            const float val = t * s / (1.0f + expf(-s));
-            out[j] = llaisys::utils::nvidia::cast<T>(val);
-        }
     }
 }
 
@@ -43,7 +36,7 @@ void swiglu_launch(std::byte *out, const std::byte *gate, const std::byte *up, c
     const auto *d_up = reinterpret_cast<const T *>(up);
 
     dim3 blockDim(256);
-    dim3 gridDim((((numel + 3) >> 2) + 255) >> 8);
+    dim3 gridDim((numel + 1023) >> 10);
 
     swiglu_kernel<<<gridDim, blockDim>>>(d_out, d_gate, d_up, numel);
 

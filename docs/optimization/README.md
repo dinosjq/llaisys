@@ -11,6 +11,8 @@
 | [05-inference-baseline.md](./05-inference-baseline.md) | **当前端到端 + nsys 正式基线**（配置、吞吐、P0/D0/D1） |
 | [06-phase4-decode-prep.md](./06-phase4-decode-prep.md) | 下一阶段准备：短 decode / Llama gate·down / 验收口径 |
 | [07-w8a16-performance.md](./07-w8a16-performance.md) | **W8A16**：linear microbench + Qwen e2e FP vs INT8、显存与结论 |
+| [08-w8a8-performance.md](./08-w8a8-performance.md) | **W8A8 统一 INT8 量化**：cuBLAS INT8 GEMM + KV cache INT8 + Hadamard 精度 |
+| [09-decode-int8-optimization.md](./09-decode-int8-optimization.md) | **decode INT8 全链路**：融合量化算子 + dp4a GEMV + lm_head 量化，e2e **+30.7%** |
 | [archive/flash-decoding/](./archive/flash-decoding/) | 各版原始专题报告（v1–v9、演进、ncu 等） |
 
 **相关收口报告（不在本目录）：**

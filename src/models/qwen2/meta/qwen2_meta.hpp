@@ -31,7 +31,7 @@ public:
     float theta = 10000.f;
     int64_t end_token = 0;
     float rope_scale = 1.f;         // Llama-3 factor <=1 表示不 scaling
-    bool quantize_weights = false;  // W8A16 when true
+    bool quantize = false;  // 统一 INT8 量化：权重 W8A8 + KV cache INT8（NVIDIA only）
 
     // transfer
     static Qwen2Meta cast(const std::unordered_map<std::string, std::vector<std::uint8_t>> &kv);
@@ -75,7 +75,7 @@ inline void Qwen2Meta::_load(const std::unordered_map<std::string, std::vector<s
     this->theta = get_or_f32(kv, "rope_theta", 10000.f);
     this->end_token = get_or_as<int64_t>(kv, "eos_token_id", 0);
     this->rope_scale = get_or_f32(kv, "rope_scaling.factor", 1.f);
-    this->quantize_weights = get_or_as<int64_t>(kv, "quantize_weights", 0) != 0;
+    this->quantize = get_or_as<int64_t>(kv, "quantize", 0) != 0;
 }
 
 inline Qwen2Meta Qwen2Meta::cast(const std::unordered_map<std::string, std::vector<std::uint8_t>> &kv) {

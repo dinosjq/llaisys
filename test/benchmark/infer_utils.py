@@ -58,11 +58,11 @@ def load_hf_model(model_path=None, device_name="nvidia"):
     return tokenizer, model, model_path
 
 
-def load_llaisys_model(model_path, device_name, *, quantize_weights: bool = False):
+def load_llaisys_model(model_path, device_name, *, quantize: bool = False):
     return llaisys.models.load_causal_lm(
         model_path,
         llaisys_device(device_name),
-        quantize_weights=quantize_weights,
+        quantize=quantize,
     )
 
 

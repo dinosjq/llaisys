@@ -60,6 +60,8 @@ def main() -> None:
         help="Ask HF for min_new_tokens=max_new_tokens (LLAISYS best-effort)",
     )
     parser.add_argument("--no-chat-template", action="store_true")
+    parser.add_argument("--quantize", action="store_true",
+                        help="Enable unified INT8 quantization (W8A8 weights + INT8 KV cache)")
     parser.add_argument("--test", action="store_true")
     parser.add_argument("--output", default="test/benchmark/results")
     parser.add_argument(
@@ -186,7 +188,7 @@ def main() -> None:
         )
 
     print("Loading LLAISYS model...")
-    ll_model = load_llaisys_model(model_path, args.device)
+    ll_model = load_llaisys_model(model_path, args.device, quantize=args.quantize)
     for _ in range(args.warmup):
         warm_cases = [
             {**c, "input_ids": make_warmup_ids(c["input_ids"], vocab)} for c in cases

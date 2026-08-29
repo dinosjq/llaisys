@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""W8A16 performance: linear microbench + optional e2e FP vs W8 load/generate."""
+"""W8A8 performance: linear microbench + optional e2e FP vs quantize load/generate."""
 
 from __future__ import annotations
 
@@ -114,12 +114,14 @@ def bench_linear_pair(
         repeat,
         device_name,
     )
-    t_w8 = _time_cuda_ms(
-        lambda: llaisys.Ops.linear_w8a16(out_w8_, x_, w_i8, scale_t, None),
-        warmup,
-        repeat,
-        device_name,
-    )
+    in_q = llaisys.Tensor([m, k], dtype=llaisys.DataType.I8, device=llaisys_device(device_name), device_id=0)
+    a_scale = llaisys.Tensor([m], dtype=llaisys.DataType.F32, device=llaisys_device(device_name), device_id=0)
+
+    def w8_call():
+        llaisys.Ops.quantize_act(in_q, a_scale, x_)
+        llaisys.Ops.linear_w8a8(out_w8_, in_q, a_scale, w_i8, scale_t, None)
+
+    t_w8 = _time_cuda_ms(w8_call, warmup, repeat, device_name)
     t_quant = _time_cuda_ms(
         lambda: llaisys.Ops.quantize_w8(w_i8, scale_t, w_fp_),
         max(2, warmup // 2),
@@ -132,7 +134,7 @@ def bench_linear_pair(
         "k": k,
         "dtype": dtype_name,
         "linear_fp_ms": round(t_fp, 5),
-        "linear_w8a16_ms": round(t_w8, 5),
+        "linear_w8a8_ms": round(t_w8, 5),
         "speedup_fp_over_w8": round(t_fp / t_w8, 3) if t_w8 > 0 else None,
         "quantize_w8_ms": round(t_quant, 5),
         "weight_fp_bytes": n * k * (2 if dtype_name == "bf16" else 4),
@@ -156,7 +158,7 @@ def run_microbench(args) -> list[dict]:
         rows.append(row)
         print(
             f"  {name:28s} M={m:4d} N={n:5d} K={k:5d}  "
-            f"fp={row['linear_fp_ms']:.4f} ms  w8={row['linear_w8a16_ms']:.4f} ms  "
+            f"fp={row['linear_fp_ms']:.4f} ms  w8={row['linear_w8a8_ms']:.4f} ms  "
             f"x{row['speedup_fp_over_w8']:.2f}"
         )
     return rows
@@ -182,7 +184,7 @@ def run_e2e(args) -> dict:
             torch.cuda.reset_peak_memory_stats()
 
         t_load0 = time.perf_counter()
-        model = load_llaisys_model(args.model, args.device, quantize_weights=quant)
+        model = load_llaisys_model(args.model, args.device, quantize=quant)
         torch.cuda.synchronize()
         load_s = time.perf_counter() - t_load0
         peak_after_load = _peak_mem_mib()
@@ -219,7 +221,7 @@ def run_e2e(args) -> dict:
         tok_s = out_tokens_total / best_wall if best_wall > 0 else 0.0
         peak = _peak_mem_mib()
         results[label] = {
-            "quantize_weights": quant,
+            "quantize": quant,
             "load_s": round(load_s, 3),
             "peak_mem_mib_after_load": round(peak_after_load, 1) if peak_after_load else None,
             "peak_mem_mib": round(peak, 1) if peak else None,
@@ -251,7 +253,7 @@ def run_e2e(args) -> dict:
 
 
 def main():
-    p = argparse.ArgumentParser(description="W8A16 performance benchmark")
+    p = argparse.ArgumentParser(description="W8A8 performance benchmark")
     p.add_argument("--device", default="nvidia")
     p.add_argument("--dtype", default="bf16", choices=("bf16", "f32"))
     p.add_argument("--shapes", default="all", choices=("qwen", "llama", "all"))
@@ -297,13 +299,13 @@ def main():
         "e2e": None,
     }
 
-    print("=== W8A16 microbench (linear vs linear_w8a16) ===")
+    print("=== W8A8 microbench (linear vs quantize_act+linear_w8a8) ===")
     if not args.skip_micro:
         payload["microbench"] = run_microbench(args)
     else:
         print("  skipped")
 
-    print("=== W8A16 e2e (FP vs quantize_weights) ===")
+    print("=== W8A8 e2e (FP vs quantize) ===")
     if not args.skip_e2e:
         payload["e2e"] = {
             "model": args.model,

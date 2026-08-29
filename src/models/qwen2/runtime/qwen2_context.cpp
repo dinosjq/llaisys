@@ -14,10 +14,10 @@ void Qwen2Context::allocate(llaisysDeviceType_t device, int device_id, Qwen2Meta
     const size_t batch_max_token_num = BATCH_MAX_TOKEN_NUM;
     const size_t batch_max_seq_num = BATCH_MAX_SEQ_NUM;
     const size_t max_block_num = MAX_BLOCK_NUM;
-    const size_t block_size = KV_CACHE_BLOCK_SIZE;   // 每块 token 数
-    const size_t block_num = KV_CACHE_BLOCK_NUM;     // 块总数
+    const size_t block_size = KV_CACHE_BLOCK_SIZE; // 每块 token 数
+    const size_t block_num = KV_CACHE_BLOCK_NUM;   // 块总数
 
-    // 保存模型配置（layer 通过 ctx.meta 读取）
+    // 保存模型配置
     this->meta = std::move(meta);
 
     // 创建中间张量
@@ -49,16 +49,41 @@ void Qwen2Context::allocate(llaisysDeviceType_t device, int device_id, Qwen2Meta
     _buf._attn_max = Tensor::create({BATCH_MAX_BLOCK_NUM, nh, 1}, LLAISYS_DTYPE_F32, device, device_id);
     _buf._token_ids = Tensor::create({BATCH_MAX_TOKEN_NUM}, LLAISYS_DTYPE_I64, device, device_id);
 
-    // 分层 KV cache
+    // 激活量化中间张量
+    _buf._x_norm_q = Tensor::create({batch_max_token_num, hs}, LLAISYS_DTYPE_I8, device, device_id);
+    _buf._x_norm_a_scale = Tensor::create({batch_max_token_num}, LLAISYS_DTYPE_F32, device, device_id);
+    _buf._attn_val_q = Tensor::create({batch_max_token_num, hs}, LLAISYS_DTYPE_I8, device, device_id);
+    _buf._attn_val_a_scale = Tensor::create({batch_max_token_num}, LLAISYS_DTYPE_F32, device, device_id);
+    _buf._m_norm_q = Tensor::create({batch_max_token_num, hs}, LLAISYS_DTYPE_I8, device, device_id);
+    _buf._m_norm_a_scale = Tensor::create({batch_max_token_num}, LLAISYS_DTYPE_F32, device, device_id);
+    _buf._swiglu_q = Tensor::create({batch_max_token_num, di}, LLAISYS_DTYPE_I8, device, device_id);
+    _buf._swiglu_a_scale = Tensor::create({batch_max_token_num}, LLAISYS_DTYPE_F32, device, device_id);
+    _buf._x_part_norm_q = Tensor::create({batch_max_seq_num, hs}, LLAISYS_DTYPE_I8, device, device_id);
+    _buf._x_part_norm_a_scale = Tensor::create({batch_max_seq_num}, LLAISYS_DTYPE_F32, device, device_id);
+
+    // 分层 KV cache (quantize -> I8 cache + F32 scale，统一 INT8 量化)
+    const bool quant_kv = meta.quantize;
+    const llaisysDataType_t kv_dtype = quant_kv ? LLAISYS_DTYPE_I8 : dtype;
     const size_t cache_numel = block_num * block_size * nkvh * dh;
     this->k_caches = std::vector<tensor_t>(nlayer, nullptr);
     this->v_caches = std::vector<tensor_t>(nlayer, nullptr);
-    tensor_t cache = Tensor::create({2, nlayer, cache_numel}, dtype, device, device_id);
+    this->k_scales = std::vector<tensor_t>(nlayer, nullptr);
+    this->v_scales = std::vector<tensor_t>(nlayer, nullptr);
+    tensor_t cache = Tensor::create({2, nlayer, cache_numel}, kv_dtype, device, device_id);
     tensor_t k_cache = cache->slice(0, 0, 1)->reshape({nlayer, cache_numel});
     tensor_t v_cache = cache->slice(0, 1, 2)->reshape({nlayer, cache_numel});
     for (size_t i = 0; i < nlayer; ++i) {
         this->k_caches[i] = k_cache->slice(0, i, i + 1)->reshape({block_num, block_size, nkvh, dh});
         this->v_caches[i] = v_cache->slice(0, i, i + 1)->reshape({block_num, block_size, nkvh, dh});
+    }
+    if (quant_kv) {
+        const size_t scale_numel = block_num * block_size * nkvh;
+        tensor_t k_scale = Tensor::create({nlayer, scale_numel}, LLAISYS_DTYPE_F32, device, device_id);
+        tensor_t v_scale = Tensor::create({nlayer, scale_numel}, LLAISYS_DTYPE_F32, device, device_id);
+        for (size_t i = 0; i < nlayer; ++i) {
+            this->k_scales[i] = k_scale->slice(0, i, i + 1)->reshape({block_num, block_size, nkvh});
+            this->v_scales[i] = v_scale->slice(0, i, i + 1)->reshape({block_num, block_size, nkvh});
+        }
     }
 }
 
@@ -111,6 +136,16 @@ void Qwen2Context::bind(const engine::BatchInput &input, Qwen2Meta meta) {
     _cur.attn_acc = _buf._attn_acc;
     _cur.attn_sum = _buf._attn_sum;
     _cur.attn_max = _buf._attn_max;
+    _cur.x_norm_q = _buf._x_norm_q->slice(0, 0, tot_seq_len)->view({tot_seq_len, hs});
+    _cur.x_norm_a_scale = _buf._x_norm_a_scale->slice(0, 0, tot_seq_len)->view({tot_seq_len});
+    _cur.attn_val_q = _buf._attn_val_q->slice(0, 0, tot_seq_len)->view({tot_seq_len, hs});
+    _cur.attn_val_a_scale = _buf._attn_val_a_scale->slice(0, 0, tot_seq_len)->view({tot_seq_len});
+    _cur.m_norm_q = _buf._m_norm_q->slice(0, 0, tot_seq_len)->view({tot_seq_len, hs});
+    _cur.m_norm_a_scale = _buf._m_norm_a_scale->slice(0, 0, tot_seq_len)->view({tot_seq_len});
+    _cur.swiglu_q = _buf._swiglu_q->slice(0, 0, tot_seq_len)->view({tot_seq_len, di});
+    _cur.swiglu_a_scale = _buf._swiglu_a_scale->slice(0, 0, tot_seq_len)->view({tot_seq_len});
+    _cur.x_part_norm_q = _buf._x_part_norm_q->slice(0, 0, batch_size)->view({batch_size, hs});
+    _cur.x_part_norm_a_scale = _buf._x_part_norm_a_scale->slice(0, 0, batch_size)->view({batch_size});
 
     _cur.block_ids->load(block_ids.data());
     _cur.cut_idx->load(cut_idx.data());
@@ -118,7 +153,7 @@ void Qwen2Context::bind(const engine::BatchInput &input, Qwen2Meta meta) {
     _cur.pos_ids->load(pos_ids.data());
     _cur.token_ids->load(token_ids.data());
 
-    // 保存运行时标量（layer 通过 ctx.runtime() 读取）
+    // 保存运行时标量 (layer 通过 ctx.runtime() 读取)
     this->_runtime.tot_task_num = tot_task_num;
     this->_runtime.is_prefill = pack.is_prefill;
     this->meta = std::move(meta);

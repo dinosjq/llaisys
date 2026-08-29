@@ -62,10 +62,10 @@ C/C++ 用 `clang-format`（`-style=file`，见根目录 `.clang-format`），Pyt
 1. **构建后忘记 `xmake install`**：`.so` 不会进 Python 包，改 C++ 后 Python 层跑的还是旧库 → 先 `xmake install` 再测。
 2. **`test/ops/topk.py` 已损坏**：它 import 不存在的 `benchmark.ops.shape_profiles`，运行会 ImportError——不是你的改动引起的，别去修。
 3. **`test_infer.py --test` 不真正断言**：token 相等的断言被注释，`--test` 只做贪心采样 + HF/LLS 双端人工对比。
-4. **NVIDIA-only 算子**：`kv_cache_move`、`linear_w8a16`、`quantize_w8`、`dequant_w8` 的 CPU 路径抛 `EXCEPTION_UNSUPPORTED_DEVICE`；`quantize_weights=True` 在非 NVIDIA 上直接 throw。
+4. **NVIDIA-only 算子**：`kv_cache_move`、`linear_w8a8`、`quantize_act`、`quantize_w8`、`dequant_w8` 的 CPU 路径抛 `EXCEPTION_UNSUPPORTED_DEVICE`；`quantize=True` 在非 NVIDIA 上直接 throw（统一 INT8 量化：权重 W8A8 + KV cache）。
 5. **`paged_attention` decode 分支**（flash decoding）必须传 `attn_acc/attn_sum/attn_max` 三个临时 buffer；prefill 分支不需要。
 6. **`docs/format.md` 是误导**：文件名像代码格式文档，实际内容是 profile 输出格式示例，别引用来解释 clang-format。
 7. **bf16 权重加载**需要 `ml_dtypes` 已安装，否则显式抛 RuntimeError。
 8. **历史回归点**（`docs/record/`）：`max_new_tokens` 曾因未贯穿到 C++ 导致已完成 sequence 不被调度器清理——动序列生命周期代码时注意参数贯穿。
 9. **模型层易错点**（见 `memory/` 与过往修复）：`llaisysLinear` 的 `bias==nullptr` 是合法无偏置路径；`Sequence::_cached_ntoken` 必须初始化为 0；`Sequence::last_block_token_num()` 用 `KV_CACHE_BLOCK_SIZE`（不是 `KV_CACHE_BLOCK_NUM`）。
-10. **`docs/improve/` 里的 NF4 / Hadamard** 是训练营作业题文档，不是已实现功能；量化现状是 NVIDIA 专用 W8A16（`linear_w8a16` 等）。
+10. **`docs/improve/` 里的 NF4** 是训练营作业题文档，不是已实现功能；Hadamard 已融入 `quantize_act`（激活量化前旋转抑制 outlier）。量化现状：NVIDIA 专用 W8A8（`linear_w8a8` + cuBLAS INT8）+ INT8 KV cache。

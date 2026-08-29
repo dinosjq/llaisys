@@ -3,9 +3,11 @@
 #include "../../weight/qwen2_w8_weights.hpp"
 #include "../../../../model/layer/utils/linear_dispatch.hpp"
 #include "../../../../ops/add/op.hpp"
+#include "../../../../ops/quantize_act/op.hpp"
 #include "../../../../ops/kv_cache_move/op.hpp"
 #include "../../../../ops/paged_attention/op.hpp"
 #include "../../../../ops/rms_norm/op.hpp"
+#include "../../../../ops/rms_norm_quant/op.hpp"
 #include "../../../../ops/rope/op.hpp"
 
 #include <cmath>
@@ -39,24 +41,35 @@ void Qwen2Attention::forward(Qwen2Context &ctx) {
     const size_t token_count = ws.x->shape()[0];
     const float scale = 1.0f / std::sqrt(static_cast<float>(dh));
 
-    ops::rms_norm(ws.x_norm, ws.x, w.norm_w, meta.epsilon);
+    if (w8) {
+        ops::rms_norm_quant(ws.x_norm_q, ws.x_norm_a_scale, ws.x, w.norm_w, meta.epsilon);
+    } else {
+        ops::rms_norm(ws.x_norm, ws.x, w.norm_w, meta.epsilon);
+    }
 
-    layers::utils::linear_proj(ws.q, ws.x_norm, w.q_w, w8 ? w8->q_scale : nullptr, w.q_b);
-    layers::utils::linear_proj(ws.k, ws.x_norm, w.k_w, w8 ? w8->k_scale : nullptr, w.k_b);
-    layers::utils::linear_proj(ws.v, ws.x_norm, w.v_w, w8 ? w8->v_scale : nullptr, w.v_b);
+    const tensor_t qkv_in = w8 ? ws.x_norm_q : ws.x_norm;
+    const tensor_t qkv_scale = w8 ? ws.x_norm_a_scale : tensor_t();
+    layers::utils::linear_proj(ws.q, qkv_in, qkv_scale, w.q_w, w8 ? w8->q_scale : nullptr, w.q_b);
+    layers::utils::linear_proj(ws.k, qkv_in, qkv_scale, w.k_w, w8 ? w8->k_scale : nullptr, w.k_b);
+    layers::utils::linear_proj(ws.v, qkv_in, qkv_scale, w.v_w, w8 ? w8->v_scale : nullptr, w.v_b);
 
     ops::rope(ws.q_rope, ws.q->view({token_count, nh, dh}), ws.pos_ids, meta.theta);
     ops::rope(ws.k_rope, ws.k->view({token_count, nkvh, dh}), ws.pos_ids, meta.theta);
 
-    ops::kv_cache_move(ctx.k_caches[layer], ws.k_rope, ws.block_ids, ws.cut_idx, ws.pos_ids);
-    ops::kv_cache_move(ctx.v_caches[layer], ws.v->view({token_count, nkvh, dh}), ws.block_ids, ws.cut_idx, ws.pos_ids);
+    ops::kv_cache_move(ctx.k_caches[layer], ws.k_rope, ws.block_ids, ws.cut_idx, ws.pos_ids,
+                       ctx.k_scales.empty() ? tensor_t() : ctx.k_scales[layer]);
+    ops::kv_cache_move(ctx.v_caches[layer], ws.v->view({token_count, nkvh, dh}), ws.block_ids, ws.cut_idx, ws.pos_ids,
+                       ctx.v_scales.empty() ? tensor_t() : ctx.v_scales[layer]);
 
     ops::paged_attention(ws.attn_val, ws.q_rope, ctx.k_caches[layer], ctx.v_caches[layer], ws.block_ids, ws.cut_idx,
                          ws.tot_len, ctx.runtime().tot_task_num, scale, ctx.runtime().is_prefill,
-                         ws.attn_acc, ws.attn_sum, ws.attn_max);
+                         ws.attn_acc, ws.attn_sum, ws.attn_max,
+                         ctx.k_scales.empty() ? tensor_t() : ctx.k_scales[layer],
+                         ctx.v_scales.empty() ? tensor_t() : ctx.v_scales[layer]);
 
-    layers::utils::linear_proj(ws.attn_out, ws.attn_val->view({token_count, hs}), w.o_w, w8 ? w8->o_scale : nullptr,
-                               nullptr);
+    if (w8) ops::quantize_act(ws.attn_val_q, ws.attn_val_a_scale, ws.attn_val->view({token_count, hs}));
+    layers::utils::linear_proj(ws.attn_out, w8 ? ws.attn_val_q : ws.attn_val->view({token_count, hs}),
+                               w8 ? ws.attn_val_a_scale : tensor_t(), w.o_w, w8 ? w8->o_scale : nullptr, nullptr);
 
     ops::add(ws.x_attn, ws.x, ws.attn_out);
     std::swap(ws.x, ws.x_attn);

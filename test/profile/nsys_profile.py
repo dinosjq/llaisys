@@ -91,8 +91,8 @@ def main():
     parser.add_argument("--no-warmup", action="store_true",
                         help="Skip warmup and measure cold-start behavior")
     parser.add_argument("--device", default="nvidia", choices=["nvidia"])
-    parser.add_argument("--quantize-weights", action="store_true",
-                        help="Enable W8A16 projection weights (meta quantize_weights=1)")
+    parser.add_argument("--quantize", action="store_true",
+                        help="Enable unified INT8 quantization (W8A8 weights + INT8 KV cache)")
     parser.add_argument("--top_k", type=int, default=1)
     parser.add_argument("--top_p", type=float, default=1.0)
     parser.add_argument("--temperature", type=float, default=1.0)
@@ -133,7 +133,7 @@ def main():
     # ── LLAISYS model (no HF model loaded) ───────────────────
     device = llaisys.DeviceType.NVIDIA
     model = llaisys.models.load_causal_lm(
-        args.model, device, quantize_weights=args.quantize_weights
+        args.model, device, quantize=args.quantize,
     )
 
     gen_kwargs = dict(
@@ -164,7 +164,7 @@ def main():
 
     # ── Summary ──────────────────────────────────────────────
     decoded = tokenizer.decode(output_ids[input_len:], skip_special_tokens=True)
-    print(f"\n  quantize_weights: {args.quantize_weights}")
+    print(f"\n  quantize: {args.quantize}")
     print(f"  input: {input_len} tokens  output: {output_tokens} tokens  "
           f"elapsed: {elapsed_s:.2f}s  "
           f"throughput: {output_tokens / elapsed_s:.1f} tok/s")

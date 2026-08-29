@@ -20,5 +20,7 @@ void paged_attention(std::byte *attn_val,       // 输出 (tot_seqlen, nh, dv)
                      const size_t &nh,          // 其他参数 ...
                      const size_t &dv, 
                      const size_t &d, 
-                     const size_t &nkvh);
+                     const size_t &nkvh,
+                     const std::byte *k_scale = nullptr,
+                     const std::byte *v_scale = nullptr);
 };

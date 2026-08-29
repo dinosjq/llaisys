@@ -1,6 +1,7 @@
 #include "quantize_w8_nvidia.cuh"
 
-#include "../../../utils/nvidia_utils.cuh"
+#include "../../../utils.hpp"
+#include "utils/nvidia_quant.cuh"
 
 #include <cuda_runtime.h>
 
@@ -9,68 +10,43 @@
 
 namespace {
 
-__device__ __forceinline__ float warp_amax(float v) {
-#pragma unroll
-    for (int offset = 16; offset > 0; offset >>= 1) {
-        v = fmaxf(v, __shfl_xor_sync(0xffffffffu, v, offset));
-    }
-    return v;
-}
-
+// 权重量化 (量化前先做 K 维 Hadamard 旋转)
+// 加载整行到 smem => 复用公共量化 (Hadamard 蝶形 + absmax => scale => round)
+// 与 quantize_act 的激活旋转配套：x'·W' = (x·H)·(H·W) = x·W，输出不变但两侧动态范围均降低。
 template <typename T>
-__global__ void quantize_w8_kernel(int8_t *__restrict__ out_i8, float *__restrict__ scale,
-                                   const T *__restrict__ weight, size_t n, size_t k) {
+__global__ void quantize_w8_kernel(int8_t *__restrict__ out_i8, 
+                                   float *__restrict__ scale,
+                                   const T *__restrict__ weight, 
+                                   size_t n, 
+                                   size_t k) 
+{
+    extern __shared__ float s_row[];
     const size_t row = static_cast<size_t>(blockIdx.x);
     if (row >= n) {
         return;
     }
 
     const T *row_w = weight + row * k;
-    int8_t *row_q = out_i8 + row * k;
+    const size_t tid = static_cast<size_t>(threadIdx.x);
 
-    float local_max = 0.f;
-    for (size_t j = static_cast<size_t>(threadIdx.x); j < k; j += static_cast<size_t>(blockDim.x)) {
-        local_max = fmaxf(local_max, fabsf(llaisys::utils::nvidia::cast<float>(row_w[j])));
-    }
-    local_max = warp_amax(local_max);
-
-    __shared__ float warp_max[32];
-    const int lane = threadIdx.x & 31;
-    const int warp = threadIdx.x >> 5;
-    if (lane == 0) {
-        warp_max[warp] = local_max;
+    // 1. 加载整行到 smem (k 必须为 128 的倍数)
+    for (size_t j = tid; j < k; j += blockDim.x) {
+        s_row[j] = llaisys::utils::nvidia::cast<float>(row_w[j]);
     }
     __syncthreads();
 
-    float amax = 0.f;
-    if (threadIdx.x < ((blockDim.x + 31) >> 5)) {
-        amax = warp_max[threadIdx.x];
-    }
-    if (threadIdx.x < 32) {
-        amax = warp_amax(amax);
-    }
-    __shared__ float row_scale;
-    if (threadIdx.x == 0) {
-        row_scale = (amax == 0.f) ? 1.f : (amax / 127.f);
-        scale[row] = row_scale;
-    }
-    __syncthreads();
-    const float s = row_scale;
-    const float inv = 1.f / s;
-
-    for (size_t j = static_cast<size_t>(threadIdx.x); j < k; j += static_cast<size_t>(blockDim.x)) {
-        const float q = nearbyintf(llaisys::utils::nvidia::cast<float>(row_w[j]) * inv);
-        const int clipped = max(-128, min(127, static_cast<int>(q)));
-        row_q[j] = static_cast<int8_t>(clipped);
-    }
+    // 2. 公共量化：Hadamard 旋转 + absmax => scale => round
+    llaisys::utils::nvidia::quantize_smem_row(s_row, out_i8, scale, k, row, tid, blockDim.x);
 }
 
 template <typename T>
 void launch(std::byte *weight_i8, std::byte *scale, const std::byte *weight_fp, size_t n, size_t k) {
     const int threads = 256;
-    quantize_w8_kernel<T><<<static_cast<int>(n), threads>>>(
+    const size_t smem = k * sizeof(float);
+    quantize_w8_kernel<T><<<static_cast<int>(n), threads, smem>>>(
         reinterpret_cast<int8_t *>(weight_i8), reinterpret_cast<float *>(scale), reinterpret_cast<const T *>(weight_fp),
         n, k);
+    CUDA_CHECK(cudaGetLastError());
 }
 
 } // namespace

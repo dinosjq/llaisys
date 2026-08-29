@@ -31,12 +31,43 @@ __device__ __forceinline__ float dot_float4(const float4 &lhs, const float4 &rhs
     return lhs.x * rhs.x + lhs.y * rhs.y + lhs.z * rhs.z + lhs.w * rhs.w;
 }
 
+// 从 cache 加载一行 VEC_SIZE 个值到 smem（float）：
+// scale 非空 → 量化（i8 × per-token scale 反量化）；否则 FP 直拷。
+// token_offset = (block_id * block_size + token) * nkvhead + nkvh
+template <typename T>
+__device__ __forceinline__ void load_kv_row_values(
+    float *__restrict__ dst,
+    const void *src_cache,
+    const float *scale,
+    const size_t tok_offset,
+    const size_t d,
+    const size_t col) {
+    if (col >= d) {
+        return;
+    }
+    if (scale != nullptr) {
+        const int8_t *src = reinterpret_cast<const int8_t *>(src_cache) + tok_offset * d;
+        const float s = scale[tok_offset];
+        float4 v = make_float4(
+            static_cast<float>(src[col + 0]) * s,
+            static_cast<float>(src[col + 1]) * s,
+            static_cast<float>(src[col + 2]) * s,
+            static_cast<float>(src[col + 3]) * s);
+        *reinterpret_cast<float4 *>(dst + col) = v;
+    } else {
+        const T *src = reinterpret_cast<const T *>(src_cache) + tok_offset * d;
+        llaisys::utils::nvidia::copy_4d(src + col, dst + col);
+    }
+}
+
 template <typename T>
 __device__ __forceinline__ void load_paged_kv_row(
     float *__restrict__ s_k,
     float *__restrict__ s_v,
-    const T *__restrict__ k_cache,
-    const T *__restrict__ v_cache,
+    const void *k_cache,
+    const void *v_cache,
+    const float *k_scale,
+    const float *v_scale,
     const int64_t *__restrict__ block_ids,
     const size_t logical_token,
     const size_t kv_end,
@@ -53,26 +84,21 @@ __device__ __forceinline__ void load_paged_kv_row(
 
     const int64_t block_id = block_ids[logical_token / block_size + 1];
     const size_t block_token = logical_token % block_size;
-    const T *k_src = k_cache + ((block_id * block_size + block_token) * nkvhead + nkvh) * d;
-    const T *v_src = v_cache + ((block_id * block_size + block_token) * nkvhead + nkvh) * dv;
-    float *k_dst = s_k + (buffer * KV_TILE + row) * d;
-    float *v_dst = s_v + (buffer * KV_TILE + row) * dv;
+    const size_t tok_offset = (block_id * block_size + block_token) * nkvhead + nkvh;
     const size_t col = (threadIdx.x & (WARP_SIZE - 1)) * VEC_SIZE;
 
-    if (col < d) {
-        llaisys::utils::nvidia::copy_4d(k_src + col, k_dst + col);
-    }
-    if (col < dv) {
-        llaisys::utils::nvidia::copy_4d(v_src + col, v_dst + col);
-    }
+    load_kv_row_values<T>(s_k + (buffer * KV_TILE + row) * d, k_cache, k_scale, tok_offset, d, col);
+    load_kv_row_values<T>(s_v + (buffer * KV_TILE + row) * dv, v_cache, v_scale, tok_offset, dv, col);
 }
 
 // 自定义 paged_attention 以 flash_attention_v2 为基础
 template <typename T>
 __global__ void paged_attention_kernel(T *__restrict__ _attn, 
                                        const T *__restrict__ _Q, 
-                                       const T *__restrict__ _K_cache, 
-                                       const T *__restrict__ _V_cache, 
+                                       const void *__restrict__ _K_cache, 
+                                       const void *__restrict__ _V_cache, 
+                                       const float *__restrict__ _K_scale,
+                                       const float *__restrict__ _V_scale,
                                        const int64_t *_block_ids,
                                        const int64_t *_cut_idx,
                                        const int64_t *_tot_len,
@@ -153,8 +179,8 @@ __global__ void paged_attention_kernel(T *__restrict__ _attn,
 
     const size_t producer_row = warp_id - COMPUTE_WARPS;
     if (producer_warp) {
-        load_paged_kv_row(
-            s_k, s_v, _K_cache, _V_cache, batch_block_ids,
+        load_paged_kv_row<T>(
+            s_k, s_v, _K_cache, _V_cache, _K_scale, _V_scale, batch_block_ids,
             producer_row, kv_end, 0, producer_row, _block_size,
             _nkvhead, nkvh, _d, _dv);
     }
@@ -166,8 +192,8 @@ __global__ void paged_attention_kernel(T *__restrict__ _attn,
     for (size_t tile_base = 0; tile_base < kv_end; tile_base += KV_TILE) {
         if (producer_warp) {
             const size_t next_token = tile_base + KV_TILE + producer_row;
-            load_paged_kv_row(
-                s_k, s_v, _K_cache, _V_cache, batch_block_ids,
+            load_paged_kv_row<T>(
+                s_k, s_v, _K_cache, _V_cache, _K_scale, _V_scale, batch_block_ids,
                 next_token, kv_end, buffer ^ 1, producer_row,
                 _block_size, _nkvhead, nkvh, _d, _dv);
         }
@@ -274,7 +300,9 @@ void paged_attention_launch(std::byte *attn_val,       // 输出 (tot_seqlen, nh
                             const size_t &nh,          // 其他参数 ...
                             const size_t &dv, 
                             const size_t &d, 
-                            const size_t &nkvh)
+                            const size_t &nkvh,
+                            const std::byte *k_scale = nullptr,
+                            const std::byte *v_scale = nullptr)
 {
     if (d == 0 || dv == 0
         || d > HEAD_DIM_MAX || dv > HEAD_DIM_MAX
@@ -290,8 +318,10 @@ void paged_attention_launch(std::byte *attn_val,       // 输出 (tot_seqlen, nh
 
     auto *d_attn = reinterpret_cast<T *>(attn_val);
     const auto *d_q = reinterpret_cast<const T *>(q);
-    const auto *d_k_cache = reinterpret_cast<const T *>(k_cache);
-    const auto *d_v_cache = reinterpret_cast<const T *>(v_cache);
+    const void *d_k_cache = reinterpret_cast<const void *>(k_cache);
+    const void *d_v_cache = reinterpret_cast<const void *>(v_cache);
+    const auto *d_k_scale = reinterpret_cast<const float *>(k_scale);
+    const auto *d_v_scale = reinterpret_cast<const float *>(v_scale);
     const auto *d_block_ids = reinterpret_cast<const int64_t *>(block_ids);
     const auto *d_cut_idx = reinterpret_cast<const int64_t *>(cut_idx);
     const auto *d_tot_len = reinterpret_cast<const int64_t *>(tot_len);
@@ -302,7 +332,7 @@ void paged_attention_launch(std::byte *attn_val,       // 输出 (tot_seqlen, nh
     const size_t smem_bytes = sizeof(float) * 2 * KV_TILE * (d + dv);
 
     paged_attention_kernel<<<gridDim, blockDim, smem_bytes>>>(
-        d_attn, d_q, d_k_cache, d_v_cache, d_block_ids, d_cut_idx,
+        d_attn, d_q, d_k_cache, d_v_cache, d_k_scale, d_v_scale, d_block_ids, d_cut_idx,
         d_tot_len, block_size, batch_size, table_width, scale, nh, dv, d, nkvh);
 
     CUDA_CHECK(cudaGetLastError());
@@ -325,18 +355,20 @@ void paged_attention(std::byte *attn_val,       // 输出 (tot_seqlen, nh, dv)
                      const size_t &nh,          // 其他参数 ...
                      const size_t &dv, 
                      const size_t &d, 
-                     const size_t &nkvh)
+                     const size_t &nkvh,
+                     const std::byte *k_scale,
+                     const std::byte *v_scale)
 {
     switch (dtype) {
     case LLAISYS_DTYPE_F32:
         return paged_attention_launch<float>(attn_val, q, k_cache, v_cache, block_ids, cut_idx, tot_len, block_size,
-                                             batch_size, table_width, tot_task_num, scale, nh, dv, d, nkvh);
+                                             batch_size, table_width, tot_task_num, scale, nh, dv, d, nkvh, k_scale, v_scale);
     case LLAISYS_DTYPE_BF16:
         return paged_attention_launch<llaisys::bf16_t>(attn_val, q, k_cache, v_cache, block_ids, cut_idx, tot_len, block_size,
-                                             batch_size, table_width, tot_task_num, scale, nh, dv, d, nkvh);
+                                             batch_size, table_width, tot_task_num, scale, nh, dv, d, nkvh, k_scale, v_scale);
     case LLAISYS_DTYPE_F16:
         return paged_attention_launch<llaisys::fp16_t>(attn_val, q, k_cache, v_cache, block_ids, cut_idx, tot_len, block_size,
-                                             batch_size, table_width, tot_task_num, scale, nh, dv, d, nkvh);
+                                             batch_size, table_width, tot_task_num, scale, nh, dv, d, nkvh, k_scale, v_scale);
     default:
         EXCEPTION_UNSUPPORTED_DATATYPE(dtype);
     }

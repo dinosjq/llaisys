@@ -11,6 +11,8 @@ target("llaisys-device-nvidia")
     set_policy("build.cuda.devlink", true)
     add_includedirs("../src")
     set_warnings("all", "error")
+    -- 目标 GPU (RTX 4060 = Ada sm_89)；mma/wmma/cp.async 需 sm_80+
+    add_cuflags("-gencode=arch=compute_89,code=sm_89")
     if not is_plat("windows") then
         add_cxflags("-fPIC", "-Wno-unknown-pragmas")
         add_cuflags("-Xcompiler=-fPIC", "-Wno-unknown-pragmas")
@@ -30,6 +32,8 @@ target("llaisys-ops-nvidia")
     add_includedirs("../src")
     add_deps("llaisys-tensor")
     set_warnings("all", "error")
+    -- 目标 GPU (RTX 4060 = Ada sm_89)；mma/wmma/cp.async 需 sm_80+
+    add_cuflags("-gencode=arch=compute_89,code=sm_89")
     if not is_plat("windows") then
         add_cxflags("-fPIC", "-Wno-unknown-pragmas")
         add_cuflags("-Xcompiler=-fPIC", "-Wno-unknown-pragmas")

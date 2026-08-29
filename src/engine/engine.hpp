@@ -66,6 +66,7 @@ private:
     // 调度
     scheduler_t _scheduler;
     std::mutex _request_lock;
+    std::mutex _start_lock;  // 保护 start()/事件循环启动，避免并发 submit 竞争
     std::vector<request_t> _active_requests;
     // 执行
     worker_t _worker;

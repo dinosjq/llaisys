@@ -31,6 +31,7 @@ void Engine::_ensure_scheduler() {
 }
 
 void Engine::start() {
+    std::lock_guard<std::mutex> lock(this->_start_lock);
     if (this->_running) {
         return;
     }

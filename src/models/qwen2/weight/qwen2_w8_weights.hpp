@@ -1,8 +1,8 @@
 #pragma once
 
-#include "qwen2_weights.hpp"
 #include "../../../model/weight/utils/quantize_per_channel.hpp"
 #include "../../../utils/check.hpp"
+#include "qwen2_weights.hpp"
 
 #include <stdexcept>
 #include <utility>
@@ -20,6 +20,10 @@ struct QwenW8FfnWeights : QwenFfnWeights {
 
 class Qwen2W8Weights : public Qwen2Weights {
 public:
+    // lm_head 量化权重（仅 tie=False 时存在；tie=True 时 lm_head 复用 embedding，不量化）
+    tensor_t _out_embed_i8;    // [vocab, hs] I8 + Hadamard 旋转
+    tensor_t _out_embed_scale; // per-channel F32 scale
+
     // W8 路径：所有层都创建为量化层类型（基类 set 处理 norm/bias，本类处理量化 weight）
     void init(const size_t nlayer) override {
         this->_nlayer = nlayer;
@@ -90,6 +94,14 @@ public:
                 quant_assign(ffn->down_w, ffn->down_scale, std::move(tensor));
                 return true;
             }
+        }
+
+        // lm_head 独立权重（tie=False 时量化；tie=True 时不在 state dict 中，_out_embed 复用 embedding）
+        if (hf_name == "lm_head.weight") {
+            auto [w_i8, scale] = weight::utils::quantize_weight_per_channel(std::move(tensor));
+            this->_out_embed_i8 = std::move(w_i8);
+            this->_out_embed_scale = std::move(scale);
+            return true;
         }
 
         return Qwen2Weights::set(hf_name, std::move(tensor));

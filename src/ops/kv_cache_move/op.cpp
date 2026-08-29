@@ -8,13 +8,20 @@
 
 
 namespace llaisys::ops {
-void kv_cache_move(tensor_t out, tensor_t in, tensor_t block_ids, tensor_t cut_idx, tensor_t pos_ids)
+void kv_cache_move(tensor_t out, tensor_t in, tensor_t block_ids, tensor_t cut_idx, tensor_t pos_ids, tensor_t scale)
 {
     // 检查设备一致性
     CHECK_SAME_DEVICE(out, in, block_ids, cut_idx);
-    // 检查数据类型一致性
-    CHECK_SAME_DTYPE(out->dtype(), in->dtype());
+    // 检查数据类型：量化模式 out=I8 需 scale；否则 out/in 同 dtype
     ASSERT(block_ids->dtype() == LLAISYS_DTYPE_I64, "kv_cache_move: block_ids must be i64.");
+    const bool quant = out->dtype() == LLAISYS_DTYPE_I8;
+    if (quant) {
+        ASSERT(scale != nullptr, "kv_cache_move: quantized write requires a scale tensor.");
+        ASSERT(scale->dtype() == LLAISYS_DTYPE_F32, "kv_cache_move: scale must be F32.");
+        CHECK_SAME_DEVICE(scale, out);
+    } else {
+        CHECK_SAME_DTYPE(out->dtype(), in->dtype());
+    }
     // 检查内存连续性
     ASSERT(out->isContiguous() && in->isContiguous() && block_ids->isContiguous(), "kv_cache_move: all tensors must be contiguous.");
 
@@ -44,7 +51,8 @@ void kv_cache_move(tensor_t out, tensor_t in, tensor_t block_ids, tensor_t cut_i
 #ifdef ENABLE_NVIDIA_API
     case LLAISYS_DEVICE_NVIDIA:
         return nvidia::kv_cache_move(out->data(), in->data(), block_ids->data(), cut_idx->data(), pos_ids->data(),
-                                 block_size, tot_token_num, max_block_num, out->dtype(), numel);
+                                 quant ? scale->data() : nullptr, block_size, tot_token_num, max_block_num,
+                                 out->dtype(), in->dtype(), numel, nkvh);
 #endif
     default:
         // 不支持的设备类型

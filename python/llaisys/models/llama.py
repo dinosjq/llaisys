@@ -17,10 +17,11 @@ from .meta_utils import SimpleMeta, flatten_config, resolve_eos_token, set_model
 
 
 class Llama:
-    def __init__(self, model_path, device: DeviceType = DeviceType.CPU, *, quantize_weights: bool = False):
+    def __init__(self, model_path, device: DeviceType = DeviceType.CPU, *, quantize: bool = False):
         model_path = Path(model_path)
         self._device = device
         self._tensors = []
+        self._quantize = quantize
         self._closed = False
         self._in_embed = None
         self._out_embed_set = False
@@ -33,8 +34,8 @@ class Llama:
 
         eos_token = resolve_eos_token(config, pick_last=True)
         meta_map = flatten_config(config, eos_token_id=eos_token)
-        if quantize_weights:
-            meta_map["quantize_weights"] = 1
+        if quantize:
+            meta_map["quantize"] = 1
 
         try:
             import ml_dtypes  # noqa: F401
@@ -86,7 +87,7 @@ class Llama:
         except Exception:
             pass
 
-    def _tensor_from_numpy(self, arr: np.ndarray) -> Tensor:
+    def _tensor_from_numpy(self, arr: np.ndarray, keep: bool = True) -> Tensor:
         arr = np.ascontiguousarray(arr)
         if arr.dtype == np.float32:
             dtype = DataType.F32
@@ -101,11 +102,14 @@ class Llama:
 
         t = Tensor(arr.shape, dtype=dtype, device=self._device)
         t.load(c_void_p(arr.ctypes.data))
-        self._tensors.append(t)
+        if keep:
+            self._tensors.append(t)
         return t
 
     def _assign_weight(self, name: str, arr: np.ndarray):
-        t = self._tensor_from_numpy(arr)
+        t = self._tensor_from_numpy(
+            arr, keep=(not self._quantize) or name == "model.embed_tokens.weight"
+        )
         if name == "model.embed_tokens.weight":
             self._in_embed = t
         if name == "lm_head.weight":

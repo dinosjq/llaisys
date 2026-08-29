@@ -23,14 +23,18 @@ def load_ops(lib):
     lib.llaisysQuantizeW8.argtypes = [llaisysTensor_t, llaisysTensor_t, llaisysTensor_t]
     lib.llaisysQuantizeW8.restype = None
 
-    lib.llaisysLinearW8A16.argtypes = [
-        llaisysTensor_t,
-        llaisysTensor_t,
-        llaisysTensor_t,
-        llaisysTensor_t,
-        llaisysTensor_t,
+    lib.llaisysQuantizeAct.argtypes = [llaisysTensor_t, llaisysTensor_t, llaisysTensor_t]
+    lib.llaisysQuantizeAct.restype = None
+
+    lib.llaisysLinearW8A8.argtypes = [
+        llaisysTensor_t,  # out
+        llaisysTensor_t,  # in_q (已量化 I8)
+        llaisysTensor_t,  # a_scale (per-token F32)
+        llaisysTensor_t,  # weight_i8
+        llaisysTensor_t,  # w_scale
+        llaisysTensor_t,  # bias (可 None)
     ]
-    lib.llaisysLinearW8A16.restype = None
+    lib.llaisysLinearW8A8.restype = None
 
     lib.llaisysKvCacheMove.argtypes = [
         llaisysTensor_t,  # out
@@ -38,6 +42,7 @@ def load_ops(lib):
         llaisysTensor_t,  # block_ids_tensor
         llaisysTensor_t,  # cut_idx_tensor
         llaisysTensor_t,  # pos_ids_tensor
+        llaisysTensor_t,  # scale_tensor (量化写入时输出 per-(token,nkvh) scale，可 None)
     ]
     lib.llaisysKvCacheMove.restype = None
 
@@ -46,6 +51,9 @@ def load_ops(lib):
 
     lib.llaisysRmsNorm.argtypes = [llaisysTensor_t, llaisysTensor_t, llaisysTensor_t, c_float]
     lib.llaisysRmsNorm.restype = None
+
+    lib.llaisysRmsNormQuant.argtypes = [llaisysTensor_t, llaisysTensor_t, llaisysTensor_t, llaisysTensor_t, c_float]
+    lib.llaisysRmsNormQuant.restype = None
 
     lib.llaisysROPE.argtypes = [llaisysTensor_t, llaisysTensor_t, llaisysTensor_t, c_float]
     lib.llaisysROPE.restype = None
@@ -66,6 +74,8 @@ def load_ops(lib):
         llaisysTensor_t,  # attn_acc (flash_decoding ctx buf)
         llaisysTensor_t,  # attn_sum (flash_decoding ctx buf)
         llaisysTensor_t,  # attn_max (flash_decoding ctx buf)
+        llaisysTensor_t,  # k_scale (量化 KV cache 的 per-token scale，可 None)
+        llaisysTensor_t,  # v_scale (量化 KV cache 的 per-token scale，可 None)
     ]
     lib.llaisysPagedAttention.restype = None
 
@@ -80,3 +90,6 @@ def load_ops(lib):
 
     lib.llaisysSwiGLU.argtypes = [llaisysTensor_t, llaisysTensor_t, llaisysTensor_t]
     lib.llaisysSwiGLU.restype = None
+
+    lib.llaisysSwiGLUQuant.argtypes = [llaisysTensor_t, llaisysTensor_t, llaisysTensor_t, llaisysTensor_t]
+    lib.llaisysSwiGLUQuant.restype = None

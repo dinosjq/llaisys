@@ -10,13 +10,16 @@
 #include "../ops/linear/op.hpp"
 #include "../ops/dequant_w8/op.hpp"
 #include "../ops/quantize_w8/op.hpp"
-#include "../ops/linear_w8a16/op.hpp"
+#include "../ops/linear_w8a8/op.hpp"
+#include "../ops/quantize_act/op.hpp"
 #include "../ops/paged_attention/op.hpp"
 #include "../ops/rearrange/op.hpp"
 #include "../ops/rms_norm/op.hpp"
+#include "../ops/rms_norm_quant/op.hpp"
 #include "../ops/rope/op.hpp"
 #include "../ops/self_attention/op.hpp"
 #include "../ops/swiglu/op.hpp"
+#include "../ops/swiglu_quant/op.hpp"
 #include "../ops/top_k/op.hpp"
 
 __C {
@@ -48,22 +51,28 @@ void llaisysQuantizeW8(llaisysTensor_t weight_i8, llaisysTensor_t scale, llaisys
     llaisys::ops::quantize_w8(weight_i8->tensor, scale->tensor, weight_fp->tensor);
 }
 
-void llaisysLinearW8A16(llaisysTensor_t out, llaisysTensor_t in, llaisysTensor_t weight_i8, llaisysTensor_t scale,
-                        llaisysTensor_t bias) {
-    llaisys::ops::linear_w8a16(out->tensor, in->tensor, weight_i8->tensor, scale->tensor,
-                               bias ? bias->tensor : nullptr);
+void llaisysQuantizeAct(llaisysTensor_t out_q, llaisysTensor_t out_scale, llaisysTensor_t in) {
+    llaisys::ops::quantize_act(out_q->tensor, out_scale->tensor, in->tensor);
+}
+
+void llaisysLinearW8A8(llaisysTensor_t out, llaisysTensor_t in_q, llaisysTensor_t a_scale, llaisysTensor_t weight_i8,
+                       llaisysTensor_t w_scale, llaisysTensor_t bias) {
+    llaisys::ops::linear_w8a8(out->tensor, in_q->tensor, a_scale->tensor, weight_i8->tensor, w_scale->tensor,
+                              bias ? bias->tensor : nullptr);
 }
 
 void llaisysKvCacheMove(llaisysTensor_t out,
                         llaisysTensor_t in,
                         llaisysTensor_t block_ids_tensor,
                         llaisysTensor_t cut_idx_tensor,
-                        llaisysTensor_t pos_ids_tensor) {
+                        llaisysTensor_t pos_ids_tensor,
+                        llaisysTensor_t scale_tensor) {
     llaisys::ops::kv_cache_move(out->tensor,
                                 in->tensor,
                                 block_ids_tensor->tensor,
                                 cut_idx_tensor->tensor,
-                                pos_ids_tensor->tensor);
+                                pos_ids_tensor->tensor,
+                                scale_tensor ? scale_tensor->tensor : nullptr);
 }
 
 void llaisysRearrange(llaisysTensor_t out, llaisysTensor_t in) {
@@ -72,6 +81,11 @@ void llaisysRearrange(llaisysTensor_t out, llaisysTensor_t in) {
 
 void llaisysRmsNorm(llaisysTensor_t out, llaisysTensor_t in, llaisysTensor_t weight, float eps) {
     llaisys::ops::rms_norm(out->tensor, in->tensor, weight->tensor, eps);
+}
+
+void llaisysRmsNormQuant(llaisysTensor_t out_q, llaisysTensor_t out_scale, llaisysTensor_t in,
+                         llaisysTensor_t weight, float eps) {
+    llaisys::ops::rms_norm_quant(out_q->tensor, out_scale->tensor, in->tensor, weight->tensor, eps);
 }
 
 void llaisysROPE(llaisysTensor_t out, llaisysTensor_t in, llaisysTensor_t pos_ids, float theta) {
@@ -94,7 +108,9 @@ void llaisysPagedAttention(llaisysTensor_t attn_val,
                            bool is_prefill,
                            llaisysTensor_t attn_acc,
                            llaisysTensor_t attn_sum,
-                           llaisysTensor_t attn_max)
+                           llaisysTensor_t attn_max,
+                           llaisysTensor_t k_scale,
+                           llaisysTensor_t v_scale)
 {
     llaisys::ops::paged_attention(attn_val->tensor,
                                    q->tensor,
@@ -108,7 +124,9 @@ void llaisysPagedAttention(llaisysTensor_t attn_val,
                                    is_prefill,
                                    attn_acc ? attn_acc->tensor : nullptr,
                                    attn_sum ? attn_sum->tensor : nullptr,
-                                   attn_max ? attn_max->tensor : nullptr);
+                                   attn_max ? attn_max->tensor : nullptr,
+                                   k_scale ? k_scale->tensor : nullptr,
+                                   v_scale ? v_scale->tensor : nullptr);
 }
 
 void llaisysSelfAttention(llaisysTensor_t attn_val, llaisysTensor_t q, llaisysTensor_t k, llaisysTensor_t v, float scale) {
@@ -117,5 +135,9 @@ void llaisysSelfAttention(llaisysTensor_t attn_val, llaisysTensor_t q, llaisysTe
 
 void llaisysSwiGLU(llaisysTensor_t out, llaisysTensor_t gate, llaisysTensor_t up) {
     llaisys::ops::swiglu(out->tensor, gate->tensor, up->tensor);
+}
+
+void llaisysSwiGLUQuant(llaisysTensor_t out_q, llaisysTensor_t out_scale, llaisysTensor_t gate, llaisysTensor_t up) {
+    llaisys::ops::swiglu_quant(out_q->tensor, out_scale->tensor, gate->tensor, up->tensor);
 }
 }

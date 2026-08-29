@@ -40,23 +40,33 @@ class Ops:
         LIB_LLAISYS.llaisysQuantizeW8(weight_i8.lib_tensor(), scale.lib_tensor(), weight_fp.lib_tensor())
 
     @staticmethod
-    def linear_w8a16(out: Tensor, inp: Tensor, weight_i8: Tensor, scale: Tensor, bias: Tensor = None):
-        LIB_LLAISYS.llaisysLinearW8A16(
+    def quantize_act(out_q: Tensor, out_scale: Tensor, inp: Tensor):
+        """激活 per-token 量化（独立步骤）：in → out_q(I8) + out_scale(F32)。"""
+        LIB_LLAISYS.llaisysQuantizeAct(out_q.lib_tensor(), out_scale.lib_tensor(), inp.lib_tensor())
+
+    @staticmethod
+    def linear_w8a8(out: Tensor, in_q: Tensor, a_scale: Tensor, weight_i8: Tensor, w_scale: Tensor,
+                    bias: Tensor = None):
+        """W8A8 量化线性：输入已量化（in_q I8 + a_scale per-token），权重 int8 + per-channel scale。"""
+        LIB_LLAISYS.llaisysLinearW8A8(
             out.lib_tensor(),
-            inp.lib_tensor(),
+            in_q.lib_tensor(),
+            a_scale.lib_tensor(),
             weight_i8.lib_tensor(),
-            scale.lib_tensor(),
+            w_scale.lib_tensor(),
             bias.lib_tensor() if bias is not None else None,
         )
 
     @staticmethod
-    def kv_cache_move(out: Tensor, inp: Tensor, block_ids: Tensor, cut_idx: Tensor, pos_ids: Tensor):
+    def kv_cache_move(out: Tensor, inp: Tensor, block_ids: Tensor, cut_idx: Tensor, pos_ids: Tensor, scale: Tensor = None):
+        """out 为 I8 时走量化写入，scale 输出 per-(token,nkvh) F32 scale（必须提供）。"""
         LIB_LLAISYS.llaisysKvCacheMove(
             out.lib_tensor(),
             inp.lib_tensor(),
             block_ids.lib_tensor(),
             cut_idx.lib_tensor(),
             pos_ids.lib_tensor(),
+            scale.lib_tensor() if scale is not None else None,
         )
 
     @staticmethod
@@ -67,6 +77,13 @@ class Ops:
     def rms_norm(out: Tensor, inp: Tensor, weight: Tensor, eps: float):
         LIB_LLAISYS.llaisysRmsNorm(
             out.lib_tensor(), inp.lib_tensor(), weight.lib_tensor(), c_float(eps)
+        )
+
+    @staticmethod
+    def rms_norm_quant(out_q: Tensor, out_scale: Tensor, inp: Tensor, weight: Tensor, eps: float):
+        """融合 rms_norm + Hadamard + per-token 量化：in → out_q(I8) + out_scale(F32)。"""
+        LIB_LLAISYS.llaisysRmsNormQuant(
+            out_q.lib_tensor(), out_scale.lib_tensor(), inp.lib_tensor(), weight.lib_tensor(), c_float(eps)
         )
 
     @staticmethod
@@ -90,7 +107,8 @@ class Ops:
 
         tot_task_num: prefill = Σceil(seq_len/BLOCK_M)；decode = Σ块数（flash_decoding 的 grid.x）。
         Defaults is_prefill=True. attn_acc/sum/max are optional buffer tensors
-        for flash_decoding (required when is_prefill=False).
+        for flash_decoding (required when is_prefill=False). k_scale/v_scale are
+        optional per-token scales for quantized (I8) KV cache.
         """
         if len(rest) >= 4 and isinstance(rest[0], Tensor):
             cut_idx = rest[0]
@@ -108,6 +126,9 @@ class Ops:
             attn_acc = rest[buf_start] if len(rest) > buf_start else None
             attn_sum = rest[buf_start + 1] if len(rest) > buf_start + 1 else None
             attn_max = rest[buf_start + 2] if len(rest) > buf_start + 2 else None
+            # Optional quantized KV cache scales
+            k_scale = rest[buf_start + 3] if len(rest) > buf_start + 3 else None
+            v_scale = rest[buf_start + 4] if len(rest) > buf_start + 4 else None
             LIB_LLAISYS.llaisysPagedAttention(
                 attn_val.lib_tensor(),
                 q.lib_tensor(),
@@ -122,6 +143,8 @@ class Ops:
                 attn_acc.lib_tensor() if attn_acc else None,
                 attn_sum.lib_tensor() if attn_sum else None,
                 attn_max.lib_tensor() if attn_max else None,
+                k_scale.lib_tensor() if k_scale else None,
+                v_scale.lib_tensor() if v_scale else None,
             )
         else:
             raise TypeError(
@@ -143,3 +166,10 @@ class Ops:
     @staticmethod
     def swiglu(out: Tensor, gate: Tensor, up: Tensor):
         LIB_LLAISYS.llaisysSwiGLU(out.lib_tensor(), gate.lib_tensor(), up.lib_tensor())
+
+    @staticmethod
+    def swiglu_quant(out_q: Tensor, out_scale: Tensor, gate: Tensor, up: Tensor):
+        """融合 swiglu + Hadamard + per-token 量化：gate/up → out_q(I8) + out_scale(F32)。"""
+        LIB_LLAISYS.llaisysSwiGLUQuant(
+            out_q.lib_tensor(), out_scale.lib_tensor(), gate.lib_tensor(), up.lib_tensor()
+        )

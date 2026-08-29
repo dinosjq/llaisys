@@ -50,8 +50,7 @@ __device__ __forceinline__ void accumulate_vector(
     const float4 w = llaisys::utils::nvidia::load_4d(weight + k0);
 #pragma unroll
     for (int row = 0; row < M; ++row) {
-        const float4 x = llaisys::utils::nvidia::load_4d(
-            in + static_cast<size_t>(row) * k + k0);
+        const float4 x = llaisys::utils::nvidia::load_4d(in + static_cast<size_t>(row) * k + k0);
         acc[row] = fmaf(x.x, w.x, acc[row]);
         acc[row] = fmaf(x.y, w.y, acc[row]);
         acc[row] = fmaf(x.z, w.z, acc[row]);
