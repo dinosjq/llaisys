@@ -63,6 +63,10 @@ template <typename T>
 void launch(std::byte *out_q, std::byte *out_scale, const std::byte *in, const std::byte *weight, size_t m, size_t k,
             float eps) {
     const size_t smem = k * sizeof(float);
+    if (smem > 48 * 1024) {
+        cudaFuncSetAttribute(rms_norm_quant_kernel<T>, cudaFuncAttributeMaxDynamicSharedMemorySize,
+                             static_cast<int>(smem));
+    }
     rms_norm_quant_kernel<T><<<static_cast<int>(m), 1024, smem>>>(
         reinterpret_cast<int8_t *>(out_q), reinterpret_cast<float *>(out_scale), reinterpret_cast<const T *>(in),
         reinterpret_cast<const T *>(weight), k, eps);

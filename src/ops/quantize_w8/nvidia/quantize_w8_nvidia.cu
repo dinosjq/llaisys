@@ -43,6 +43,10 @@ template <typename T>
 void launch(std::byte *weight_i8, std::byte *scale, const std::byte *weight_fp, size_t n, size_t k) {
     const int threads = 256;
     const size_t smem = k * sizeof(float);
+    if (smem > 48 * 1024) {
+        cudaFuncSetAttribute(quantize_w8_kernel<T>, cudaFuncAttributeMaxDynamicSharedMemorySize,
+                             static_cast<int>(smem));
+    }
     quantize_w8_kernel<T><<<static_cast<int>(n), threads, smem>>>(
         reinterpret_cast<int8_t *>(weight_i8), reinterpret_cast<float *>(scale), reinterpret_cast<const T *>(weight_fp),
         n, k);

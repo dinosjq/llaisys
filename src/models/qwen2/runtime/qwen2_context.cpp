@@ -44,9 +44,9 @@ void Qwen2Context::allocate(llaisysDeviceType_t device, int device_id, Qwen2Meta
     _buf._x_part = Tensor::create({batch_max_seq_num, hs}, dtype, device, device_id);
     _buf._x_part_norm = Tensor::create({batch_max_seq_num, hs}, dtype, device, device_id);
     _buf._logits = Tensor::create({batch_max_seq_num, voc}, dtype, device, device_id);
-    _buf._attn_acc = Tensor::create({BATCH_MAX_BLOCK_NUM, nh, dh}, LLAISYS_DTYPE_F32, device, device_id);
-    _buf._attn_sum = Tensor::create({BATCH_MAX_BLOCK_NUM, nh, 1}, LLAISYS_DTYPE_F32, device, device_id);
-    _buf._attn_max = Tensor::create({BATCH_MAX_BLOCK_NUM, nh, 1}, LLAISYS_DTYPE_F32, device, device_id);
+    _buf._attn_acc = Tensor::create({batch_max_seq_num * max_block_num, nh, dh}, LLAISYS_DTYPE_F32, device, device_id);
+    _buf._attn_sum = Tensor::create({batch_max_seq_num * max_block_num, nh, 1}, LLAISYS_DTYPE_F32, device, device_id);
+    _buf._attn_max = Tensor::create({batch_max_seq_num * max_block_num, nh, 1}, LLAISYS_DTYPE_F32, device, device_id);
     _buf._token_ids = Tensor::create({BATCH_MAX_TOKEN_NUM}, LLAISYS_DTYPE_I64, device, device_id);
 
     // 激活量化中间张量

@@ -13,6 +13,7 @@ target("llaisys-device-nvidia")
     set_warnings("all", "error")
     -- 目标 GPU (RTX 4060 = Ada sm_89)；mma/wmma/cp.async 需 sm_80+
     add_cuflags("-gencode=arch=compute_89,code=sm_89")
+    add_culdflags("-gencode=arch=compute_89,code=sm_89")
     if not is_plat("windows") then
         add_cxflags("-fPIC", "-Wno-unknown-pragmas")
         add_cuflags("-Xcompiler=-fPIC", "-Wno-unknown-pragmas")
@@ -34,6 +35,7 @@ target("llaisys-ops-nvidia")
     set_warnings("all", "error")
     -- 目标 GPU (RTX 4060 = Ada sm_89)；mma/wmma/cp.async 需 sm_80+
     add_cuflags("-gencode=arch=compute_89,code=sm_89")
+    add_culdflags("-gencode=arch=compute_89,code=sm_89")
     if not is_plat("windows") then
         add_cxflags("-fPIC", "-Wno-unknown-pragmas")
         add_cuflags("-Xcompiler=-fPIC", "-Wno-unknown-pragmas")

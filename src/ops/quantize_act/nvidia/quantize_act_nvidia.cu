@@ -33,6 +33,10 @@ __global__ void quantize_act_kernel(int8_t *__restrict__ out_q,
 template <typename T>
 void launch(std::byte *out_q, std::byte *out_scale, const std::byte *in, size_t m, size_t k) {
     const size_t smem = k * sizeof(float);
+    if (smem > 48 * 1024) {
+        cudaFuncSetAttribute(quantize_act_kernel<T>, cudaFuncAttributeMaxDynamicSharedMemorySize,
+                             static_cast<int>(smem));
+    }
     quantize_act_kernel<T><<<static_cast<int>(m), 1024, smem>>>(
         reinterpret_cast<int8_t *>(out_q), reinterpret_cast<float *>(out_scale), reinterpret_cast<const T *>(in), k);
     CUDA_CHECK(cudaGetLastError());

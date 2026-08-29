@@ -538,7 +538,7 @@ void flash_decoding_dispatch(std::byte *attn_val,      // 输出 (batch_size, nh
                             const size_t &nkvh)
 {
     ASSERT(d == dv, "flash_decoding: d must equal dv.");
-    ASSERT(d == 128, "flash_decoding: only hd==128 supported (Qwen2-1.5B / Llama-3.2-3B).");
+    ASSERT(d == 128, "flash_decoding: only hd==128 supported (Qwen2-1.5B / Llama-3.2-3B / Qwen2-7B).");
     const int heads = static_cast<int>(nh / nkvh);   // HEAD_NUM = rep（整组最优）
     const bool quant = (k_scale != nullptr);
 
@@ -554,8 +554,11 @@ void flash_decoding_dispatch(std::byte *attn_val,      // 输出 (batch_size, nh
     } else if (heads == 3) { // Llama-3.2-3B
         if (quant) FD_LAUNCH(3, true);
         else       FD_LAUNCH(3, false);
+    } else if (heads == 7) { // Qwen2-7B (28/4): HEADS=4 (q_groups=2) to fit static smem 48KB
+        if (quant) FD_LAUNCH(4, true);
+        else       FD_LAUNCH(4, false);
     } else {
-        ASSERT(false, "flash_decoding: unsupported GQA ratio (nh/nkvh must be 6 or 3).");
+        ASSERT(false, "flash_decoding: unsupported GQA ratio (nh/nkvh must be 6, 3 or 7).");
     }
 #undef FD_LAUNCH
 }
