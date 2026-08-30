@@ -1,0 +1,178 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 980" width="960" height="980" font-family="'Droid Sans Fallback', 'Noto Sans CJK SC', 'PingFang SC', 'Microsoft YaHei', 'SimHei', sans-serif">
+  <defs>
+    <marker id="arrow-blue" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#2563eb"/>
+    </marker>
+    <marker id="arrow-red" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#dc2626"/>
+    </marker>
+    <marker id="arrow-green" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#16a34a"/>
+    </marker>
+  </defs>
+  <style>
+    .title { font-size: 20px; font-weight: 700; fill: #111827; }
+    .subtitle { font-size: 13px; fill: #6b7280; }
+    .layer-label { font-size: 13px; font-weight: 700; fill: #2563eb; }
+    .node-label { font-size: 14px; font-weight: 600; fill: #111827; }
+    .sub-label { font-size: 12px; fill: #6b7280; }
+    .arrow-label { font-size: 11px; fill: #6b7280; }
+  </style>
+
+  <rect width="960" height="980" fill="#ffffff"/>
+
+  <!-- 标题 -->
+  <text x="480" y="40" text-anchor="middle" class="title">LLAISYS 分层架构</text>
+  <text x="480" y="62" text-anchor="middle" class="subtitle">PYTHON 前端 · C API · 引擎与调度 · 模型 · 基础层</text>
+
+  <!-- ============ 层容器 ============ -->
+  <g stroke="#cbd5e1" stroke-width="1.5" stroke-dasharray="7,4" fill="#f8fafc" opacity="1">
+    <rect x="40" y="100" width="880" height="110" rx="10" data-graph-role="container"/>
+    <rect x="40" y="250" width="880" height="100" rx="10" data-graph-role="container"/>
+    <rect x="40" y="400" width="880" height="230" rx="10" data-graph-role="container"/>
+    <rect x="40" y="680" width="880" height="120" rx="10" data-graph-role="container"/>
+    <rect x="40" y="850" width="880" height="120" rx="10" data-graph-role="container"/>
+  </g>
+  <g class="layer-label">
+    <text x="54" y="118">01 // PYTHON 前端 (ctypes)</text>
+    <text x="54" y="268">02 // C API (include/llaisys)</text>
+    <text x="54" y="418">03 // 引擎与调度层 (engine · scheduler · sequence · kv_cache)</text>
+    <text x="54" y="698">04 // 模型层 (src/models)</text>
+    <text x="54" y="868">05 // 基础层 (ops · tensor · core · device)</text>
+  </g>
+
+  <!-- ============ 箭头 ============ -->
+  <!-- Python 内部调用 -->
+  <polyline points="690,150 650,150" stroke="#2563eb" stroke-width="1.5" fill="none" marker-end="url(#arrow-blue)"/>
+  <text x="670" y="143" text-anchor="middle" class="arrow-label">调用</text>
+  <polyline points="480,150 440,150" stroke="#2563eb" stroke-width="1.5" fill="none" marker-end="url(#arrow-blue)"/>
+  <polyline points="270,150 230,150" stroke="#2563eb" stroke-width="1.5" fill="none" marker-end="url(#arrow-blue)"/>
+  <text x="250" y="143" text-anchor="middle" class="arrow-label">ctypes</text>
+
+  <!-- 跨层 1: Python → C API -->
+  <polyline points="145,175 145,225 430,225 430,275" stroke="#2563eb" stroke-width="1.5" fill="none" marker-end="url(#arrow-blue)"/>
+  <text x="287" y="219" text-anchor="middle" class="arrow-label">绑定 / 调用</text>
+
+  <!-- 跨层 2: C API → 引擎 -->
+  <polyline points="430,325 430,380 145,380 145,435" stroke="#dc2626" stroke-width="1.5" fill="none" marker-end="url(#arrow-red)"/>
+  <text x="287" y="374" text-anchor="middle" class="arrow-label">Create / Request*</text>
+
+  <!-- 引擎内部 -->
+  <polyline points="145,489 145,517 430,517 430,545" stroke="#dc2626" stroke-width="1.5" fill="none" marker-end="url(#arrow-red)"/>
+  <text x="287" y="511" text-anchor="middle" class="arrow-label">持有</text>
+  <polyline points="230,462 290,462" stroke="#dc2626" stroke-width="1.5" fill="none" marker-end="url(#arrow-red)"/>
+  <text x="260" y="455" text-anchor="middle" class="arrow-label">持有</text>
+  <polyline points="470,462 510,462" stroke="#dc2626" stroke-width="1.5" fill="none" marker-end="url(#arrow-red)"/>
+  <text x="490" y="455" text-anchor="middle" class="arrow-label">持有</text>
+
+  <!-- 跨层 3: 引擎 → 模型 -->
+  <polyline points="430,599 430,655 145,655 145,715" stroke="#dc2626" stroke-width="1.5" fill="none" marker-end="url(#arrow-red)"/>
+  <text x="287" y="649" text-anchor="middle" class="arrow-label">持有 Model</text>
+
+  <!-- 模型内部 -->
+  <polyline points="230,740 270,740" stroke="#2563eb" stroke-width="1.5" fill="none" marker-end="url(#arrow-blue)"/>
+  <text x="250" y="733" text-anchor="middle" class="arrow-label">forward</text>
+
+  <!-- 跨层 4: 模型 → 基础 -->
+  <polyline points="145,765 145,825 325,825 325,885" stroke="#2563eb" stroke-width="1.5" fill="none" marker-end="url(#arrow-blue)"/>
+  <text x="235" y="819" text-anchor="middle" class="arrow-label">算子调用</text>
+
+  <!-- 基础层依赖链 -->
+  <polyline points="390,910 430,910" stroke="#16a34a" stroke-width="1.5" fill="none" marker-end="url(#arrow-green)"/>
+  <polyline points="560,910 600,910" stroke="#16a34a" stroke-width="1.5" fill="none" marker-end="url(#arrow-green)"/>
+  <polyline points="730,910 770,910" stroke="#16a34a" stroke-width="1.5" fill="none" marker-end="url(#arrow-green)"/>
+
+  <!-- ============ 节点 ============ -->
+  <!-- Python 层 -->
+  <g>
+    <rect x="690" y="125" width="170" height="50" rx="8" fill="#ffffff" stroke="#d1d5db" stroke-width="1.5"/>
+    <text x="775" y="147" text-anchor="middle" class="node-label">OpenAI Server</text>
+    <text x="775" y="163" text-anchor="middle" class="sub-label">FastAPI · SSE</text>
+    <rect x="480" y="125" width="170" height="50" rx="8" fill="#eff6ff" stroke="#bfdbfe" stroke-width="1.5"/>
+    <text x="565" y="147" text-anchor="middle" class="node-label">Models</text>
+    <text x="565" y="163" text-anchor="middle" class="sub-label">Qwen2 / Llama</text>
+    <rect x="270" y="125" width="170" height="50" rx="8" fill="#ffffff" stroke="#d1d5db" stroke-width="1.5"/>
+    <text x="355" y="147" text-anchor="middle" class="node-label">Ops / Tensor</text>
+    <text x="355" y="163" text-anchor="middle" class="sub-label">Pythonic 包装</text>
+    <rect x="60" y="125" width="170" height="50" rx="8" fill="#eff6ff" stroke="#bfdbfe" stroke-width="1.5"/>
+    <text x="145" y="147" text-anchor="middle" class="node-label">libllaisys</text>
+    <text x="145" y="163" text-anchor="middle" class="sub-label">ctypes 绑定</text>
+  </g>
+
+  <!-- C API 层 -->
+  <g>
+    <rect x="330" y="275" width="200" height="50" rx="8" fill="#eff6ff" stroke="#bfdbfe" stroke-width="1.5"/>
+    <text x="430" y="297" text-anchor="middle" class="node-label">models/model.h</text>
+    <text x="430" y="313" text-anchor="middle" class="sub-label">Create / Request*</text>
+    <rect x="60" y="275" width="200" height="50" rx="8" fill="#ffffff" stroke="#d1d5db" stroke-width="1.5"/>
+    <text x="160" y="297" text-anchor="middle" class="node-label">ops.h</text>
+    <text x="160" y="313" text-anchor="middle" class="sub-label">算子 C 接口</text>
+    <rect x="700" y="275" width="200" height="50" rx="8" fill="#ffffff" stroke="#d1d5db" stroke-width="1.5"/>
+    <text x="800" y="297" text-anchor="middle" class="node-label">runtime.h</text>
+    <text x="800" y="313" text-anchor="middle" class="sub-label">RuntimeAPI</text>
+  </g>
+
+  <!-- 引擎与调度层 -->
+  <g>
+    <rect x="60" y="435" width="170" height="54" rx="8" fill="#eff6ff" stroke="#bfdbfe" stroke-width="1.5"/>
+    <text x="145" y="459" text-anchor="middle" class="node-label">Engine</text>
+    <text x="145" y="475" text-anchor="middle" class="sub-label">事件循环线程</text>
+    <rect x="290" y="435" width="180" height="54" rx="8" fill="#ffffff" stroke="#d1d5db" stroke-width="1.5"/>
+    <text x="380" y="459" text-anchor="middle" class="node-label">Scheduler</text>
+    <text x="380" y="475" text-anchor="middle" class="sub-label">双缓冲 / chunked prefill</text>
+    <rect x="510" y="435" width="160" height="54" rx="8" fill="#f0fdf4" stroke="#bbf7d0" stroke-width="1.5"/>
+    <text x="590" y="459" text-anchor="middle" class="node-label">BlockManager</text>
+    <text x="590" y="475" text-anchor="middle" class="sub-label">逻辑块表 / 前缀复用</text>
+    <rect x="720" y="435" width="150" height="54" rx="8" fill="#ffffff" stroke="#d1d5db" stroke-width="1.5"/>
+    <text x="795" y="459" text-anchor="middle" class="node-label">Sequence</text>
+    <text x="795" y="475" text-anchor="middle" class="sub-label">状态机 + block_ids</text>
+    <rect x="350" y="545" width="160" height="54" rx="8" fill="#ffffff" stroke="#d1d5db" stroke-width="1.5"/>
+    <text x="430" y="569" text-anchor="middle" class="node-label">Worker</text>
+    <text x="430" y="585" text-anchor="middle" class="sub-label">持有 Model</text>
+  </g>
+
+  <!-- 模型层 -->
+  <g>
+    <rect x="60" y="715" width="170" height="50" rx="8" fill="#eff6ff" stroke="#bfdbfe" stroke-width="1.5"/>
+    <text x="145" y="737" text-anchor="middle" class="node-label">Qwen2 / Llama</text>
+    <text x="145" y="753" text-anchor="middle" class="sub-label">forward</text>
+    <rect x="270" y="715" width="170" height="50" rx="8" fill="#ffffff" stroke="#d1d5db" stroke-width="1.5"/>
+    <text x="355" y="737" text-anchor="middle" class="node-label">Layers</text>
+    <text x="355" y="753" text-anchor="middle" class="sub-label">embedding / attn / ffn</text>
+    <rect x="480" y="715" width="170" height="50" rx="8" fill="#f0fdf4" stroke="#bbf7d0" stroke-width="1.5"/>
+    <text x="565" y="737" text-anchor="middle" class="node-label">Context</text>
+    <text x="565" y="753" text-anchor="middle" class="sub-label">物理 KV cache 张量</text>
+    <polygon points="690,740 743,715 807,715 860,740 807,765 743,765" fill="#faf5ff" stroke="#ddd6fe" stroke-width="1.5"/>
+    <text x="775" y="737" text-anchor="middle" class="node-label">Sampler</text>
+    <text x="775" y="753" text-anchor="middle" class="sub-label">top-k / top-p / temp</text>
+  </g>
+
+  <!-- 基础层 -->
+  <g>
+    <rect x="260" y="885" width="130" height="50" rx="8" fill="#ffffff" stroke="#d1d5db" stroke-width="1.5"/>
+    <text x="325" y="907" text-anchor="middle" class="node-label">Ops</text>
+    <text x="325" y="923" text-anchor="middle" class="sub-label">算子分发 cpu|nvidia</text>
+    <rect x="430" y="885" width="130" height="50" rx="8" fill="#ffffff" stroke="#d1d5db" stroke-width="1.5"/>
+    <text x="495" y="907" text-anchor="middle" class="node-label">Tensor</text>
+    <text x="495" y="923" text-anchor="middle" class="sub-label">meta+Storage</text>
+    <rect x="600" y="885" width="130" height="50" rx="8" fill="#ffffff" stroke="#d1d5db" stroke-width="1.5"/>
+    <text x="665" y="907" text-anchor="middle" class="node-label">Core</text>
+    <text x="665" y="923" text-anchor="middle" class="sub-label">thread_local Context</text>
+    <rect x="770" y="885" width="130" height="50" rx="8" fill="#eff6ff" stroke="#bfdbfe" stroke-width="1.5"/>
+    <text x="835" y="907" text-anchor="middle" class="node-label">Device</text>
+    <text x="835" y="923" text-anchor="middle" class="sub-label">RuntimeAPI 函数指针表</text>
+  </g>
+
+  <!-- 图例 -->
+  <g font-size="12" fill="#6b7280">
+    <line x1="60" y1="952" x2="90" y2="952" stroke="#2563eb" stroke-width="1.5" marker-end="url(#arrow-blue)"/>
+    <text x="98" y="956">调用 / 数据流</text>
+    <line x1="210" y1="952" x2="240" y2="952" stroke="#dc2626" stroke-width="1.5" marker-end="url(#arrow-red)"/>
+    <text x="248" y="956">持有 / 控制</text>
+    <line x1="370" y1="952" x2="400" y2="952" stroke="#16a34a" stroke-width="1.5" marker-end="url(#arrow-green)"/>
+    <text x="408" y="956">依赖</text>
+  </g>
+
+  <!-- 页脚 -->
+  <text x="480" y="974" text-anchor="middle" class="sub-label">LLAISYS · 分层架构 · C++17 后端 + Python ctypes 前端</text>
+</svg>

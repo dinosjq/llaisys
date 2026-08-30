@@ -6,6 +6,8 @@ build/
 docs/
 MEMORY.md
 memory/
+CLAUDE.md
+AGENTS.md
 
 # Binaries
 bin/
