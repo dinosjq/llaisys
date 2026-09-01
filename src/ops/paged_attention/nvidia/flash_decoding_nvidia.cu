@@ -22,14 +22,13 @@ __device__ __forceinline__ float warp_reduce(float val) {
  *  flash decoding based on:
  *  1). flash attention v2;
  *  2). paged_attention;
- *          => kv cache block: token_num = 32
- *  3). two buffer: consumer + producer;
- *  4). less register/smem
- *          => warp contain data
- *  5). totlen dim cut: parallel + reduce;
- *  6). cp.async;
- *  7). grid change-able, coalesce, template...
+ *  3). consumer + producer;
+ *  4). less register/smem => warp contain data
+ *  5). parallel + reduce;
+ *  6). cp.async, assembly line;
+ *  7). coalesce kv block
  *  8). kv smem reuse
+ *  9). less register/smem => warp group
  * 
  * physical cache overview
  *  1. [all blocks -> block -> token]
@@ -41,19 +40,17 @@ __device__ __forceinline__ float warp_reduce(float val) {
  *  table_id(virtual) ={block_ids map}=> block_id(physical) 
  */
 
-constexpr size_t WARP_SIZE = 32;        // 固定
-constexpr size_t BLOCK_DIM_0 = 128;     // 固定
-constexpr size_t BLOCK_DIM_1 = 256;     // 固定
-constexpr size_t WARP_NUM = 4;          // 固定
-
-static_assert(WARP_SIZE * WARP_NUM == BLOCK_DIM_0, "illegal");
+// 对 block 内的 warp 进行分组
+constexpr size_t WARP_SIZE = 32;    // 固定: 单个 warp 的 thread 个数
 
 template <typename T,       // value type (attn 输出 / q)
           size_t HEAD_DIM,  // attn head dim
-          size_t HEAD_NUM,  // the count of q row  => (nk / nkvh)
+          size_t HEAD_NUM,  // _nk / _nkvh
+          size_t WARP_NUM,  // 可变: 一个 group 的 warp 数目
+          size_t TILE_M,    // 可变: 一个 group 最多处理几行 q
           size_t TILE_K,    // split physical block into tile
           size_t COALESCE,  // merge blocks count
-          bool QUANT        // 量化 KV cache（i8 + per-token scale）
+          bool QUANT        // 量化 KV cache (i8 + per-token scale)
           >
 __global__ void flash_decoding_parallel_kernel(float *__restrict__ _attn_acc, 
                                                float *__restrict__ _attn_sum,
@@ -61,8 +58,8 @@ __global__ void flash_decoding_parallel_kernel(float *__restrict__ _attn_acc,
                                                const T *__restrict__ _q, 
                                                const void *__restrict__ _k_cache, 
                                                const void *__restrict__ _v_cache, 
-                                               const float *__restrict__ _K_scale,
-                                               const float *__restrict__ _V_scale,
+                                               const float *__restrict__ _k_scale,
+                                               const float *__restrict__ _v_scale,
                                                const int64_t *_block_ids,
                                                const int64_t *_cut_idx,
                                                const int64_t *_tot_len,
@@ -73,8 +70,7 @@ __global__ void flash_decoding_parallel_kernel(float *__restrict__ _attn_acc,
                                                const size_t _nh,
                                                const size_t _nkvh) 
 {
-    // shared memory __align__(16) cp.async 16B 拷贝要求 src/dst 16B 对齐
-    // 存储字节：非量化每元素 sizeof(T)；量化 i8 每元素 1
+    // cp.async 16B 拷贝要求 src/dst 16B 对齐
     __shared__ __align__(16) char s_k[2][TILE_K][HEAD_DIM * (QUANT ? 1 : sizeof(T))];
     __shared__ __align__(16) char s_v[2][TILE_K][HEAD_DIM * (QUANT ? 1 : sizeof(T))];
     __shared__ __align__(16) float s_scale[2][TILE_K][2];   // 量化时每 tile 每 token 的 {k_scale, v_scale}
@@ -84,31 +80,25 @@ __global__ void flash_decoding_parallel_kernel(float *__restrict__ _attn_acc,
     __shared__ float s_max[HEAD_NUM][WARP_NUM];
 
     // register
-    float4 reg_acc[HEAD_NUM];
-    float reg_sum[HEAD_NUM];
-    float reg_max[HEAD_NUM];
-
-    const size_t tid = threadIdx.x;
-    const size_t warp_id = tid >> 5;
-    const size_t lane_id = tid & 31;
-
-    // init acc sum max
+    float4 reg_acc[TILE_M];
+    float reg_sum[TILE_M];
+    float reg_max[TILE_M];
 #pragma unroll
-    for (size_t h = 0; h < HEAD_NUM; ++ h) {
+    for (size_t h = 0; h < TILE_M; ++ h) {
         reg_acc[h] = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
         reg_sum[h] = 0.0f;
         reg_max[h] = -INFINITY;
     }
 
-    // info
+    const size_t tid = threadIdx.x;
     const size_t task_id = blockIdx.x;
-    const size_t rep = _nh / _nkvh;                     
-    const size_t q_groups = (rep + HEAD_NUM - 1) / HEAD_NUM;
-    const size_t nkvh = blockIdx.y / q_groups;         
-    const size_t q_group = blockIdx.y % q_groups;      
-    size_t batch_id = -1;
-    size_t pre_task_num = 0;
-    size_t last = 0;
+    const size_t nkvh = blockIdx.y; 
+
+    const size_t warp_id = tid >> 5;
+    const size_t lane_id = tid & 31;
+    const size_t group_id = warp_id / WARP_NUM;
+
+    size_t batch_id = -1, pre_task_num = 0, last = 0;
     for (size_t i = 0; i < _batch_size; ++ i) {
         size_t now = static_cast<size_t>(_block_ids[i * _table_width]);
         size_t task_num = (now - last + COALESCE - 1) / COALESCE;
@@ -119,25 +109,26 @@ __global__ void flash_decoding_parallel_kernel(float *__restrict__ _attn_acc,
         pre_task_num += task_num;
         last = now;
     }
-    if (batch_id == -1) {
-        return;
-    }
+    if (batch_id == -1) return;
+    const size_t begin_id = (task_id - pre_task_num) * COALESCE;
+
     const size_t totlen = _tot_len[batch_id];
     const size_t limit = totlen - 1;
-    const size_t begin_id = (task_id - pre_task_num) * COALESCE;
+    const int64_t *block_ids = _block_ids + batch_id * _table_width;
     size_t task_size = _block_ids[batch_id * _table_width] - ((batch_id > 0) ? _block_ids[(batch_id - 1) * _table_width] : 0);
     task_size = min(task_size - begin_id, COALESCE);
 
     // load q (global -> smem)
 #pragma unroll
-    for (size_t h = warp_id; h < HEAD_NUM; h += WARP_NUM) {
-        if (q_group * HEAD_NUM + h >= rep) continue;
-        size_t nh = nkvh * rep + q_group * HEAD_NUM + h;
+    for (size_t i = warp_id % WARP_NUM; i < TILE_M; i += WARP_NUM) {
+        if (group_id * TILE_M + i >= HEAD_NUM) break;
+        const size_t h = group_id * TILE_M + i;
+        const size_t nh = nkvh * HEAD_NUM + h;
         const T *q = _q + (batch_id * _nh + nh) * HEAD_DIM;
         llaisys::utils::nvidia::copy_4d(q + (lane_id << 2), s_q[h] + (lane_id << 2));
     }
     
-    // pre_calc(to cp.async): kv cache block global pointer (字节地址)
+    // kv cache physical block pointer (字节地址)
     constexpr size_t ELEM_BYTES = QUANT ? 1 : sizeof(T);
     const void *k_ptrs[COALESCE];
     const void *v_ptrs[COALESCE];
@@ -146,7 +137,7 @@ __global__ void flash_decoding_parallel_kernel(float *__restrict__ _attn_acc,
     for (size_t i = 0; i < COALESCE; ++ i) {
         if (i >= task_size) break;
         size_t table_id = begin_id + i;
-        size_t block_id = _block_ids[batch_id * _table_width + table_id + 1];
+        size_t block_id = block_ids[table_id + 1];
         size_t cache_offset = (block_id * _block_size * _nkvh + nkvh) * HEAD_DIM * ELEM_BYTES;
         k_ptrs[i] = reinterpret_cast<const void *>(reinterpret_cast<const char *>(_k_cache) + cache_offset);
         v_ptrs[i] = reinterpret_cast<const void *>(reinterpret_cast<const char *>(_v_cache) + cache_offset);
@@ -169,9 +160,9 @@ __global__ void flash_decoding_parallel_kernel(float *__restrict__ _attn_acc,
         if constexpr (QUANT) {
             const int8_t *k_ptr = reinterpret_cast<const int8_t *>(k_ptrs[table_id]);
             const int8_t *v_ptr = reinterpret_cast<const int8_t *>(v_ptrs[table_id]);
-            size_t block_id = _block_ids[batch_id * _table_width + table_id + 1];
-            const float *k_scale_base = _K_scale + block_id * _block_size * _nkvh;
-            const float *v_scale_base = _V_scale + block_id * _block_size * _nkvh;
+            size_t block_id = block_ids[table_id + 1];
+            const float *k_scale = _k_scale + block_id * _block_size * _nkvh;
+            const float *v_scale = _v_scale + block_id * _block_size * _nkvh;
             // kv 数据：16B = 16 个 i8
             for (size_t i = tid; i < TILE_K * I8_CHUNKS_PER_ROW; i += blockDim.x) {
                 size_t row = i / I8_CHUNKS_PER_ROW;
@@ -188,8 +179,8 @@ __global__ void flash_decoding_parallel_kernel(float *__restrict__ _attn_acc,
             for (size_t i = tid; i < TILE_K; i += blockDim.x) {
                 size_t inner_token_id = tile_offset + i;
                 if (inner_token_id < _block_size && inner_token_id + table_offset < totlen) {
-                    s_scale[stage][i][0] = k_scale_base[inner_token_id * _nkvh + nkvh];
-                    s_scale[stage][i][1] = v_scale_base[inner_token_id * _nkvh + nkvh];
+                    s_scale[stage][i][0] = k_scale[inner_token_id * _nkvh + nkvh];
+                    s_scale[stage][i][1] = v_scale[inner_token_id * _nkvh + nkvh];
                 }
             }
         } else {
@@ -231,7 +222,7 @@ __global__ void flash_decoding_parallel_kernel(float *__restrict__ _attn_acc,
         
         // compute
 #pragma unroll
-        for (size_t row = warp_id; row < TILE_K; row += WARP_NUM) {
+        for (size_t row = warp_id % WARP_NUM; row < TILE_K; row += WARP_NUM) {
             size_t inner_token_id = inner_id * TILE_K + row;
             if (inner_token_id < _block_size && inner_token_id + table_offset <= limit) {
                 // load kv (smem -> register) 反量化
@@ -257,24 +248,27 @@ __global__ void flash_decoding_parallel_kernel(float *__restrict__ _attn_acc,
                     llaisys::utils::nvidia::copy_4d(sp_k + (lane_id << 2), &k_vec.x);
                     llaisys::utils::nvidia::copy_4d(sp_v + (lane_id << 2), &v_vec.x);
                 }
+
 #pragma unroll
-                for (size_t h = 0; h < HEAD_NUM; ++ h) {
+                for (size_t i = 0; i < TILE_M; ++ i) {
                     float4 q_vec = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+                    const size_t h = group_id * TILE_M + i;
+                    if (h >= HEAD_NUM) break;
                     llaisys::utils::nvidia::copy_4d(s_q[h] + (lane_id << 2), &q_vec.x);
 
                     float dot = q_vec.x * k_vec.x + q_vec.y * k_vec.y + q_vec.z * k_vec.z + q_vec.w * k_vec.w;
                     dot = warp_reduce(dot) * _scale;
 
-                    float max_new = fmaxf(reg_max[h], dot);
-                    float alpha = __expf(reg_max[h] - max_new);
+                    float max_new = fmaxf(reg_max[i], dot);
+                    float alpha = __expf(reg_max[i] - max_new);
                     float beta = __expf(dot - max_new);
-                    reg_max[h] = max_new;
-                    reg_sum[h] = alpha * reg_sum[h] + beta;
+                    reg_max[i] = max_new;
+                    reg_sum[i] = alpha * reg_sum[i] + beta;
 
-                    reg_acc[h].x = alpha * reg_acc[h].x + beta * v_vec.x;
-                    reg_acc[h].y = alpha * reg_acc[h].y + beta * v_vec.y;
-                    reg_acc[h].z = alpha * reg_acc[h].z + beta * v_vec.z;
-                    reg_acc[h].w = alpha * reg_acc[h].w + beta * v_vec.w;
+                    reg_acc[i].x = alpha * reg_acc[i].x + beta * v_vec.x;
+                    reg_acc[i].y = alpha * reg_acc[i].y + beta * v_vec.y;
+                    reg_acc[i].z = alpha * reg_acc[i].z + beta * v_vec.z;
+                    reg_acc[i].w = alpha * reg_acc[i].w + beta * v_vec.w;
                 }
             }
         }
@@ -283,50 +277,54 @@ __global__ void flash_decoding_parallel_kernel(float *__restrict__ _attn_acc,
 
     // store acc (register -> smem)
 #pragma unroll
-    for (size_t h = 0; h < HEAD_NUM; ++ h) {
-        if (h % WARP_NUM == warp_id) continue;
-        *reinterpret_cast<float4 *>(&s_acc[h][warp_id][lane_id << 2]) = reg_acc[h];
+    for (size_t i = 0; i < TILE_M; ++ i) {
+        const size_t h = group_id * TILE_M + i;
+        if (h >= HEAD_NUM) break;
+        *reinterpret_cast<float4 *>(&s_acc[h][warp_id % WARP_NUM][lane_id << 2]) = reg_acc[i];
         if (lane_id == 0) {
-            s_sum[h][warp_id] = reg_sum[h];
-            s_max[h][warp_id] = reg_max[h];
+            s_sum[h][warp_id % WARP_NUM] = reg_sum[i];
+            s_max[h][warp_id % WARP_NUM] = reg_max[i];
         }
     }
     __syncthreads();
 
     // compute then write back
+    if (warp_id % WARP_NUM == 0) {
 #pragma unroll
-    for (size_t h = warp_id; h < HEAD_NUM; h += WARP_NUM) {
-        if (q_group * HEAD_NUM + h >= rep) continue;
-        float sum_old = reg_sum[h];
-        float max_old = reg_max[h];
+        for (size_t hh = 0; hh < TILE_M; ++ hh) {
+            const size_t h = group_id * TILE_M + hh;
+            if (h >= HEAD_NUM) break;
+            float sum_old = reg_sum[hh];
+            float max_old = reg_max[hh];
 #pragma unroll
-        for (size_t i = 0; i < WARP_NUM; ++ i) {
-            if (i == warp_id) continue;
-            float sum_cur = s_sum[h][i];
-            float max_cur = s_max[h][i];
+            for (size_t i = 0; i < WARP_NUM; ++ i) {
+                if (i == warp_id % WARP_NUM) continue;
+                float sum_cur = s_sum[h][i];
+                float max_cur = s_max[h][i];
 
-            float max_new = fmaxf(max_old, max_cur);
-            float alpha = __expf(max_old - max_new);
-            float beta = __expf(max_cur - max_new);
+                float max_new = fmaxf(max_old, max_cur);
+                float alpha = __expf(max_old - max_new);
+                float beta = __expf(max_cur - max_new);
 
-            max_old = max_new;
-            sum_old = alpha * sum_old + beta * sum_cur;
-            float4 b = *reinterpret_cast<float4 *>(&s_acc[h][i][lane_id << 2]);
-            reg_acc[h].x = alpha * reg_acc[h].x + beta * b.x;
-            reg_acc[h].y = alpha * reg_acc[h].y + beta * b.y;
-            reg_acc[h].z = alpha * reg_acc[h].z + beta * b.z;
-            reg_acc[h].w = alpha * reg_acc[h].w + beta * b.w;
+                max_old = max_new;
+                sum_old = alpha * sum_old + beta * sum_cur;
+                float4 b = *reinterpret_cast<float4 *>(&s_acc[h][i][lane_id << 2]);
+                reg_acc[hh].x = alpha * reg_acc[hh].x + beta * b.x;
+                reg_acc[hh].y = alpha * reg_acc[hh].y + beta * b.y;
+                reg_acc[hh].z = alpha * reg_acc[hh].z + beta * b.z;
+                reg_acc[hh].w = alpha * reg_acc[hh].w + beta * b.w;
+            }
+
+            size_t nh = nkvh * HEAD_NUM + h;
+            size_t offset = task_id * _nh + nh;
+            if (lane_id == 0) {
+                _attn_max[offset] = max_old;
+                _attn_sum[offset] = sum_old;
+            }
+
+            offset *= HEAD_DIM;
+            reinterpret_cast<float4 *>(_attn_acc + offset)[lane_id] = reg_acc[hh];
         }
-
-        size_t nh = nkvh * rep + q_group * HEAD_NUM + h;
-        size_t offset = task_id * _nh + nh;
-        if (lane_id == 0) {
-            _attn_max[offset] = max_old;
-            _attn_sum[offset] = sum_old;
-        }
-
-        offset *= HEAD_DIM;
-        reinterpret_cast<float4 *>(_attn_acc + offset)[lane_id] = reg_acc[h];
     }
 }
 
@@ -463,7 +461,7 @@ __global__ void flash_decoding_reduce_kernel(T *__restrict__ _attn,
 }
 
 // decode stage 特殊的有: per_seq_len = 1, tot_seqlen = batch_size
-template <typename T, size_t HD, size_t HEADS, size_t TILE_K, size_t COALESCE, bool QUANT>
+template <typename T, size_t HEAD_DIM, size_t HEAD_NUM, size_t WARP_NUM, size_t TILE_M, size_t TILE_K, size_t COALESCE, bool QUANT>
 void flash_decoding_launch(std::byte *attn_val,        // 输出 (batch_size, nh, dv)
                             std::byte *attn_acc,       // 输出 (batch_task_num, nh, dv) 
                             std::byte *attn_sum,       // 输出 (batch_task_num, nh, 1)
@@ -479,11 +477,13 @@ void flash_decoding_launch(std::byte *attn_val,        // 输出 (batch_size, nh
                             const size_t block_size,   // 一个 block 的 token 数 (批次无关)
                             const size_t batch_size,   // 批次大小 (批次有关)
                             const size_t table_width,  // 块表宽度 (批次无关)
-                            const size_t tot_task_num, // task 数
+                            const size_t tot_block_num,// task 数
                             const float &scale,        // 缩放因子
                             const size_t &nh,          // 其他参数 ...
                             const size_t &nkvh)
 {
+    ASSERT(nh == HEAD_NUM * nkvh, "flash_decoding: nh != HEAD_NUM * nkvh");
+
     auto *d_attn = reinterpret_cast<T *>(attn_val);
     auto *d_attn_acc = reinterpret_cast<float *>(attn_acc);
     auto *d_attn_sum = reinterpret_cast<float *>(attn_sum);
@@ -497,21 +497,23 @@ void flash_decoding_launch(std::byte *attn_val,        // 输出 (batch_size, nh
     const auto *d_cut_idx = reinterpret_cast<const int64_t *>(cut_idx);
     const auto *d_tot_len = reinterpret_cast<const int64_t *>(tot_len);
 
-    const size_t q_groups = ((nh / nkvh) + HEADS - 1) / HEADS;  // 上取整，最后一块可不满
+    const size_t group_num = (HEAD_NUM + TILE_M - 1) / TILE_M;
+    const size_t block_dim = group_num * WARP_NUM * WARP_SIZE;
+    const size_t tot_task_num = tot_block_num / COALESCE + batch_size;
 
-    dim3 blockDim_0(BLOCK_DIM_0);
-    dim3 gridDim_0(tot_task_num, nkvh * q_groups);
+    dim3 blockDim_0(block_dim);
+    dim3 gridDim_0(tot_task_num, nkvh);
 
-    dim3 blockDim_1(BLOCK_DIM_1);
+    dim3 blockDim_1(256);
     dim3 gridDim_1(nh, batch_size);
 
-    flash_decoding_parallel_kernel<T, HD, HEADS, TILE_K, COALESCE, QUANT><<<gridDim_0, blockDim_0>>>(
+    flash_decoding_parallel_kernel<T, HEAD_DIM, HEAD_NUM, WARP_NUM, TILE_M, TILE_K, COALESCE, QUANT><<<gridDim_0, blockDim_0>>>(
         d_attn_acc, d_attn_sum, d_attn_max, d_q, d_k_cache, d_v_cache, d_k_scale, d_v_scale,
         d_block_ids, d_cut_idx, d_tot_len, block_size, batch_size, table_width, scale, nh, nkvh);
-    flash_decoding_reduce_kernel<T, HD, COALESCE><<<gridDim_1, blockDim_1>>>(
+    CUDA_CHECK(cudaGetLastError());   // 隔离并行 kernel 错误
+    flash_decoding_reduce_kernel<T, HEAD_DIM, COALESCE><<<gridDim_1, blockDim_1>>>(
         d_attn, d_attn_acc, d_attn_sum, d_attn_max, d_block_ids, table_width, nh);
-
-    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaGetLastError());   // 隔离 reduce kernel 错误
 }
 
 template <typename T>
@@ -530,7 +532,7 @@ void flash_decoding_dispatch(std::byte *attn_val,      // 输出 (batch_size, nh
                             const size_t block_size,   // 一个 block 的 token 数 (批次无关)
                             const size_t batch_size,   // 批次大小 (批次有关)
                             const size_t table_width,  // 块表宽度 (批次无关)
-                            const size_t tot_task_num, // task 数
+                            const size_t tot_block_num, // task 数
                             const float &scale,        // 缩放因子
                             const size_t &nh,          // 其他参数 ...
                             const size_t &dv, 
@@ -538,28 +540,70 @@ void flash_decoding_dispatch(std::byte *attn_val,      // 输出 (batch_size, nh
                             const size_t &nkvh)
 {
     ASSERT(d == dv, "flash_decoding: d must equal dv.");
-    ASSERT(d == 128, "flash_decoding: only hd==128 supported (Qwen2-1.5B / Llama-3.2-3B / Qwen2-7B).");
+    ASSERT(d == 128, "flash_decoding: only HEAD_DIM==128 supported (Qwen2-1.5B / Llama-3.2-3B / Qwen2-7B).");
     const int heads = static_cast<int>(nh / nkvh);   // HEAD_NUM = rep（整组最优）
     const bool quant = (k_scale != nullptr);
 
-#define FD_LAUNCH(H, Q)                                                                \
-    flash_decoding_launch<T, 128, H, 16, 1, Q>(                                        \
+    // ---- 选参器：按 GPU 架构(Blackwell sm_10x vs 其它) + 工作量(tot_task_num/batch) 选
+    //     块内 warp 分组 (WARP_NUM, TILE_M) 与 TILE_K/COALESCE。阈值由 fd_wn_sweep 扫描拟合：
+    //     - B300(sm_103)：单组 4 warp 处理全部 q 行 (WN=4,TM=6,128 线程) 全负载最优（2026-09-02 扫描）。
+    //     - 其它(sm_89 等)：任务少(tot≤512)用 TM3/WN3，任务多用 TM2/WN2（省 smem 提占用）。
+    //     选参阈值依赖具体架构，sm_89 拟合不能直接搬 sm_103 → 运行时按 device capability 分流。
+    static const bool blackwell = []() {
+        int dev = 0; cudaGetDevice(&dev);
+        cudaDeviceProp prop{}; cudaGetDeviceProperties(&prop, dev);
+        return prop.major >= 10;
+    }();
+    const size_t tot = tot_block_num;      // 总物理块数
+    const size_t b = batch_size;
+    int wn, tm, tk, co;
+    if (blackwell) {
+        // B300：bf16/f16（sizeof≤2）用 WN=4/TM=6 最优；f32 的 (4,6) 静态 smem ~47KB 超 48KB
+        // 会被 nvcc 静默丢弃 → "named symbol not found"，故 f32 退到 (3,3)。
+        wn = (sizeof(T) <= 2) ? 4 : 3;
+        tm = (sizeof(T) <= 2) ? 6 : 3;
+        tk = 16;
+        co = (tot <= 512) ? 1 : (tot <= 2048) ? (b >= 128 ? 4 : 2) : 4;
+    } else {
+        wn = tm = (tot <= 512) ? 3 : 2;
+        tk = 16;
+        co = (tot <= 128) ? 1 : (tot <= 512) ? 2 : (tot <= 1024) ? 4 : 8;
+    }
+
+#define FD_LAUNCH(H, WN, TM, TK, CO, Q)                                                \
+    flash_decoding_launch<T, 128, H, WN, TM, TK, CO, Q>(                                \
         attn_val, attn_acc, attn_sum, attn_max, q, k_cache, v_cache, k_scale, v_scale, \
-        block_ids, cut_idx, tot_len, block_size, batch_size, table_width, tot_task_num, \
+        block_ids, cut_idx, tot_len, block_size, batch_size, table_width, tot_block_num, \
         scale, nh, nkvh)
+#define FD_CO(H, WN, TM, TK, Q)                                                        \
+    if (co == 1)       FD_LAUNCH(H, WN, TM, TK, 1, Q);                                 \
+    else if (co == 2)  FD_LAUNCH(H, WN, TM, TK, 2, Q);                                 \
+    else if (co == 4)  FD_LAUNCH(H, WN, TM, TK, 4, Q);                                 \
+    else               FD_LAUNCH(H, WN, TM, TK, 8, Q)
+#define FD_TK(H, WN, TM, Q)                                                            \
+    if (tk == 16)      FD_CO(H, WN, TM, 16, Q);                                        \
+    else               FD_CO(H, WN, TM, 8, Q)
+#define FD_WT(H, Q)                                                                    \
+    if (wn == 2 && tm == 2)      FD_TK(H, 2, 2, Q);                                    \
+    else if (wn == 3 && tm == 3) FD_TK(H, 3, 3, Q);                                    \
+    else if (wn == 4 && tm == 6) FD_TK(H, 4, 6, Q);                                    \
+    else                         FD_TK(H, 3, 3, Q)
 
     if (heads == 6) {        // Qwen2-1.5B
-        if (quant) FD_LAUNCH(6, true);
-        else       FD_LAUNCH(6, false);
+        if (quant) FD_WT(6, true);
+        else       FD_WT(6, false);
     } else if (heads == 3) { // Llama-3.2-3B
-        if (quant) FD_LAUNCH(3, true);
-        else       FD_LAUNCH(3, false);
+        if (quant) FD_WT(3, true);
+        else       FD_WT(3, false);
     } else if (heads == 7) { // Qwen2-7B (28/4): HEADS=4 (q_groups=2) to fit static smem 48KB
-        if (quant) FD_LAUNCH(4, true);
-        else       FD_LAUNCH(4, false);
+        if (quant) FD_WT(4, true);
+        else       FD_WT(4, false);
     } else {
         ASSERT(false, "flash_decoding: unsupported GQA ratio (nh/nkvh must be 6, 3 or 7).");
     }
+#undef FD_WT
+#undef FD_TK
+#undef FD_CO
 #undef FD_LAUNCH
 }
 
@@ -577,7 +621,7 @@ void flash_decoding(std::byte *attn_val,       // 输出 (tot_seqlen, nh, dv) =>
                     const size_t block_size,   // 每个块的token数 (批次无关)
                     const size_t batch_size,   // 批次大小 (批次有关)
                     const size_t table_width,  // 块表宽度 (批次无关)
-                    const size_t tot_task_num, // 精确 task 数
+                    const size_t tot_block_num, // 精确 task 数
                     llaisysDataType_t dtype,   // 权重数据类型
                     const float &scale,        // 缩放因子
                     const size_t &nh,          // 其他参数 ...
@@ -590,13 +634,13 @@ void flash_decoding(std::byte *attn_val,       // 输出 (tot_seqlen, nh, dv) =>
     switch (dtype) {
     case LLAISYS_DTYPE_F32:
         return flash_decoding_dispatch<float>(attn_val, attn_acc, attn_sum, attn_max, q, k_cache, v_cache, k_scale, v_scale, block_ids, cut_idx, tot_len, block_size,
-                                             batch_size, table_width, tot_task_num, scale, nh, dv, d, nkvh);
+                                             batch_size, table_width, tot_block_num, scale, nh, dv, d, nkvh);
     case LLAISYS_DTYPE_BF16:
         return flash_decoding_dispatch<llaisys::bf16_t>(attn_val, attn_acc, attn_sum, attn_max, q, k_cache, v_cache, k_scale, v_scale, block_ids, cut_idx, tot_len, block_size,
-                                             batch_size, table_width, tot_task_num, scale, nh, dv, d, nkvh);
+                                             batch_size, table_width, tot_block_num, scale, nh, dv, d, nkvh);
     case LLAISYS_DTYPE_F16:
         return flash_decoding_dispatch<llaisys::fp16_t>(attn_val, attn_acc, attn_sum, attn_max, q, k_cache, v_cache, k_scale, v_scale, block_ids, cut_idx, tot_len, block_size,
-                                             batch_size, table_width, tot_task_num, scale, nh, dv, d, nkvh);
+                                             batch_size, table_width, tot_block_num, scale, nh, dv, d, nkvh);
     default:
         EXCEPTION_UNSUPPORTED_DATATYPE(dtype);
     }

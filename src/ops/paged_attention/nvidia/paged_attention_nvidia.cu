@@ -38,7 +38,16 @@ __device__ __forceinline__ void load_kv_cache(const IN *__restrict__ _k_cache,
 #pragma unroll
     for (size_t row = (warp_id & 3); row < WMMA_N; row += WARP_NUM / 2) {
         const size_t token_id = tile_id * WMMA_N + row;
-        if (token_id >= totlen) continue;                
+        const size_t col = lane_id << 2;
+        if (token_id >= totlen) {
+            // 越界 KV 槽（tile 尾部不足 16 个 token）：置 0，避免垃圾/NaN 经 PV 的 0*NaN=NaN 污染累加器
+#pragma unroll
+            for (size_t j = 0; j < 4; ++j) {
+                s_k[row][col + j] = T(0);
+                s_v[row][col + j] = T(0);
+            }
+            continue;
+        }
         const size_t table_id = token_id / _block_size + 1;
         const size_t block_id = block_ids[table_id];
         const size_t kv_offset = (block_id * _block_size + token_id % _block_size) * _nkvh + nkvh;
@@ -46,7 +55,6 @@ __device__ __forceinline__ void load_kv_cache(const IN *__restrict__ _k_cache,
             // 非量化 (bf16/fp16, 2B): float2 一次拷 4 个元素 (8B 向量化访存)
             const IN *k_cache = _k_cache + kv_offset * HEAD_DIM;
             const IN *v_cache = _v_cache + kv_offset * HEAD_DIM;
-            const size_t col = lane_id << 2;
             *reinterpret_cast<float2 *>(&s_k[row][col]) = *reinterpret_cast<const float2 *>(&k_cache[col]);
             *reinterpret_cast<float2 *>(&s_v[row][col]) = *reinterpret_cast<const float2 *>(&v_cache[col]);
         } else {  // 量化 (IN = int8): int 打包 4 个 int8 一次加载 + 反量化
@@ -54,7 +62,6 @@ __device__ __forceinline__ void load_kv_cache(const IN *__restrict__ _k_cache,
             const IN *v_cache = _v_cache + kv_offset * HEAD_DIM;
             const float k_scale = _k_scale[kv_offset];
             const float v_scale = _v_scale[kv_offset];
-            const size_t col = lane_id << 2;
             const int k4 = *reinterpret_cast<const int *>(&k_cache[col]);
             const int v4 = *reinterpret_cast<const int *>(&v_cache[col]);
             const int8_t *kb = reinterpret_cast<const int8_t *>(&k4);
@@ -199,9 +206,10 @@ __global__ void paged_attention_kernel(T *__restrict__ _attn,
                 float row_max = -INFINITY;
 #pragma unroll
                 for (size_t i = 0; i < WMMA_N; ++ i) {
-                    const float val = s_score[warp_id][lane_id][i] * _scale;
                     const size_t token_id = tile_id * WMMA_N + i;
-                    s_score[warp_id][lane_id][i] = (token_id < row_kv_end) ? val : -INFINITY;
+                    // 掩码 + row_max 都只用有效（过去）token；未来 token 记 -INF 不抬高 max
+                    const float val = (token_id < row_kv_end) ? s_score[warp_id][lane_id][i] * _scale : -INFINITY;
+                    s_score[warp_id][lane_id][i] = val;
                     row_max = fmaxf(row_max, val);
                 }
                 const float old_max = s_max[warp_id][lane_id];
