@@ -114,12 +114,19 @@ class Ops:
             cut_idx = rest[0]
             tot_len = rest[1]
             tot_task_num = rest[2]
-            scale = rest[3]
-            # is_prefill: rest[4] if present and not a Tensor, else True
-            buf_start = 4
-            if len(rest) > 4 and not isinstance(rest[4], Tensor):
-                is_prefill = rest[4]
+            # 新签名含 max_seq_len：rest[3] 为 int；旧签名（无 max_seq_len）rest[3] 为 scale(float)，max_seq_len 默认 0
+            if len(rest) > 3 and isinstance(rest[3], int) and not isinstance(rest[3], bool):
+                max_seq_len = rest[3]
+                scale = rest[4]
                 buf_start = 5
+            else:
+                max_seq_len = 0
+                scale = rest[3]
+                buf_start = 4
+            # is_prefill: rest[buf_start] if present and not a Tensor, else True
+            if len(rest) > buf_start and not isinstance(rest[buf_start], Tensor):
+                is_prefill = rest[buf_start]
+                buf_start += 1
             else:
                 is_prefill = True
             # Optional flash_decoding context buffers
@@ -138,6 +145,7 @@ class Ops:
                 cut_idx.lib_tensor(),
                 tot_len.lib_tensor(),
                 c_size_t(tot_task_num),
+                c_size_t(max_seq_len),
                 c_float(scale),
                 c_bool(is_prefill),
                 attn_acc.lib_tensor() if attn_acc else None,

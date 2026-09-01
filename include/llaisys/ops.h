@@ -22,7 +22,7 @@ __C {
     __export void llaisysROPE(llaisysTensor_t out, llaisysTensor_t in, llaisysTensor_t pos_ids, float theta);
     __export void llaisysROPEInvFreq(llaisysTensor_t out, llaisysTensor_t in, llaisysTensor_t pos_ids,
                                      llaisysTensor_t inv_freq);
-    __export void llaisysPagedAttention(llaisysTensor_t attn_val, llaisysTensor_t q, llaisysTensor_t k_cache, llaisysTensor_t v_cache, llaisysTensor_t block_ids_tensor, llaisysTensor_t cut_idx_tensor, llaisysTensor_t tot_len_tensor, size_t tot_task_num, float scale, bool is_prefill, llaisysTensor_t attn_acc, llaisysTensor_t attn_sum, llaisysTensor_t attn_max, llaisysTensor_t k_scale, llaisysTensor_t v_scale);
+    __export void llaisysPagedAttention(llaisysTensor_t attn_val, llaisysTensor_t q, llaisysTensor_t k_cache, llaisysTensor_t v_cache, llaisysTensor_t block_ids_tensor, llaisysTensor_t cut_idx_tensor, llaisysTensor_t tot_len_tensor, size_t tot_task_num, size_t max_seq_len, float scale, bool is_prefill, llaisysTensor_t attn_acc, llaisysTensor_t attn_sum, llaisysTensor_t attn_max, llaisysTensor_t k_scale, llaisysTensor_t v_scale);
     __export void llaisysSelfAttention(llaisysTensor_t attn_val, llaisysTensor_t q, llaisysTensor_t k, llaisysTensor_t v, float scale);
     __export void llaisysSwiGLU(llaisysTensor_t out, llaisysTensor_t gate, llaisysTensor_t up);
     __export void llaisysSwiGLUQuant(llaisysTensor_t out_q, llaisysTensor_t out_scale, llaisysTensor_t gate,

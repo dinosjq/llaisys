@@ -14,7 +14,8 @@ void paged_attention(std::byte *attn_val,       // 输出 (tot_seqlen, nh, dv)
                      const size_t block_size,   // 每个块的token数
                      const size_t batch_size,   // 批次大小
                      const size_t table_width,  // 块表最多块数
-                     const size_t tot_task_num, // 任务总数 Σceil(seq_len/BLOCK_M)（grid.x）
+                     const size_t tot_block_num,// 批次总 kv 块数
+                     const size_t max_seq_len,  // 最大序列长
                      llaisysDataType_t dtype,   // 权重数据类型
                      const float &scale,        // 缩放因子
                      const size_t &nh,          // 其他参数 ...
