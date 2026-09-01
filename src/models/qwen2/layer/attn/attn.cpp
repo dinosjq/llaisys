@@ -62,7 +62,7 @@ void Qwen2Attention::forward(Qwen2Context &ctx) {
                        ctx.v_scales.empty() ? tensor_t() : ctx.v_scales[layer]);
 
     ops::paged_attention(ws.attn_val, ws.q_rope, ctx.k_caches[layer], ctx.v_caches[layer], ws.block_ids, ws.cut_idx,
-                         ws.tot_len, ctx.runtime().tot_task_num, scale, ctx.runtime().is_prefill,
+                         ws.tot_len, ctx.runtime().tot_block_num, ctx.runtime().max_seq_len, scale, ctx.runtime().is_prefill,
                          ws.attn_acc, ws.attn_sum, ws.attn_max,
                          ctx.k_scales.empty() ? tensor_t() : ctx.k_scales[layer],
                          ctx.v_scales.empty() ? tensor_t() : ctx.v_scales[layer]);

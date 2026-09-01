@@ -96,7 +96,8 @@ void Qwen2Context::bind(const engine::BatchInput &input, Qwen2Meta meta) {
     const std::vector<int64_t> &cut_idx = pack.cut_idx;
     const std::vector<int64_t> &tot_len = pack.tot_len;
     const std::vector<int64_t> &block_ids = pack.block_ids;
-    const size_t tot_task_num = pack.tot_task_num;
+    const size_t tot_block_num = pack.tot_block_num;
+    const size_t max_seq_len = pack.max_seq_len;
     const size_t batch_size = tot_len.size();
     const size_t tot_seq_len = token_ids.size();
     const size_t max_block_num = MAX_BLOCK_NUM;
@@ -154,7 +155,8 @@ void Qwen2Context::bind(const engine::BatchInput &input, Qwen2Meta meta) {
     _cur.token_ids->load(token_ids.data());
 
     // 保存运行时标量 (layer 通过 ctx.runtime() 读取)
-    this->_runtime.tot_task_num = tot_task_num;
+    this->_runtime.tot_block_num = tot_block_num;
+    this->_runtime.max_seq_len = max_seq_len;
     this->_runtime.is_prefill = pack.is_prefill;
     this->meta = std::move(meta);
 }

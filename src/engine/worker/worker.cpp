@@ -25,13 +25,14 @@ BatchInput Worker::prepare(const std::vector<seq_t> &seqs, const size_t table_wi
     std::vector<int64_t> tot_len;       // 总长
     // 块表
     std::vector<int64_t> block_ids(batch_size * table_width, -1);
+    // 批次信息
+    size_t tot_block_num = 0;
+    size_t max_seq_len = 0;
     // 采样参数
     std::vector<int> top_ks;
     std::vector<float> top_ps;
     std::vector<float> temperatures;
     std::vector<std::mt19937 *> rngs;
-    // 任务总数
-    size_t tot_task_num = 0;
 
     // 预处理块表
     for (size_t i = 0; i < batch_size; ++i) {
@@ -58,11 +59,8 @@ BatchInput Worker::prepare(const std::vector<seq_t> &seqs, const size_t table_wi
         }
         cut_idx.push_back(cut_idx.back() + seq_len);
         tot_len.push_back(begin + seq_len);
-        if (is_prefill) {
-            tot_task_num += (seq_len + PREFILL_BLOCK_M - 1) / PREFILL_BLOCK_M;
-        } else {
-            tot_task_num += seqs[i]->block_ids().size();
-        }
+        tot_block_num += seqs[i]->block_ids().size();
+        max_seq_len = std::max(max_seq_len, seq_len);
     }
 
     // 采样参数
@@ -72,7 +70,7 @@ BatchInput Worker::prepare(const std::vector<seq_t> &seqs, const size_t table_wi
         temperatures.push_back(seqs[i]->temperature());
         rngs.push_back(&seqs[i]->rng());
     }
-    return BatchPack{token_ids, pos_ids, cut_idx, tot_len, block_ids, top_ks, top_ps, temperatures, rngs, batch_size, tot_task_num, is_prefill};
+    return BatchPack{token_ids, pos_ids, cut_idx, tot_len, block_ids, top_ks, top_ps, temperatures, rngs, batch_size, tot_block_num, max_seq_len, is_prefill};
 }
 
 BatchOutput Worker::forward(const BatchInput &input) {
