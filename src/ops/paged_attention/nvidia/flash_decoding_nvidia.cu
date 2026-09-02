@@ -583,11 +583,13 @@ void flash_decoding_dispatch(std::byte *attn_val,      // 输出 (batch_size, nh
 #define FD_TK(H, WN, TM, Q)                                                            \
     if (tk == 16)      FD_CO(H, WN, TM, 16, Q);                                        \
     else               FD_CO(H, WN, TM, 8, Q)
+// (4,6) 仅对 bf16/f16（sizeof(T)<=2）实例化：f32 的 HEAD_NUM=7 静态 smem 50912B > 48KB 编不过；
+// 且 (4,6) 运行时只在 Blackwell 且 sizeof(T)<=2 时才被选（f32 恒退 (3,3)），故 f32 不实例化 (4,6)。
 #define FD_WT(H, Q)                                                                    \
     if (wn == 2 && tm == 2)      FD_TK(H, 2, 2, Q);                                    \
     else if (wn == 3 && tm == 3) FD_TK(H, 3, 3, Q);                                    \
-    else if (wn == 4 && tm == 6) FD_TK(H, 4, 6, Q);                                    \
-    else                         FD_TK(H, 3, 3, Q)
+    else if constexpr (sizeof(T) <= 2) FD_TK(H, 4, 6, Q);                              \
+    else                                FD_TK(H, 3, 3, Q)
 
     if (heads == 6) {        // Qwen2-1.5B
         if (quant) FD_WT(6, true);
@@ -595,9 +597,9 @@ void flash_decoding_dispatch(std::byte *attn_val,      // 输出 (batch_size, nh
     } else if (heads == 3) { // Llama-3.2-3B
         if (quant) FD_WT(3, true);
         else       FD_WT(3, false);
-    } else if (heads == 7) { // Qwen2-7B (28/4): HEADS=4 (q_groups=2) to fit static smem 48KB
-        if (quant) FD_WT(4, true);
-        else       FD_WT(4, false);
+    } else if (heads == 7) { // Qwen2-7B (28/4): HEAD_NUM=7（全 rep，块内 warp 分组）
+        if (quant) FD_WT(7, true);
+        else       FD_WT(7, false);
     } else {
         ASSERT(false, "flash_decoding: unsupported GQA ratio (nh/nkvh must be 6, 3 or 7).");
     }
