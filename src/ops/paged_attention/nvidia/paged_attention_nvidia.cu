@@ -15,8 +15,8 @@ constexpr size_t WMMA_M = 16;
 constexpr size_t WMMA_N = 16;
 constexpr size_t WMMA_K = 16;
 constexpr size_t WARP_NUM = 8;
-constexpr size_t PA_WARP_SIZE = 32;        // 前缀避免与 paged_attention_nvidia.cu 顶层常量冲突
-constexpr size_t PA_HEAD_DIM_MAX = 128;
+constexpr size_t WARP_SIZE = 32;        // 前缀避免与 paged_attention_nvidia.cu 顶层常量冲突
+constexpr size_t HEAD_DIM_MAX = 128;
 
 template<typename T, size_t HEAD_DIM, typename IN>
 __device__ __forceinline__ void load_kv_cache(const IN *__restrict__ _k_cache, 
@@ -283,7 +283,7 @@ void paged_attention_launch(std::byte *attn_val,       // 输出 (tot_seqlen, nh
                             const std::byte *k_scale = nullptr,
                             const std::byte *v_scale = nullptr)
 {
-    if (d == 0 || dv == 0 || d > PA_HEAD_DIM_MAX || dv > PA_HEAD_DIM_MAX || d % 32 != 0 || dv % 32 != 0 || block_size == 0 || nkvh == 0 || nh % nkvh != 0) {
+    if (d == 0 || dv == 0 || d > HEAD_DIM_MAX || dv > HEAD_DIM_MAX || d % 32 != 0 || dv % 32 != 0 || block_size == 0 || nkvh == 0 || nh % nkvh != 0) {
         throw std::invalid_argument("paged_attention requires d,dv in {32,64,96,128}, " "block_size > 0, nkvh > 0, and nh divisible by nkvh");
     }
     if (batch_size == 0 || nh == 0 || tot_block_num == 0) {
@@ -303,7 +303,7 @@ void paged_attention_launch(std::byte *attn_val,       // 输出 (tot_seqlen, nh
     const size_t max_tile_num = (max_seq_len + WMMA_M - 1) / WMMA_M;
     const size_t max_task_num = (max_tile_num + WARP_NUM / 2 - 1) / (WARP_NUM / 2);
 
-    dim3 blockDim(WARP_NUM * PA_WARP_SIZE);
+    dim3 blockDim(WARP_NUM * WARP_SIZE);
     dim3 gridDim(max_task_num, nh, batch_size);
 
     if (k_scale != nullptr) {

@@ -3,7 +3,7 @@
 **LLAISYS** 是一个自底向上实现的高性能 LLM 推理框架。后端用 C++17 编写并以共享库形式暴露纯 C API，前端用 Python 通过 `ctypes` 包装。框架从设备抽象、张量、算子、KV cache、调度器、采样器到模型层逐层实现，支持单机批量推理与 OpenAI 兼容的服务接口。
 
 - **设备抽象**：通过函数指针表统一 CPU 与 NVIDIA GPU（CUDA / cuBLAS），切换设备只需一行 `context().setDevice(...)`。
-- **性能**：paged KV cache、Flash Decoding、chunked prefill、抢占式批量调度；统一 INT8 量化（W8A8 权重 + INT8 KV cache，Hadamard 旋转抑制激活 outlier）让 decode 端到端提速 **+37.4%**（RTX 4060 Laptop 8GB）。
+- **性能**：paged KV cache、Flash Decoding、chunked prefill、抢占式批量调度；统一 INT8 量化（W8A8 权重 + INT8 KV cache，Hadamard 旋转抑制激活 outlier）让 decode 端到端提速 **+45%**（RTX 4060 Laptop 8GB）。
 - **多架构**：同一套 CUDA 实现覆盖消费级 Ada（sm_89）与数据中心 Blackwell Ultra（sm_103 / B300）。
 - **多模型**：原生实现 Qwen2 与 Llama，从 HuggingFace safetensors 直接加载权重。
 
@@ -23,7 +23,7 @@
 - **Paged Attention**：基于块 ID 表的分页注意力，是当前批量推理路径的实现；decode 采用 **Flash Decoding**（warp-per-q）重写版本。早期 v3/v6 实现通过 `llaisysFlashDecodingV3/V6` C API 保留作 A/B 基准（`xmake f --flash-v6-experiment=y` 编译选项）。
 - **量化路径**（NVIDIA only）：
   - **W8A8 统一 INT8**：权重 INT8 + KV cache INT8，量化前做 K 维 Hadamard 旋转抑制激活 outlier；`quantize=True` 一键开启端到端量化。
-  - **decode INT8 全链路**：融合量化算子（`rms_norm_quant` / `swiglu_quant` 直接输出 int8+scale）+ 手写 `dp4a` GEMV（M≤8，每 warp 一列、lane 4B 点积）+ `lm_head` 量化（467MB FP → 233MB I8），decode 端到端 **+37.4%**。
+  - **decode INT8 全链路**：融合量化算子（`rms_norm_quant` / `swiglu_quant` 直接输出 int8+scale）+ 手写 `dp4a` GEMV（M≤8，每 warp 一列、lane 4B 点积）+ `lm_head` 量化（467MB FP → 233MB I8），decode 端到端 **+45%**。
   - **INT8 KV cache**：`kv_cache_move` 量化写入 + `paged_attention` 反量化读取，同样显存下支持约 2× 更长序列。
 
 ### 算子库
@@ -48,23 +48,25 @@ CPU 与 NVIDIA 双实现（`src/ops/<name>/cpu|nvidia`）：
 
 | 场景 | 结果 |
 |---|---|
-| Qwen2-1.5B 单请求 vs HF `generate` | **1.45×**（64.9 tok/s） |
-| Qwen2-1.5B 单请求 INT8 | **89.2 tok/s**（decode 较 FP +37.4%） |
-| Qwen2-1.5B 18 请求并发（FP） | **814.3 tok/s** |
-| Qwen2-1.5B 18 请求并发（INT8） | **1014.4 tok/s** |
+| Qwen2-1.5B 单请求 e2e vs HF `generate` | **1.45×**（64.4 tok/s） |
+| Qwen2-1.5B 单请求 e2e（INT8） | **93.5 tok/s**（较 FP +45%） |
+| Qwen2-1.5B 18 请求并发 burst（FP） | **823.7 tok/s** |
+| Qwen2-1.5B 18 请求并发 burst（INT8） | **1147.3 tok/s** |
 
 ### NVIDIA B300（Blackwell Ultra，sm_103）
 
+> post 主基准（tensor-core prefill + block 内 warp 分组 decode 落地后）。口径：burst = 同时涌入、steady = 错峰注入（rps>0）；负载与复现见 `docs/optimization/06-attention-baseline-rerun.md`。
+
 | 场景 | FP (BF16) | INT8 |
 |---|---|---|
-| Qwen2-1.5B 单请求 decode | **306.0 tok/s** | 227.3 tok/s |
-| Qwen2-7B 单请求 decode | **175.6 tok/s** | 168.2 tok/s |
-| Qwen2-1.5B 18 请求并发 | **3726.3 tok/s** | 1052.1 tok/s |
-| Qwen2-1.5B 126 请求并发 | **1217.9 tok/s** | 735.6 tok/s |
-| Qwen2-7B 18 请求并发 | **2131.7 tok/s** | 386.6 tok/s（提前 EOS） |
-| Qwen2-7B 126 请求并发 | **511.4 tok/s** | 144.8 tok/s（提前 EOS） |
+| Qwen2-1.5B 单请求 decode（in 32） | **302.2 tok/s** | 215.7 tok/s |
+| Qwen2-7B 单请求 decode（in 32） | **172.1 tok/s** | 未重测 |
+| Qwen2-1.5B 18 并发 burst | **4362.0 tok/s** | 1089.3 tok/s |
+| Qwen2-1.5B 126 并发 burst | **3821.6 tok/s** | 666.9 tok/s |
+| Qwen2-7B 18 并发 burst | **1931.8 tok/s** | 未重测 |
+| Qwen2-7B 126 并发 steady | **315.4 tok/s** | 未重测 |
 
-> B300 带宽过剩，INT8 减半权重访存的收益消失，INT8 在大卡上慢于 FP（单请求 0.74~0.96×、并发 0.28×），7B 并发下还出现提前 EOS（与小卡结论相反）。
+> 单请求为 decode/latency 主导，tensor-core prefill 几乎不改变单请求吞吐（与优化前持平）；大并发收益来自 tensor-core prefill：1.5B@126 burst FP 5.6×、1.5B@18 1.68×、7B@18 1.27×。7B@126 burst 因 greedy 提前 EOS 输出不完整，故大并发以 steady 为干净主基准（out 完整；1.5B@126 steady 为 747.1 tok/s）。B300 带宽过剩且 INT8 prefill 未走 tensor-core（`pa_b300` 仅 bf16）→ INT8 在大卡上仍慢于 FP（单请求 ~0.71×、并发 0.17~0.25×），7B INT8 并发提前 EOS（与小卡结论相反）。
 
 ---
 
